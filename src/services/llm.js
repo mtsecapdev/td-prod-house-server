@@ -37,36 +37,41 @@ export async function requestEmbedding(input) {
 /**
  *
  * @param {string} query
+ * @param {object[]} history 
  * @param {chunks[]} kChunks
  * @returns {string} Model's response to the query and the chunks provided.
  *
  * @type {Response}
  */
-export async function generateAnswer(query, kChunks) {
+export async function generateAnswer(query, history, kChunks) {
   // Create the prompt
   let listOfChunks = '';
   let totalConfidenceScore = 0;
 
+  // Calculate the avg confidence score of the k chunks; this then informs the LLM whether the score is above the score threshold (0.6 - can be changed in the SYSTEM_PROMPT) so it can choose to give a "no confidence" answer or not.
   kChunks.forEach((chunk, index) => {
     listOfChunks += `Chunk ${index + 1}, Similarity Score ${chunk.similarity}: ${chunk.content}\n`;
     totalConfidenceScore += chunk.similarity;
   });
-
   const avgConfidenceScore = totalConfidenceScore / kChunks.length;
 
-  const prompt =
+  const systemMessage =
     process.env.SYSTEM_PROMPT +
-    `Question: ${query}\n` +
     `Document excerpts (average confidence score: ${avgConfidenceScore})\n` +
     listOfChunks;
 
+  const newUserQuery = {role: 'user', content: query};
+
   try {
-    // Send to /api/generate
-    const res = await fetch(new URL('/api/generate', process.env.OLLAMA_BASE_URL), {
+    const res = await fetch(new URL('/api/chat', process.env.OLLAMA_BASE_URL), {
       method: 'POST',
       body: JSON.stringify({
         model: process.env.GENERATE_MODEL_NAME,
-        prompt,
+        messages: [
+          {role: 'system', content: systemMessage},
+          ...history,
+          newUserQuery
+        ],
         stream: false,
       }),
     });
@@ -80,7 +85,7 @@ export async function generateAnswer(query, kChunks) {
     }
 
     const data = await res.json();
-    return data.response;
+    return [newUserQuery, data.message]
   } catch (error) {
     throw new AppError(
       `llm service error: ${error.message}`,
