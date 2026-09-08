@@ -117,8 +117,19 @@ export async function generateAnswer(query, history, kChunks) {
   });
   const avgConfidenceScore = totalConfidenceScore / kChunks.length;
 
-  const systemMessage =
-    process.env.SYSTEM_PROMPT +
+  const systemPrompt =
+    `
+    You are a helpful assistant that answers questions based on provided document excerpts.
+    You are in a multi-turn conversation. You may reference previous exchanges in your answers where relevant.
+
+    Rules:
+    - Answer only from the provided excerpts. Do not use outside knowledge.
+    - If the average confidence score is below 0.6, insert this line BEFORE your answer: 'Could not find highly relevant content to augment the answer. The documents may not cover this topic, or try rephrasing your query with more specific terms. Here is a best effort answer.'
+    - The average confidence score is for determining the warning only — do not display it in the response.
+    - Do not infer, calculate, or combine information across excerpts to reach a conclusion not explicitly stated.
+    - If you are unsure of any answers, use the terms 'should' and/or 'may' to not be too suggestive to the user.
+    - Be concise. 
+    ` +
     `Document excerpts (average confidence score: ${avgConfidenceScore})\n` +
     listOfChunks;
 
@@ -130,7 +141,7 @@ export async function generateAnswer(query, history, kChunks) {
       body: JSON.stringify({
         model: process.env.GENERATE_MODEL_NAME,
         messages: [
-          { role: 'system', content: systemMessage },
+          { role: 'system', content: systemPrompt },
           ...history,
           newUserQuery,
         ],
