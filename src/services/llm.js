@@ -52,7 +52,6 @@ export async function rewriteQuery(history, originalQuery) {
   // { role: 'assistant', content: ... }
   // Extract out these last up to 6 objects.
   const recentHistory = history.slice(-NUM_MOST_RECENT_MESSAGES);
-  console.log(recentHistory);
   // Use map array to create an array of 'User/Assistant: content', then join them into one string with \n
   const recentHistoryString = recentHistory
     .map((m) => `${m.role}: ${m.content}`)
@@ -102,7 +101,7 @@ export async function rewriteQuery(history, originalQuery) {
  * @param {string} query
  * @param {object[]} history
  * @param {chunks[]} kChunks
- * @returns {string} Model's response to the query and the chunks provided.
+ * @returns {object} {role: 'assistant', content: the generated message}
  *
  * @type {Response}
  */
@@ -148,7 +147,7 @@ export async function generateAnswer(query, history, kChunks) {
     }
 
     const data = await res.json();
-    return [newUserQuery, data.message];
+    return data.message;
   } catch (error) {
     throw new AppError(
       `llm service error: ${error.message}`,

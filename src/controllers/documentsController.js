@@ -84,7 +84,6 @@ async function queryDocumentsPost(req, res, next) {
   const { query: originalQuery, history, docIdsToReference } = req.body;
 
   const rewrittenQuery = await rewriteQuery(history, originalQuery);
-  console.log('Rewritten query: ' + rewrittenQuery);
   const queryEmbedding = await requestEmbedding(rewrittenQuery);
   // Find the top k semantically similar chunks in the db - use pgvector library to help
   const kMostSimilarChunks = await getSimilarChunksDb(
@@ -93,7 +92,9 @@ async function queryDocumentsPost(req, res, next) {
     docIdsToReference,
   );
 
-  console.log(`--- Generating answer for originalQuery: ${originalQuery} ---`);
+  console.log(
+    `--- Generating answer for originalQuery: ${originalQuery}; rewritten as: ${rewrittenQuery} ---`,
+  );
 
   // Response shape is [{role: 'user', content: query}, {role:'assistant', content: generated response}]
   const llmResponse = await generateAnswer(
@@ -116,7 +117,11 @@ async function queryDocumentsPost(req, res, next) {
     responseFactory.createJsonResponse({
       originalQuery,
       modelResponse: llmResponse[1],
-      updatedHistory: [...history, ...llmResponse],
+      history: [
+        ...history,
+        { role: 'user', content: originalQuery },
+        llmResponse,
+      ],
       chunks,
       numberOfChunks,
     }),
