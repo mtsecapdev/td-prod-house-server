@@ -7,7 +7,7 @@ import AppError from '../utils/AppError.js';
  */
 export async function requestEmbedding(input) {
   try {
-    const res = await fetch(process.env.EMBEDDING_ENDPOINT, {
+    const res = await fetch(new URL('/api/embed', process.env.OLLAMA_BASE_URL), {
       method: 'POST',
       body: JSON.stringify({
         model: process.env.EMBEDDING_MODEL_NAME,
@@ -62,7 +62,7 @@ export async function generateAnswer(query, kChunks) {
 
   try {
     // Send to /api/generate
-    const res = await fetch(process.env.GENERATE_ENDPOINT, {
+    const res = await fetch(new URL('/api/generate', process.env.OLLAMA_BASE_URL), {
       method: 'POST',
       body: JSON.stringify({
         model: process.env.GENERATE_MODEL_NAME,
