@@ -5,7 +5,11 @@ import responseFactory from '../utils/responseFactory.js';
 // Services
 import { extractMarkdownFromBuffer } from '../services/fileProcessor.js';
 import { splitMarkdown } from '../services/textChunker.js';
-import { generateAnswer, requestEmbedding } from '../services/llm.js';
+import {
+  generateAnswer,
+  requestEmbedding,
+  rewriteQuery,
+} from '../services/llm.js';
 
 // DB Queries
 import { insertDocumentDb, deleteDocumentDb } from '../db/documentsQueries.js';
@@ -77,10 +81,11 @@ const numberOfChunks = process.env.K_CHUNKS;
  * @param {import('express').NextFunction} next
  */
 async function queryDocumentsPost(req, res, next) {
-  const { query, history, docIdsToReference } = req.body;
+  const { query: originalQuery, history, docIdsToReference } = req.body;
 
-  // Embed query
-  const queryEmbedding = await requestEmbedding(query);
+  const rewrittenQuery = await rewriteQuery(history, originalQuery);
+  console.log('Rewritten query: ' + rewrittenQuery);
+  const queryEmbedding = await requestEmbedding(rewrittenQuery);
   // Find the top k semantically similar chunks in the db - use pgvector library to help
   const kMostSimilarChunks = await getSimilarChunksDb(
     queryEmbedding,
@@ -88,10 +93,14 @@ async function queryDocumentsPost(req, res, next) {
     docIdsToReference,
   );
 
-  console.log(`--- Generating answer for query: ${query} ---`);
+  console.log(`--- Generating answer for originalQuery: ${originalQuery} ---`);
 
   // Response shape is [{role: 'user', content: query}, {role:'assistant', content: generated response}]
-  const llmResponse = await generateAnswer(query, history, kMostSimilarChunks);
+  const llmResponse = await generateAnswer(
+    rewrittenQuery,
+    history,
+    kMostSimilarChunks,
+  );
 
   // Build array which maps the docId to its corresponding array of chunks,
   // So we can display that for this docId, what chunks were found.
@@ -105,7 +114,7 @@ async function queryDocumentsPost(req, res, next) {
 
   res.json(
     responseFactory.createJsonResponse({
-      query,
+      originalQuery,
       modelResponse: llmResponse[1],
       updatedHistory: [...history, ...llmResponse],
       chunks,
