@@ -77,7 +77,7 @@ const numberOfChunks = process.env.K_CHUNKS;
  * @param {import('express').NextFunction} next
  */
 async function queryDocumentsPost(req, res, next) {
-  const { query, docIdsToReference } = req.body;
+  const { query, history, docIdsToReference } = req.body;
 
   // Embed query
   const queryEmbedding = await requestEmbedding(query);
@@ -87,8 +87,14 @@ async function queryDocumentsPost(req, res, next) {
     numberOfChunks,
     docIdsToReference,
   );
+
   console.log(`--- Generating answer for query: ${query} ---`);
-  const modelResponse = await generateAnswer(query, kMostSimilarChunks);
+
+  // Response shape is [{role: 'user', content: query}, {role:'assistant', content: generated response}]
+  const llmResponse = await generateAnswer(query, history, kMostSimilarChunks);
+
+  // Build array which maps the docId to its corresponding array of chunks,
+  // So we can display that for this docId, what chunks were found.
   const chunks = {};
   docIdsToReference.forEach((docId) => {
     const chunksForThisDocId = kMostSimilarChunks.filter(
@@ -99,12 +105,11 @@ async function queryDocumentsPost(req, res, next) {
 
   res.json(
     responseFactory.createJsonResponse({
-      message: {
-        query,
-        modelResponse,
-        chunks,
-        numberOfChunks,
-      },
+      query,
+      modelResponse: llmResponse[1],
+      updatedHistory: [...history, ...llmResponse],
+      chunks,
+      numberOfChunks,
     }),
   );
 }
