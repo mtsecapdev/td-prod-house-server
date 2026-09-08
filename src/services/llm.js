@@ -147,7 +147,7 @@ export async function generateAnswer(query, history, kChunks) {
     }
 
     const data = await res.json();
-    return data.message;
+    return { llmResponse: data.message, avgConfidenceScore };
   } catch (error) {
     throw new AppError(
       `llm service error: ${error.message}`,

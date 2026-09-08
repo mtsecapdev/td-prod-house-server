@@ -97,7 +97,7 @@ async function queryDocumentsPost(req, res, next) {
   );
 
   // Response shape is [{role: 'user', content: query}, {role:'assistant', content: generated response}]
-  const llmResponse = await generateAnswer(
+  const { llmResponse, avgConfidenceScore } = await generateAnswer(
     rewrittenQuery,
     history,
     kMostSimilarChunks,
@@ -116,7 +116,7 @@ async function queryDocumentsPost(req, res, next) {
   res.json(
     responseFactory.createJsonResponse({
       originalQuery,
-      modelResponse: llmResponse[1],
+      modelResponse: llmResponse,
       history: [
         ...history,
         { role: 'user', content: originalQuery },
@@ -124,6 +124,7 @@ async function queryDocumentsPost(req, res, next) {
       ],
       chunks,
       numberOfChunks,
+      avgConfidenceScore,
     }),
   );
 }
