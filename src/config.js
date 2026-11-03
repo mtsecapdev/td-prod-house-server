@@ -19,6 +19,7 @@ const config = {
   rag: {
     topK: Number(process.env.K_CHUNKS ?? 5),
   },
+  sourcesDir: process.env.SOURCES_DIR || 'D:\\tdph\\sources',
 };
 
 export default config;
