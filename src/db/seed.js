@@ -31,7 +31,7 @@ async function seedDb() {
     await client.query('TRUNCATE TABLE documents RESTART IDENTITY CASCADE');
 
     // Insert test PDF to documents and chunks
-    const extractText = await extractMarkdownFromFile(testPdfPath);
+    const extractText = await extractMarkdownFromFile(testPdfPath, pdfFilename);
 
     const docResult = await client.query(
       'INSERT INTO documents (name) VALUES ($1) RETURNING id',

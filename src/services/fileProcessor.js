@@ -1,14 +1,15 @@
 import fs from 'node:fs/promises';
 import AppError from '../utils/AppError.js';
+import config from '../config.js';
 
 /**
  * Takes in the file path. Returns the extracted text as a string.
  * @param {string} filePath
  * @returns string: Extracted text from the file
  */
-export async function extractMarkdownFromFile(filePath) {
+export async function extractMarkdownFromFile(filePath, filename) {
   const buffer = await fs.readFile(filePath);
-  return await extractMarkdownFromBuffer(buffer);
+  return await extractMarkdownFromBuffer(buffer, filename);
 }
 
 /**
@@ -25,7 +26,7 @@ export async function extractMarkdownFromBuffer(buffer, filename) {
   form.append('to_formats', 'md');
 
   try {
-    const res = await fetch(process.env.DOCLING_SERVE_ENDPOINT, {
+    const res = await fetch(config.docling.endpoint, {
       method: 'POST',
       body: form,
     });

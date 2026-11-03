@@ -1,11 +1,10 @@
 import express from 'express';
 import cors from 'cors';
+import config from './src/config.js';
 import indexRouter from './src/routes/indexRouter.js';
 import responseFactory from './src/utils/responseFactory.js';
 import documentsRouter from './src/routes/documentsRouter.js';
 import { requestLogger } from './src/middleware/requestLogger.js';
-
-const PORT = process.env.SERVER_PORT;
 
 const app = express();
 
@@ -38,11 +37,7 @@ app.use((err, req, res, next) => {
   );
 });
 
-app.listen(PORT, (error) => {
-  //TODO: Add a check if "db online/connected" line and throw error if not.
-  if (error) {
-    throw error;
-  }
-
-  console.log(`Listening on ${PORT}`);
+app.listen(config.port, (error) => {
+  if (error) throw error;
+  console.log(`Listening on ${config.port}`);
 });

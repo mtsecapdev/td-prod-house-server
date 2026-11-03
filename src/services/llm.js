@@ -1,169 +1,119 @@
 import AppError from '../utils/AppError.js';
+import config from '../config.js';
 
-/**
- * Takes in a chunk as a string, makes a call to ollama embedding endpoint, returns the number[] containing the embeddings of that chunk.
- * @param {string} input
- * @returns {number[]} that contains the required embeddings.
- */
-export async function requestEmbedding(input) {
-  try {
-    const res = await fetch(
-      new URL('/api/embed', process.env.OLLAMA_BASE_URL),
-      {
-        method: 'POST',
-        body: JSON.stringify({
-          model: process.env.EMBEDDING_MODEL_NAME,
-          input,
-        }),
-      },
-    );
+const { baseUrl, embeddingModel, rewriteModel, generateModel } = config.ollama;
 
-    // Need a res.ok check cos with fetch, status codes like 404 or 500 dont throw errors,
-    // as the promise is still considered resolved.
-    if (!res.ok) {
-      throw new Error(
-        `Embedding request failed. Response original text: ${res.statusText}`,
-      );
-    }
+async function ollamaFetch(path, body) {
+  const res = await fetch(new URL(path, baseUrl), {
+    method: 'POST',
+    body: JSON.stringify(body),
+  });
 
-    const data = await res.json();
-    return data.embeddings[0];
-  } catch (error) {
-    throw new AppError(
-      `llm service error: ${error.message}`,
-      error.statusCode ?? 503,
-      error,
-    );
+  if (!res.ok) {
+    throw new Error(`Ollama ${path} failed: ${res.statusText}`);
   }
+
+  return res.json();
 }
 
 /**
- * Rewrites the query based on the past contextual history.
+ * @param {string} input
+ * @returns {Promise<number[]>}
+ */
+export async function requestEmbedding(input) {
+  try {
+    const data = await ollamaFetch('/api/embed', {
+      model: embeddingModel,
+      input,
+    });
+    return data.embeddings[0];
+  } catch (error) {
+    throw new AppError(`Embedding failed: ${error.message}`, 503, error);
+  }
+}
+
+const NUM_RECENT_MESSAGES = 6;
+
+/**
+ * Rewrites a query to be self-contained using recent conversation history.
+ * Returns the original query unchanged if there is no history.
  * @param {object[]} history
  * @param {string} originalQuery
- * @returns {string} rewrittenQuery
+ * @returns {Promise<string>}
  */
 export async function rewriteQuery(history, originalQuery) {
   if (!history || history.length === 0) return originalQuery;
 
-  const NUM_MOST_RECENT_MESSAGES = 6;
-  // history should look like this with the final 6 ones being the last 3 pairs of user-assistant responses.
-  // { role: 'user', content: ... }
-  // { role: 'assistant', content: ... }
-  // Extract out these last up to 6 objects.
-  const recentHistory = history.slice(-NUM_MOST_RECENT_MESSAGES);
-  // Use map array to create an array of 'User/Assistant: content', then join them into one string with \n
-  const recentHistoryString = recentHistory
+  const recent = history
+    .slice(-NUM_RECENT_MESSAGES)
     .map((m) => `${m.role}: ${m.content}`)
     .join('\n');
-  // Then, feed this history to the rewrite llm at the api/generate endpoint with the correct sys prompt
+
   const prompt =
-    `Given this conversation history:\n${recentHistoryString}\n\n` +
+    `Given this conversation history:\n${recent}\n\n` +
     `Rewrite the following query to be fully self-contained and specific, ` +
     `suitable for a semantic document search. ` +
     `Return only the rewritten query, no explanation.\n\n` +
     `Query: ${originalQuery}`;
 
   try {
-    const res = await fetch(
-      new URL('/api/generate', process.env.OLLAMA_BASE_URL),
-      {
-        method: 'POST',
-        body: JSON.stringify({
-          model: process.env.REWRITE_QUERY_MODEL_NAME,
-          prompt,
-          stream: false,
-        }),
-      },
-    );
-
-    // Need a res.ok check cos with fetch, status codes like 404 or 500 dont throw errors,
-    // as the promise is still considered resolved.
-    if (!res.ok) {
-      throw new Error(
-        `Rewrite query request failed. Response original text: ${res.statusText}`,
-      );
-    }
-
-    const data = await res.json();
+    const data = await ollamaFetch('/api/generate', {
+      model: rewriteModel,
+      prompt,
+      stream: false,
+    });
     return data.response;
   } catch (error) {
-    throw new AppError(
-      `llm service error: ${error.message}`,
-      error.statusCode ?? 503,
-      error,
-    );
+    throw new AppError(`Query rewrite failed: ${error.message}`, 503, error);
   }
 }
 
+const CONFIDENCE_THRESHOLD = 0.6;
+
 /**
- *
+ * Generates an answer grounded in the provided chunks.
  * @param {string} query
  * @param {object[]} history
- * @param {chunks[]} kChunks
- * @returns {object} {role: 'assistant', content: the generated message}
- *
- * @type {Response}
+ * @param {object[]} chunks
+ * @returns {Promise<{llmResponse: object, avgConfidenceScore: number}>}
  */
-export async function generateAnswer(query, history, kChunks) {
-  // Create the prompt
+export async function generateAnswer(query, history, chunks) {
   let listOfChunks = '';
-  let totalConfidenceScore = 0;
+  let totalScore = 0;
 
-  // Calculate the avg confidence score of the k chunks; this then informs the LLM whether the score is above the score threshold (0.6 - can be changed in the SYSTEM_PROMPT) so it can choose to give a "no confidence" answer or not.
-  kChunks.forEach((chunk, index) => {
-    listOfChunks += `Chunk ${index + 1}, Similarity Score ${chunk.similarity}: ${chunk.content}\n`;
-    totalConfidenceScore += chunk.similarity;
+  chunks.forEach((chunk, i) => {
+    listOfChunks += `Chunk ${i + 1}, Similarity ${chunk.similarity}: ${chunk.content}\n`;
+    totalScore += chunk.similarity;
   });
-  const avgConfidenceScore = totalConfidenceScore / kChunks.length;
+
+  const avgConfidenceScore = chunks.length > 0 ? totalScore / chunks.length : 0;
 
   const systemPrompt =
-    `
-    You are a helpful assistant that answers questions based on provided document excerpts.
-    You are in a multi-turn conversation. You may reference previous exchanges in your answers where relevant.
-
-    Rules:
-    - Answer only from the provided excerpts. Do not use outside knowledge.
-    - If the average confidence score is below 0.6, insert this line BEFORE your answer: 'Could not find highly relevant content to augment the answer. The documents may not cover this topic, or try rephrasing your query with more specific terms. Here is a best effort answer.'
-    - The average confidence score is for determining the warning only — do not display it in the response.
-    - Do not infer, calculate, or combine information across excerpts to reach a conclusion not explicitly stated.
-    - If you are unsure of any answers, use the terms 'should' and/or 'may' to not be too suggestive to the user.
-    - Be concise. 
-    ` +
-    `Document excerpts (average confidence score: ${avgConfidenceScore})\n` +
+    `You are a helpful assistant that answers questions based on provided document excerpts.\n` +
+    `You are in a multi-turn conversation. You may reference previous exchanges where relevant.\n\n` +
+    `Rules:\n` +
+    `- Answer only from the provided excerpts. Do not use outside knowledge.\n` +
+    `- If the average confidence score is below ${CONFIDENCE_THRESHOLD}, insert this line BEFORE your answer: ` +
+    `'Could not find highly relevant content. The documents may not cover this topic, or try rephrasing your query.'\n` +
+    `- Do not display the confidence score in the response.\n` +
+    `- Do not infer or combine information across excerpts beyond what is explicitly stated.\n` +
+    `- If unsure, use 'should' or 'may' rather than definitive statements.\n` +
+    `- Be concise.\n\n` +
+    `Document excerpts (average confidence score: ${avgConfidenceScore}):\n` +
     listOfChunks;
 
-  const newUserQuery = { role: 'user', content: query };
-
   try {
-    const res = await fetch(new URL('/api/chat', process.env.OLLAMA_BASE_URL), {
-      method: 'POST',
-      body: JSON.stringify({
-        model: process.env.GENERATE_MODEL_NAME,
-        messages: [
-          { role: 'system', content: systemPrompt },
-          ...history,
-          newUserQuery,
-        ],
-        stream: false,
-      }),
+    const data = await ollamaFetch('/api/chat', {
+      model: generateModel,
+      messages: [
+        { role: 'system', content: systemPrompt },
+        ...history,
+        { role: 'user', content: query },
+      ],
+      stream: false,
     });
-
-    // Need a res.ok check cos with fetch, status codes like 404 or 500 dont throw errors,
-    // as the promise is still considered resolved.
-    if (!res.ok) {
-      throw new Error(
-        `Generate request failed. Response original text: ${res.statusText}`,
-      );
-    }
-
-    const data = await res.json();
     return { llmResponse: data.message, avgConfidenceScore };
   } catch (error) {
-    throw new AppError(
-      `llm service error: ${error.message}`,
-      error.statusCode ?? 503,
-      error,
-    );
+    throw new AppError(`Answer generation failed: ${error.message}`, 503, error);
   }
 }

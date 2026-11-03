@@ -5,7 +5,7 @@ const documentsRouter = Router();
 
 documentsRouter.post(
   '/upload',
-  documentsController.uploadDocumentsPostMiddlewareArray,
+  documentsController.uploadDocumentsPost,
 );
 documentsRouter.post('/query', documentsController.queryDocumentsPost);
 documentsRouter.delete('/:id', documentsController.deleteOneDocument);

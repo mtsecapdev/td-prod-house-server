@@ -17,9 +17,7 @@
     "cors": "^2.8.6",
     "express": "^5.2.1",
     "multer": "^2.2.0",
-    "pdf-parse": "^2.4.5",
     "pg": "^8.22.0",
-    "pgvector": "^0.3.0",
-    "tesseract.js": "^7.0.0"
+    "pgvector": "^0.3.0"
   }
 }

@@ -12,6 +12,8 @@ async function createTables() {
   try {
     await client.query('BEGIN');
 
+    await client.query('CREATE EXTENSION IF NOT EXISTS vector');
+
     // documents table
     await client.query(`CREATE TABLE IF NOT EXISTS documents (
       id INTEGER GENERATED ALWAYS AS IDENTITY,
