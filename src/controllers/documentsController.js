@@ -8,7 +8,7 @@ import {
   requestEmbedding,
   rewriteQuery,
 } from '../services/llm.js';
-import { insertDocumentDb, deleteDocumentDb } from '../db/documentsQueries.js';
+import { getAllDocumentsDb, insertDocumentDb, deleteDocumentDb } from '../db/documentsQueries.js';
 import { getSimilarChunksDb, insertChunkDb } from '../db/chunksQueries.js';
 
 const uploadDocumentsPost = [
@@ -71,12 +71,18 @@ async function queryDocumentsPost(req, res) {
   }));
 }
 
+async function listDocuments(req, res) {
+  const docs = await getAllDocumentsDb();
+  res.json(responseFactory.createJsonResponse({ docs }));
+}
+
 async function deleteOneDocument(req, res) {
   const deletedDocument = await deleteDocumentDb(req.params.id);
   res.json(responseFactory.createJsonResponse({ deletedDocument }));
 }
 
 export default {
+  listDocuments,
   uploadDocumentsPost,
   queryDocumentsPost,
   deleteOneDocument,

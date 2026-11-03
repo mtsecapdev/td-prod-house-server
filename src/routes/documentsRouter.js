@@ -3,6 +3,7 @@ import documentsController from '../controllers/documentsController.js';
 
 const documentsRouter = Router();
 
+documentsRouter.get('/', documentsController.listDocuments);
 documentsRouter.post(
   '/upload',
   documentsController.uploadDocumentsPost,

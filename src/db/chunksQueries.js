@@ -11,7 +11,7 @@ export async function insertChunkDb(documentId, content, embedding, { page, head
 
 export async function getSimilarChunksDb(queryEmbedding, k = 5, docIdsToReference) {
   const res = await pool.query(
-    `SELECT document_id, content, page, heading, 1 - (embedding <=> $1) AS similarity
+    `SELECT id, document_id, content, page, heading, 1 - (embedding <=> $1) AS similarity
      FROM chunks
      WHERE document_id = ANY($3)
      ORDER BY embedding <=> $1
