@@ -1,32 +1,12 @@
 import AppError from '../utils/AppError.js';
 import config from '../config.js';
+import * as provider from './providers/ollama.js';
 
-const { baseUrl, embeddingModel, rewriteModel, generateModel } = config.ollama;
+const { embeddingModel, rewriteModel, generateModel } = config.ollama;
 
-async function ollamaFetch(path, body) {
-  const res = await fetch(new URL(path, baseUrl), {
-    method: 'POST',
-    body: JSON.stringify(body),
-  });
-
-  if (!res.ok) {
-    throw new Error(`Ollama ${path} failed: ${res.statusText}`);
-  }
-
-  return res.json();
-}
-
-/**
- * @param {string} input
- * @returns {Promise<number[]>}
- */
 export async function requestEmbedding(input) {
   try {
-    const data = await ollamaFetch('/api/embed', {
-      model: embeddingModel,
-      input,
-    });
-    return data.embeddings[0];
+    return await provider.embed(input, embeddingModel);
   } catch (error) {
     throw new AppError(`Embedding failed: ${error.message}`, 503, error);
   }
@@ -34,13 +14,6 @@ export async function requestEmbedding(input) {
 
 const NUM_RECENT_MESSAGES = 6;
 
-/**
- * Rewrites a query to be self-contained using recent conversation history.
- * Returns the original query unchanged if there is no history.
- * @param {object[]} history
- * @param {string} originalQuery
- * @returns {Promise<string>}
- */
 export async function rewriteQuery(history, originalQuery) {
   if (!history || history.length === 0) return originalQuery;
 
@@ -57,12 +30,7 @@ export async function rewriteQuery(history, originalQuery) {
     `Query: ${originalQuery}`;
 
   try {
-    const data = await ollamaFetch('/api/generate', {
-      model: rewriteModel,
-      prompt,
-      stream: false,
-    });
-    return data.response;
+    return await provider.generate(prompt, rewriteModel);
   } catch (error) {
     throw new AppError(`Query rewrite failed: ${error.message}`, 503, error);
   }
@@ -70,13 +38,6 @@ export async function rewriteQuery(history, originalQuery) {
 
 const CONFIDENCE_THRESHOLD = 0.6;
 
-/**
- * Generates an answer grounded in the provided chunks.
- * @param {string} query
- * @param {object[]} history
- * @param {object[]} chunks
- * @returns {Promise<{llmResponse: object, avgConfidenceScore: number}>}
- */
 export async function generateAnswer(query, history, chunks) {
   let listOfChunks = '';
   let totalScore = 0;
@@ -103,17 +64,30 @@ export async function generateAnswer(query, history, chunks) {
     listOfChunks;
 
   try {
-    const data = await ollamaFetch('/api/chat', {
-      model: generateModel,
-      messages: [
-        { role: 'system', content: systemPrompt },
-        ...history,
-        { role: 'user', content: query },
-      ],
-      stream: false,
-    });
-    return { llmResponse: data.message, avgConfidenceScore };
+    const llmResponse = await provider.chat(
+      [{ role: 'system', content: systemPrompt }, ...history, { role: 'user', content: query }],
+      generateModel,
+    );
+    return { llmResponse, avgConfidenceScore };
   } catch (error) {
     throw new AppError(`Answer generation failed: ${error.message}`, 503, error);
+  }
+}
+
+export async function generateStructured(prompt, model, format) {
+  try {
+    const response = await provider.generate(prompt, model, { format });
+    return JSON.parse(response);
+  } catch (error) {
+    throw new AppError(`Structured generation failed: ${error.message}`, 503, error);
+  }
+}
+
+export async function chatStructured(messages, model, format) {
+  try {
+    const response = await provider.chat(messages, model, { format });
+    return JSON.parse(response.content);
+  } catch (error) {
+    throw new AppError(`Structured chat failed: ${error.message}`, 503, error);
   }
 }

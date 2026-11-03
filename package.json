@@ -10,7 +10,8 @@
     "test": "echo \"Error: no test specified\" && exit 1",
     "dev": "node --env-file=.env --watch app.js",
     "seed": "node --env-file=.env ./src/db/seed.js",
-    "table": "node --env-file=.env ./src/db/createSchemas.js"
+    "table": "node --env-file=.env ./src/db/createSchemas.js",
+    "ingest": "node --env-file=.env ./src/scripts/ingest.js"
   },
   "dependencies": {
     "@langchain/textsplitters": "^1.0.1",
