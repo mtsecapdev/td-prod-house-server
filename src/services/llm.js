@@ -30,7 +30,7 @@ export async function rewriteQuery(history, originalQuery) {
     `Query: ${originalQuery}`;
 
   try {
-    return await provider.generate(prompt, rewriteModel);
+    return await provider.generate(prompt, rewriteModel, { think: true });
   } catch (error) {
     throw new AppError(`Query rewrite failed: ${error.message}`, 503, error);
   }
@@ -74,18 +74,18 @@ export async function generateAnswer(query, history, chunks) {
   }
 }
 
-export async function generateStructured(prompt, model, format) {
+export async function generateStructured(prompt, model, format, { think } = {}) {
   try {
-    const response = await provider.generate(prompt, model, { format });
+    const response = await provider.generate(prompt, model, { format, think });
     return JSON.parse(response);
   } catch (error) {
     throw new AppError(`Structured generation failed: ${error.message}`, 503, error);
   }
 }
 
-export async function chatStructured(messages, model, format) {
+export async function chatStructured(messages, model, format, { think = false } = {}) {
   try {
-    const response = await provider.chat(messages, model, { format });
+    const response = await provider.chat(messages, model, { format, think });
     return JSON.parse(response.content);
   } catch (error) {
     throw new AppError(`Structured chat failed: ${error.message}`, 503, error);

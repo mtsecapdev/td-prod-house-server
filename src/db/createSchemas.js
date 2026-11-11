@@ -32,7 +32,7 @@ async function createTables() {
     await client.query(`CREATE TABLE IF NOT EXISTS generations (
       id INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
       type TEXT NOT NULL CHECK (type IN ('deck', 'doc', 'image', 'infographic')),
-      status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'generating', 'outline_ready', 'done', 'failed')),
+      status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'prompt_ready', 'generating', 'outline_ready', 'done', 'failed')),
       brief JSONB,
       outline JSONB,
       source_document_ids INTEGER[],

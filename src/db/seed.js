@@ -1,7 +1,10 @@
+import fs from 'node:fs/promises';
+import crypto from 'node:crypto';
 import pool from './pool.js';
 import pgvector from 'pgvector/pg';
 import path from 'node:path';
 
+import config from '../config.js';
 import { insertDocumentDb } from './documentsQueries.js';
 import { insertChunkDb } from './chunksQueries.js';
 import { requestEmbedding } from '../services/llm.js';
@@ -30,12 +33,19 @@ async function seedDb() {
     await client.query('TRUNCATE TABLE chunks RESTART IDENTITY CASCADE');
     await client.query('TRUNCATE TABLE documents RESTART IDENTITY CASCADE');
 
+    // Copy test PDF to uploads dir so download endpoint works
+    await fs.mkdir(config.uploadsDir, { recursive: true });
+    const buffer = await fs.readFile(testPdfPath);
+    const fileHash = crypto.createHash('sha256').update(buffer).digest('hex');
+    const savedPath = path.join(config.uploadsDir, `${fileHash}.pdf`);
+    await fs.writeFile(savedPath, buffer);
+
     // Insert test PDF to documents and chunks
     const extractText = await extractMarkdownFromFile(testPdfPath, pdfFilename);
 
     const docResult = await client.query(
-      'INSERT INTO documents (name) VALUES ($1) RETURNING id',
-      [pdfFilename],
+      'INSERT INTO documents (name, file_path, file_hash, status) VALUES ($1, $2, $3, $4) RETURNING id',
+      [pdfFilename, savedPath, fileHash, 'ready'],
     );
     const docId = docResult.rows[0].id;
 

@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8">
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: 'Segoe UI', system-ui, sans-serif;
+    background: #fff;
+    padding: 48px 56px;
+    color: #1E293B;
+  }
+  .header { text-align: center; margin-bottom: 40px; }
+  .header h1 { font-size: 32px; font-weight: 700; color: #0F2B48; margin-bottom: 8px; }
+  .header p { font-size: 16px; color: #475569; }
+  .columns {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 32px;
+    margin-bottom: 32px;
+  }
+  .column {
+    background: #F8FAFC;
+    border: 1px solid #E2E8F0;
+    border-radius: 8px;
+    padding: 28px;
+  }
+  .column:first-child { border-top: 4px solid #2563EB; }
+  .column:last-child { border-top: 4px solid #0F2B48; }
+  .column h2 {
+    font-size: 20px; font-weight: 700; color: #0F2B48;
+    margin-bottom: 16px;
+  }
+  .column ul { list-style: none; }
+  .column li {
+    font-size: 15px; color: #334155; line-height: 1.6;
+    padding: 6px 0;
+    padding-left: 20px;
+    position: relative;
+  }
+  .column li::before {
+    content: '';
+    position: absolute;
+    left: 0; top: 14px;
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    background: #94A3B8;
+  }
+  .column:first-child li::before { background: #2563EB; }
+  .column:last-child li::before { background: #0F2B48; }
+  .verdict {
+    background: #F0F4F8;
+    border-left: 4px solid #2563EB;
+    padding: 20px 24px;
+    border-radius: 0 8px 8px 0;
+    font-size: 16px; color: #0F2B48; font-weight: 500;
+    line-height: 1.5;
+  }
+</style>
+</head><body>
+  <div class="header">
+    <h1>{{ title }}</h1>
+    <p>{{ subtitle }}</p>
+  </div>
+  <div class="columns">
+    <div class="column">
+      <h2>{{ column_a.heading }}</h2>
+      <ul>
+        {% for point in column_a.points %}
+        <li>{{ point }}</li>
+        {% endfor %}
+      </ul>
+    </div>
+    <div class="column">
+      <h2>{{ column_b.heading }}</h2>
+      <ul>
+        {% for point in column_b.points %}
+        <li>{{ point }}</li>
+        {% endfor %}
+      </ul>
+    </div>
+  </div>
+  <div class="verdict">{{ verdict }}</div>
+</body></html>

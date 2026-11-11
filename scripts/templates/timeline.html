@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8">
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: 'Segoe UI', system-ui, sans-serif;
+    background: #fff;
+    padding: 48px 56px;
+    color: #1E293B;
+  }
+  .header { text-align: center; margin-bottom: 40px; }
+  .header h1 { font-size: 32px; font-weight: 700; color: #0F2B48; margin-bottom: 8px; }
+  .header p { font-size: 16px; color: #475569; }
+  .timeline { position: relative; padding-left: 180px; }
+  .timeline::before {
+    content: '';
+    position: absolute;
+    left: 160px;
+    top: 0; bottom: 0;
+    width: 3px;
+    background: #CBD5E1;
+  }
+  .event {
+    position: relative;
+    padding: 0 0 32px 32px;
+  }
+  .event:last-child { padding-bottom: 0; }
+  .event::before {
+    content: '';
+    position: absolute;
+    left: -8px; top: 8px;
+    width: 16px; height: 16px;
+    border-radius: 50%;
+    background: #2563EB;
+    border: 3px solid #fff;
+    box-shadow: 0 0 0 2px #2563EB;
+  }
+  .event-date {
+    position: absolute;
+    left: -200px;
+    top: 4px;
+    width: 150px;
+    text-align: right;
+    font-size: 14px;
+    font-weight: 700;
+    color: #2563EB;
+    text-transform: uppercase;
+    letter-spacing: 0.3px;
+  }
+  .event-label {
+    font-size: 18px; font-weight: 600; color: #0F2B48;
+    margin-bottom: 4px;
+  }
+  .event-description {
+    font-size: 15px; color: #475569; line-height: 1.5;
+  }
+</style>
+</head><body>
+  <div class="header">
+    <h1>{{ title }}</h1>
+    <p>{{ subtitle }}</p>
+  </div>
+  <div class="timeline">
+    {% for event in events %}
+    <div class="event">
+      <div class="event-date">{{ event.date }}</div>
+      <div class="event-label">{{ event.label }}</div>
+      <div class="event-description">{{ event.description }}</div>
+    </div>
+    {% endfor %}
+  </div>
+</body></html>

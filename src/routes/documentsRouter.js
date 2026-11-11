@@ -9,6 +9,7 @@ documentsRouter.post(
   documentsController.uploadDocumentsPost,
 );
 documentsRouter.post('/query', documentsController.queryDocumentsPost);
+documentsRouter.get('/:id/file', documentsController.downloadDocument);
 documentsRouter.delete('/:id', documentsController.deleteOneDocument);
 
 export default documentsRouter;

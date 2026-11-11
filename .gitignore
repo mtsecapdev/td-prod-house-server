@@ -3,4 +3,4 @@ node_modules
 CLAUDE.md
 
 # Data required by tesseract for parsing images.
-eng.traineddata
+eng.traineddata__pycache__/

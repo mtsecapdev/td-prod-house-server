@@ -41,3 +41,8 @@ export async function getAllGenerationsDb() {
   );
   return res.rows;
 }
+
+export async function deleteGenerationDb(id) {
+  const res = await pool.query('DELETE FROM generations WHERE id = $1', [id]);
+  if (res.rowCount === 0) throw new AppError(`Generation ${id} not found`, 404);
+}

@@ -18,6 +18,12 @@ export async function getAssetsByGenerationDb(generationId) {
   return res.rows;
 }
 
+export async function getAssetByIdDb(id) {
+  const res = await pool.query('SELECT * FROM assets WHERE id = $1 AND deleted_at IS NULL', [id]);
+  if (res.rowCount === 0) throw new AppError(`Asset ${id} not found`, 404);
+  return res.rows[0];
+}
+
 export async function getAllAssetsDb({ q, kind } = {}) {
   let query = 'SELECT * FROM assets WHERE deleted_at IS NULL';
   const values = [];
