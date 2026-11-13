@@ -5,8 +5,8 @@ import pool from '../db/pool.js';
 import pgvector from 'pgvector/pg';
 import config from '../config.js';
 import { extractMarkdownFromFile } from '../services/fileProcessor.js';
-import { splitMarkdown } from '../services/textChunker.js';
-import { requestEmbedding } from '../services/llm.js';
+import { splitMarkdown, enrichTextForEmbedding } from '../services/textChunker.js';
+import { requestEmbeddingBatch } from '../services/llm.js';
 import {
   getDocumentByHashDb,
   insertDocumentDb,
@@ -14,6 +14,7 @@ import {
   deleteDocumentDb,
 } from '../db/documentsQueries.js';
 import { insertChunkDb } from '../db/chunksQueries.js';
+import { generateSummaryChunks } from '../services/summarizer.js';
 
 const SUPPORTED_EXTENSIONS = new Set(['.pdf', '.docx', '.pptx', '.md', '.txt']);
 
@@ -57,13 +58,22 @@ async function ingestFile(filePath) {
   console.log(`  Processing: ${filename} (doc ${docId})`);
 
   try {
-    const markdown = await extractMarkdownFromFile(filePath, filename);
-    const chunks = await splitMarkdown(markdown);
+    const { markdown, pageCount, pageMarkers } = await extractMarkdownFromFile(filePath, filename);
+    const chunks = await splitMarkdown(markdown, pageMarkers);
+    const embeddings = await requestEmbeddingBatch(chunks.map((c) => enrichTextForEmbedding(c.text, c)));
 
-    for (const chunk of chunks) {
-      const embedding = await requestEmbedding(chunk);
-      await insertChunkDb(docId, chunk, embedding);
+    for (let i = 0; i < chunks.length; i++) {
+      await insertChunkDb(docId, chunks[i].text, embeddings[i], { page: chunks[i].page, heading: chunks[i].heading });
     }
+
+    console.log(`  Generating summaries...`);
+    const { sectionCount } = await generateSummaryChunks(docId, chunks, {
+      onProgress: ({ step, current, total }) => {
+        if (step === 'section') process.stdout.write(`\r  Summarizing section ${current}/${total}`);
+        else if (step === 'document') process.stdout.write(`\r  Generating document overview...`);
+      },
+    });
+    console.log(`\n  Summaries: ${sectionCount} sections + 1 document overview`);
 
     await updateDocumentStatusDb(docId, 'ready');
     console.log(`  Done: ${filename} — ${chunks.length} chunks`);

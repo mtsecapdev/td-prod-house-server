@@ -26,7 +26,9 @@ async function createTables() {
       content TEXT NOT NULL,
       embedding VECTOR(768),
       page INTEGER,
-      heading TEXT
+      heading TEXT,
+      level TEXT NOT NULL DEFAULT 'leaf' CHECK (level IN ('leaf', 'section', 'document')),
+      tsv TSVECTOR GENERATED ALWAYS AS (to_tsvector('english', coalesce(heading, '') || ' ' || content)) STORED
     )`);
 
     await client.query(`CREATE TABLE IF NOT EXISTS generations (
@@ -54,6 +56,18 @@ async function createTables() {
       saved_at TIMESTAMPTZ DEFAULT NOW(),
       deleted_at TIMESTAMPTZ
     )`);
+
+    await client.query(`CREATE TABLE IF NOT EXISTS conversations (
+      id INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+      title TEXT NOT NULL DEFAULT 'New chat',
+      messages JSONB NOT NULL DEFAULT '[]',
+      doc_ids INTEGER[] NOT NULL DEFAULT '{}',
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      updated_at TIMESTAMPTZ DEFAULT NOW()
+    )`);
+
+    await client.query(`CREATE INDEX IF NOT EXISTS chunks_embedding_idx ON chunks USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100)`);
+    await client.query(`CREATE INDEX IF NOT EXISTS chunks_tsv_idx ON chunks USING gin (tsv)`);
 
     await client.query('COMMIT');
     console.log('Tables created successfully');

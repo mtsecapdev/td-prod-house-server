@@ -12,7 +12,23 @@ export async function requestEmbedding(input) {
   }
 }
 
-const NUM_RECENT_MESSAGES = 6;
+const EMBED_BATCH_SIZE = 20;
+
+export async function requestEmbeddingBatch(inputs) {
+  try {
+    const results = [];
+    for (let i = 0; i < inputs.length; i += EMBED_BATCH_SIZE) {
+      const batch = inputs.slice(i, i + EMBED_BATCH_SIZE);
+      const embeddings = await provider.embedBatch(batch, embeddingModel);
+      results.push(...embeddings);
+    }
+    return results;
+  } catch (error) {
+    throw new AppError(`Batch embedding failed: ${error.message}`, 503, error);
+  }
+}
+
+const NUM_RECENT_MESSAGES = 4;
 
 export async function rewriteQuery(history, originalQuery) {
   if (!history || history.length === 0) return originalQuery;
@@ -30,37 +46,42 @@ export async function rewriteQuery(history, originalQuery) {
     `Query: ${originalQuery}`;
 
   try {
-    return await provider.generate(prompt, rewriteModel, { think: true });
+    return await provider.generate(prompt, rewriteModel);
   } catch (error) {
     throw new AppError(`Query rewrite failed: ${error.message}`, 503, error);
   }
 }
 
-const CONFIDENCE_THRESHOLD = 0.6;
+const CHUNK_MAX_CHARS = 1200;
 
 export async function generateAnswer(query, history, chunks) {
   let listOfChunks = '';
   let totalScore = 0;
 
   chunks.forEach((chunk, i) => {
-    listOfChunks += `Chunk ${i + 1}, Similarity ${chunk.similarity}: ${chunk.content}\n`;
+    const trimmed = chunk.content.length > CHUNK_MAX_CHARS
+      ? chunk.content.slice(0, CHUNK_MAX_CHARS) + '...'
+      : chunk.content;
+    const levelTag = chunk.level === 'document' ? 'DOC SUMMARY' : chunk.level === 'section' ? 'SECTION SUMMARY' : null;
+    const meta = [levelTag, chunk.heading, chunk.page != null ? `Page ${chunk.page}` : null]
+      .filter(Boolean).join(' | ');
+    listOfChunks += `Chunk ${i + 1}${meta ? ` [${meta}]` : ''}: ${trimmed}\n`;
     totalScore += chunk.similarity;
   });
 
   const avgConfidenceScore = chunks.length > 0 ? totalScore / chunks.length : 0;
 
   const systemPrompt =
-    `You are a helpful assistant that answers questions based on provided document excerpts.\n` +
+    `You are a knowledgeable assistant helping users understand and discuss documents.\n` +
     `You are in a multi-turn conversation. You may reference previous exchanges where relevant.\n\n` +
-    `Rules:\n` +
-    `- Answer only from the provided excerpts. Do not use outside knowledge.\n` +
-    `- If the average confidence score is below ${CONFIDENCE_THRESHOLD}, insert this line BEFORE your answer: ` +
-    `'Could not find highly relevant content. The documents may not cover this topic, or try rephrasing your query.'\n` +
-    `- Do not display the confidence score in the response.\n` +
-    `- Do not infer or combine information across excerpts beyond what is explicitly stated.\n` +
-    `- If unsure, use 'should' or 'may' rather than definitive statements.\n` +
-    `- Be concise.\n\n` +
-    `Document excerpts (average confidence score: ${avgConfidenceScore}):\n` +
+    `How to answer:\n` +
+    `- For factual questions about the documents, answer from the provided excerpts.\n` +
+    `- When the user asks "what do you think", asks for your opinion, or wants analysis/comparison/context beyond what the documents cover — give your own informed answer using your general knowledge. Briefly note what the document says first, then share your own perspective.\n` +
+    `- Do not refuse to answer or say "the document doesn't cover this" when the user is clearly asking for YOUR thoughts. They want a discussion, not a search engine.\n` +
+    `- When the user asks to be taught something or to explain a topic, give a thorough answer using all relevant excerpts. Do not hold back content.\n` +
+    `- For direct questions, be concise but substantive.\n` +
+    `- Use plain text only. Do not use markdown formatting (no **, *, #, or bullet symbols like -).\n\n` +
+    `Document excerpts:\n` +
     listOfChunks;
 
   try {

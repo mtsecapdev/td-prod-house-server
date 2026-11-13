@@ -17,7 +17,7 @@ const config = {
     endpoint: required('DOCLING_SERVE_ENDPOINT'),
   },
   rag: {
-    topK: Number(process.env.K_CHUNKS ?? 5),
+    topK: Number(process.env.K_CHUNKS ?? 10),
   },
   sourcesDir: process.env.SOURCES_DIR || 'D:\\tdph\\sources',
   uploadsDir: process.env.UPLOADS_DIR || 'D:\\tdph\\uploads',

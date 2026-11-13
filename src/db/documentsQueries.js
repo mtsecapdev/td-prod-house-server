@@ -43,6 +43,11 @@ export async function updateDocumentStatusDb(id, status, error = null) {
   );
 }
 
+export async function documentExistsDb(id) {
+  const res = await pool.query('SELECT 1 FROM documents WHERE id = $1', [id]);
+  return res.rowCount > 0;
+}
+
 export async function deleteDocumentDb(id) {
   let res;
   try {

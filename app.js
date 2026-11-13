@@ -6,6 +6,7 @@ import responseFactory from './src/utils/responseFactory.js';
 import documentsRouter from './src/routes/documentsRouter.js';
 import generationsRouter from './src/routes/generationsRouter.js';
 import assetsRouter from './src/routes/assetsRouter.js';
+import conversationsRouter from './src/routes/conversationsRouter.js';
 import { requestLogger } from './src/middleware/requestLogger.js';
 
 const app = express();
@@ -20,6 +21,7 @@ app.use('/', indexRouter);
 app.use('/documents', documentsRouter);
 app.use('/generations', generationsRouter);
 app.use('/assets', assetsRouter);
+app.use('/conversations', conversationsRouter);
 
 // ERROR HANDLER
 app.use((err, req, res, next) => {

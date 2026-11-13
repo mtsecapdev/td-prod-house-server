@@ -39,6 +39,13 @@ export async function editSlide(generationId, slideIndex, instruction, history =
     stat_focus: 'Fields: "title" (slide title), "stat_value" (the number/metric), "stat_label" (what it measures), "context" (why it matters), "speaker_notes".',
     quote_highlight: 'Fields: "title" (slide title), "quote_text" (the quote), "attribution" (who said it), "commentary" (why it matters), "speaker_notes".',
     checklist: 'Fields: "title" (slide title), "items" (array of {step, detail}), "speaker_notes". To remove a step, omit it from the array. To add one, add a new {step, detail} entry.',
+    closing: 'Fields: "title" (slide title), "takeaways" (array of strings), "call_to_action" (optional string), "speaker_notes".',
+    section_divider: 'Fields: "title" (section name, 2-5 words), "subtitle" (one sentence priming the audience).',
+    big_idea: 'Fields: "statement" (one bold sentence, max 15 words), "supporting" (one sentence of context/evidence), "speaker_notes".',
+    timeline: 'Fields: "title" (slide title), "events" (array of {date, label, detail}), "speaker_notes". To remove an event, omit it. To add one, insert in chronological position.',
+    process_flow: 'Fields: "title" (slide title), "steps" (array of {label, detail}), "speaker_notes". To remove a step, omit it. To add one, add a new {label, detail} entry in sequence.',
+    icon_grid: 'Fields: "title" (slide title), "items" (array of {icon, label, description}), "speaker_notes". icon is a single keyword. To remove an item, omit it. To add one, add a new entry.',
+    comparison_table: 'Fields: "title" (slide title), "columns" (array of header strings), "rows" (array of arrays matching column count), "speaker_notes". To add a row, add an array. To add a column, add to columns and extend each row.',
   };
 
   const messages = [

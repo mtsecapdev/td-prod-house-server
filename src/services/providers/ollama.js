@@ -17,6 +17,11 @@ export async function embed(input, model) {
   return data.embeddings[0];
 }
 
+export async function embedBatch(inputs, model) {
+  const data = await ollamaFetch('/api/embed', { model, input: inputs });
+  return data.embeddings;
+}
+
 export async function generate(prompt, model, { format, think } = {}) {
   const body = { model, prompt, stream: false };
   if (format) body.format = format;
