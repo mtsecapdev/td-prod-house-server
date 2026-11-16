@@ -35,7 +35,7 @@ async function extractLargePdf(filePath, filename, totalPages, onProgress) {
   const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'tdph-split-'));
   try {
     if (onProgress) onProgress({ phase: 'splitting', message: `Splitting ${totalPages}-page PDF...` });
-    const { stdout } = await execFileAsync('python', [SPLIT_SCRIPT, filePath, tmpDir, String(PAGES_PER_CHUNK)], { timeout: 60_000 });
+    const { stdout } = await execFileAsync(config.pythonPath, [SPLIT_SCRIPT, filePath, tmpDir, String(PAGES_PER_CHUNK)], { timeout: 60_000 });
     const { chunks } = JSON.parse(stdout);
 
     let allMarkdown = '';

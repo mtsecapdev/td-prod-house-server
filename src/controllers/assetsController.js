@@ -61,7 +61,7 @@ async function saveAsset(req, res) {
   await writeFile(inputPath, JSON.stringify(generation.outline), 'utf-8');
 
   try {
-    await execFileAsync('python', [scriptPath, inputPath, outputPath], { timeout: 30_000 });
+    await execFileAsync(config.pythonPath, [scriptPath, inputPath, outputPath], { timeout: 30_000 });
   } catch (err) {
     await unlink(inputPath).catch(() => {});
     return res.status(500).json(responseFactory.createJsonResponse(null, {

@@ -119,7 +119,7 @@ export async function renderInfographic(generationId, format, content) {
   await writeFile(inputPath, JSON.stringify({ format, content }), 'utf-8');
 
   try {
-    await execFileAsync('python', [scriptPath, inputPath, outputPath], { timeout: 60_000 });
+    await execFileAsync(config.pythonPath, [scriptPath, inputPath, outputPath], { timeout: 60_000 });
   } catch (err) {
     await unlink(inputPath).catch(() => {});
     throw new Error(`Infographic rendering failed: ${err.stderr || err.message}`);

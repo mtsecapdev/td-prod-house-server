@@ -26,6 +26,7 @@ const config = {
     baseUrl: process.env.COMFYUI_BASE_URL || 'http://127.0.0.1:8188',
     dir: process.env.COMFYUI_DIR || 'D:\\tdph\\ComfyUI\\ComfyUI_windows_portable',
   },
+  pythonPath: process.env.PYTHON_PATH || 'python',
   deckCraftPath: process.env.DECKCRAFT_PATH || 'D:\\tdph\\deckcraft\\deckcraft-0.15.1-windows-x64-portable\\deckcraft.exe',
   wordCraftPath: process.env.WORDCRAFT_PATH || 'D:\\tdph\\wordcraft\\wordcraft-0.15.2-windows-x64-portable\\wordcraft.exe',
 };
