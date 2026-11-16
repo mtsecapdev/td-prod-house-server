@@ -73,6 +73,8 @@ export async function extractMarkdownFromBuffer(buffer, filename) {
   const blob = new Blob([buffer]);
   form.append('files', blob, filename);
   form.append('to_formats', 'md');
+  // JSON output carries page provenance (texts[].prov[].page_no) used for page markers.
+  form.append('to_formats', 'json');
 
   try {
     const res = await fetch(config.docling.endpoint, {
@@ -103,12 +105,12 @@ export async function extractMarkdownFromBuffer(buffer, filename) {
 
 function extractPageCount(data) {
   try {
-    const pages = data.document?.pages;
-    if (pages) return Object.keys(pages).length;
-    const items = data.document?.body || data.document?.texts || [];
+    const doc = data.document?.json_content;
+    const pages = doc?.pages;
+    if (pages && Object.keys(pages).length) return Object.keys(pages).length;
     let max = 0;
-    for (const item of items) {
-      const p = item.prov?.[0]?.page ?? item.page_no ?? 0;
+    for (const item of doc?.texts ?? []) {
+      const p = item.prov?.[0]?.page_no ?? 0;
       if (p > max) max = p;
     }
     return max || null;
@@ -119,10 +121,10 @@ function extractPageCount(data) {
 
 function extractPageMarkers(data) {
   try {
-    const items = data.document?.body || data.document?.texts || [];
+    const items = data.document?.json_content?.texts ?? [];
     const markers = [];
     for (const item of items) {
-      const page = item.prov?.[0]?.page ?? item.page_no;
+      const page = item.prov?.[0]?.page_no;
       if (page && item.text) {
         markers.push({ page, snippet: item.text.slice(0, 80) });
       }
