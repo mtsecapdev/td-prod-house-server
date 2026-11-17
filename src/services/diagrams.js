@@ -2,9 +2,10 @@
 // Shared by the planning writer and editChat.
 import { createHash } from 'node:crypto';
 import { access, mkdir, rename, rm, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import config from '../config.js';
 import { chatStructured } from './llm.js';
+import { getTemplate } from './templates.js';
 
 const RENDER_TIMEOUT_MS = 30_000;
 const KEY_RE = /^[a-f0-9]{16}$/;
@@ -40,10 +41,32 @@ export function diagramDir(generationId) {
   return join(config.outputDir, 'diagrams', String(Number(generationId)));
 }
 
-/** Path of a rendered diagram, or null if the key is malformed (keys come from URLs). */
-export function diagramPath(generationId, key) {
+/**
+ * Path of a rendered diagram, or null if the key is malformed (keys come from URLs). The key identifies the
+ * Mermaid code; each template has its own copy, in its own colours.
+ */
+export function diagramPath(generationId, key, templateId) {
   if (!KEY_RE.test(String(key))) return null;
-  return join(diagramDir(generationId), `${key}.png`);
+  return join(diagramDir(generationId), getTemplate(templateId).id, `${key}.png`);
+}
+
+/**
+ * Path of a diagram in the generation's current template, rendering it first if this template has no copy yet
+ * (the template was switched after writing). Null if no slide/section holds that diagram.
+ */
+export async function ensureDiagramFile(generation, key) {
+  const file = diagramPath(generation.id, key, generation.brief?.template);
+  if (!file) return null;
+  try {
+    await access(file);
+    return file;
+  } catch {
+    const items = generation.outline?.slides || generation.outline?.sections || [];
+    const holder = items.find((it) => it.content?.diagram_file === key);
+    if (!holder) return null;
+    await renderDiagram(generation, holder.content.mermaid_code);
+    return file;
+  }
 }
 
 export async function deleteDiagrams(generationId) {
@@ -59,16 +82,18 @@ function cleanCode(code) {
 }
 
 /**
- * Renders Mermaid to <outputDir>/diagrams/<generationId>/<hash>.png and returns the hash.
+ * Renders Mermaid in the generation's template colours to
+ * <outputDir>/diagrams/<generationId>/<templateId>/<hash>.png and returns the hash.
  * Files are named by content, so reordering slides never breaks the link, identical code renders once,
  * and undo can point back at an older file. Throws DiagramSyntaxError with Mermaid's message for invalid code.
  */
-export async function renderDiagram(generationId, rawCode) {
+export async function renderDiagram(generation, rawCode) {
   const code = cleanCode(rawCode);
   if (!code) throw new DiagramSyntaxError('The diagram has no Mermaid code.');
 
+  const template = getTemplate(generation.brief?.template);
   const key = createHash('sha256').update(`v${RENDER_VERSION}\n${code}`).digest('hex').slice(0, 16);
-  const file = diagramPath(generationId, key);
+  const file = diagramPath(generation.id, key, template.id);
   try {
     await access(file);
     return key;
@@ -81,7 +106,7 @@ export async function renderDiagram(generationId, rawCode) {
     res = await fetch(`${config.renderer.endpoint}/render/mermaid`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ code }),
+      body: JSON.stringify({ code, colors: template.colors }),
       signal: AbortSignal.timeout(RENDER_TIMEOUT_MS),
     });
   } catch (err) {
@@ -93,7 +118,7 @@ export async function renderDiagram(generationId, rawCode) {
   }
   if (!res.ok) throw new Error(`Diagram render service returned ${res.status}: ${await res.text()}`);
 
-  await mkdir(diagramDir(generationId), { recursive: true });
+  await mkdir(dirname(file), { recursive: true });
   // Write then rename so a concurrent reader never sees a half-written file.
   const tmp = `${file}.${process.pid}.${Date.now()}.tmp`;
   await writeFile(tmp, Buffer.from(await res.arrayBuffer()));
@@ -105,10 +130,10 @@ export async function renderDiagram(generationId, rawCode) {
  * Renders content.mermaid_code. If Mermaid rejects it, gives the model the error and asks for a fix once.
  * Returns the content (possibly corrected) with diagram_file set. Throws DiagramSyntaxError if still invalid.
  */
-export async function renderWithRepair(generationId, content, schema) {
+export async function renderWithRepair(generation, content, schema) {
   const withCleanCode = { ...content, mermaid_code: cleanCode(content.mermaid_code) };
   try {
-    return { ...withCleanCode, diagram_file: await renderDiagram(generationId, withCleanCode.mermaid_code) };
+    return { ...withCleanCode, diagram_file: await renderDiagram(generation, withCleanCode.mermaid_code) };
   } catch (err) {
     if (!(err instanceof DiagramSyntaxError)) throw err;
 
@@ -130,6 +155,6 @@ export async function renderWithRepair(generationId, content, schema) {
     );
     const code = cleanCode(fixed.mermaid_code);
     // Merge over the original so fields the schema doesn't cover (source_chunk_ids) survive.
-    return { ...withCleanCode, ...fixed, mermaid_code: code, diagram_file: await renderDiagram(generationId, code) };
+    return { ...withCleanCode, ...fixed, mermaid_code: code, diagram_file: await renderDiagram(generation, code) };
   }
 }

@@ -4,7 +4,7 @@ One Chromium stays running with a pool of pages that already have Mermaid and th
 so a render costs a page.evaluate and a screenshot instead of a browser launch. The pool size caps how
 many renders run at once; extra requests wait for a free page.
 
-  POST /render/mermaid   {"code": "..."}  -> 200 image/png
+  POST /render/mermaid   {"code": "...", "colors"?: {template colours}}  -> 200 image/png
                                            -> 422 {"error": "<Mermaid parse error>"} for invalid code
   GET  /health                             -> 200 {"ok": true}
 """
@@ -28,7 +28,7 @@ VENDOR = Path(os.environ.get("VENDOR_DIR", Path(__file__).resolve().parent / "ve
 
 log = logging.getLogger("renderer")
 
-# Matches the deck and document palette (render_pptx.py / render_docx.py).
+# Default palette (the "harbour" template). A request can pass a template's colours instead.
 THEME = {
     "fontFamily": "Inter, sans-serif",
     "fontSize": "16px",
@@ -62,7 +62,32 @@ html, body {{ margin: 0; background: #fff; font-family: 'Inter', sans-serif; }}
 </style></head><body><div id="out"></div></body></html>"""
 
 
-RENDER_JS = """async (code) => {
+def theme_for(colors):
+    """Mermaid themeVariables for a template's colours (templates/themes.json)."""
+    if not colors:
+        return THEME
+    return {
+        **THEME,
+        "primaryColor": colors.get("canvas", THEME["primaryColor"]),
+        "mainBkg": colors.get("canvas", THEME["mainBkg"]),
+        "actorBkg": colors.get("canvas", THEME["actorBkg"]),
+        "primaryBorderColor": colors.get("accent", THEME["primaryBorderColor"]),
+        "nodeBorder": colors.get("accent", THEME["nodeBorder"]),
+        "actorBorder": colors.get("accent", THEME["actorBorder"]),
+        "primaryTextColor": colors.get("primary", THEME["primaryTextColor"]),
+        "actorTextColor": colors.get("primary", THEME["actorTextColor"]),
+        "lineColor": colors.get("text", THEME["lineColor"]),
+        "clusterBorder": colors.get("border", THEME["clusterBorder"]),
+    }
+
+
+# Mermaid is set up per render so each request can carry its template's colours. useMaxWidth false draws
+# diagrams at natural size; with the default, every diagram was squeezed to the page container's width
+# (~350 px), which made wide flowcharts tiny and blurry on slides.
+RENDER_JS = """async ([code, theme]) => {
+  mermaid.initialize({ startOnLoad: false, securityLevel: 'strict', theme: 'base', themeVariables: theme,
+    flowchart: { htmlLabels: true, curve: 'basis', useMaxWidth: false },
+    sequence: { useMaxWidth: false }, mindmap: { useMaxWidth: false } });
   const out = document.getElementById('out');
   out.innerHTML = '';
   try {
@@ -94,21 +119,13 @@ class Pool:
         await page.set_content(self.html)
         await page.add_script_tag(path=str(VENDOR / "mermaid.min.js"))
         await page.evaluate("() => document.fonts.load('16px Inter')")
-        await page.evaluate(
-            # useMaxWidth false: draw at natural size. With the default, every diagram was squeezed to the
-            # page container's width (~350 px), which made wide flowcharts tiny and blurry on slides.
-            "(t) => mermaid.initialize({ startOnLoad: false, securityLevel: 'strict', theme: 'base', "
-            "themeVariables: t, flowchart: { htmlLabels: true, curve: 'basis', useMaxWidth: false }, "
-            "sequence: { useMaxWidth: false }, mindmap: { useMaxWidth: false } })",
-            THEME,
-        )
         return page
 
-    async def render(self, code: str):
+    async def render(self, code: str, colors=None):
         page = await self.pages.get()
         healthy = True
         try:
-            result = await asyncio.wait_for(page.evaluate(RENDER_JS, code), RENDER_TIMEOUT_S)
+            result = await asyncio.wait_for(page.evaluate(RENDER_JS, [code, theme_for(colors)]), RENDER_TIMEOUT_S)
             if "error" in result:
                 return None, result["error"]
             png = await page.locator("#out").screenshot(type="png")
@@ -139,7 +156,8 @@ async def render_mermaid(request: web.Request):
         return web.json_response({"error": f"code is longer than {MAX_CODE_CHARS} characters"}, status=413)
 
     try:
-        png, error = await request.app["pool"].render(code)
+        colors = body.get("colors") if isinstance(body.get("colors"), dict) else None
+        png, error = await request.app["pool"].render(code, colors)
     except asyncio.TimeoutError:
         return web.json_response({"error": "Rendering timed out"}, status=504)
     if error:

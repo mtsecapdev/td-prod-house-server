@@ -19,8 +19,8 @@ const DECK = {
   diagramFallback: 'process_flow',
   sourcesPerItem: 4,
   idPrefix: 's_',
-  counts: { quick: [3, 5], standard: [6, 10], deep: [12, 18] },
-  messageCounts: { quick: [2, 3], standard: [3, 5], deep: [4, 6] },
+  countRange: [3, 25],
+  defaultCount: 8,
   // Items that frame the deck rather than carry evidence: no sources searched for them.
   noSourceTypes: ['title', 'closing', 'section_divider'],
 
@@ -91,8 +91,8 @@ const DOC = {
   diagramFallback: 'procedure',
   sourcesPerItem: 7,
   idPrefix: 'x_',
-  counts: { short: [4, 8], standard: [8, 14], comprehensive: [14, 22] },
-  messageCounts: { short: [2, 4], standard: [3, 6], comprehensive: [5, 8] },
+  countRange: [3, 20],
+  defaultCount: 8,
   noSourceTypes: ['heading', 'summary'],
 
   typeGuide: {
@@ -136,18 +136,20 @@ export function kindOf(generation) {
   return kind;
 }
 
-const AUDIENCE_LEVELS = {
-  new: 'The audience is new to this topic: define terms and acronyms the first time, and avoid assumed knowledge.',
-  familiar: 'The audience knows the basics: skip introductions to common terms and focus on specifics.',
-  expert: 'The audience is expert: be precise and dense; no basics.',
+// Gamma-style text amount: how much each item carries. Applied when writing, so it can change without
+// rebuilding the outline.
+const TEXT_AMOUNTS = {
+  minimal: 'Text amount: minimal. Headline-driven: the fewest items the layout allows, each a short phrase. Put detail in speaker notes.',
+  concise: 'Text amount: concise. Short items, one idea each, one sentence of detail at most.',
+  detailed: 'Text amount: detailed. Use the upper end of each range, with full sentences and supporting specifics.',
 };
 
-const TONES = {
-  formal: 'Tone: formal and authoritative.',
-  instructional: 'Tone: clear and instructional.',
-  conversational: 'Tone: approachable and conversational, still precise.',
-  professional: 'Tone: professional.',
-};
+/** Number of items to plan, clamped to what the kind allows. */
+export function itemCount(kind, brief = {}) {
+  const [min, max] = kind.countRange;
+  const n = Number(brief.count) || kind.defaultCount;
+  return Math.min(max, Math.max(min, Math.round(n)));
+}
 
 /** The deck- or document-wide writing rules built from the brief. Identical for every item. */
 export function styleGuide(kind, brief = {}) {
@@ -155,44 +157,32 @@ export function styleGuide(kind, brief = {}) {
   return [
     `Format: ${kind.formats[format]}`,
     kind.titleStyle[format],
-    AUDIENCE_LEVELS[brief.audience_level] || '',
-    TONES[brief.tone] || '',
+    TEXT_AMOUNTS[brief.text_amount] || TEXT_AMOUNTS.concise,
+    brief.audience ? `Audience: ${brief.audience}. Pitch terms and depth to them.` : '',
+    brief.tone ? `Tone: ${brief.tone}.` : '',
+    brief.instructions ? `Instructions from the user (follow them): ${brief.instructions}` : '',
     'Grounding: every number, name, date and quote you write must appear in the sources given for this item. ' +
-      'If the sources do not support a point, leave it out rather than inventing a figure.',
+      'The planned bullets are a guide to what to cover, not a source of facts. If the sources do not support a ' +
+      'point, leave it out rather than inventing a figure.',
     'Write in plain English. No filler ("it is important to note"), no hype, no emoji.',
   ].filter(Boolean).join('\n');
 }
 
-/** The brief, as the model should read it. */
+/** The brief, as the planning model should read it. */
 export function briefBlock(generation) {
   const b = generation.brief || {};
   const kind = kindOf(generation);
-  const lines = [
-    `Topic: ${b.topic}`,
-    b.purpose ? `Purpose (what the audience should be able to do afterwards): ${b.purpose}` : '',
+  return [
+    `What the user asked for: ${b.topic}`,
     b.audience ? `Audience: ${b.audience}` : '',
     b.format && kind.formats[b.format] ? `Format: ${b.format}` : '',
-    b.include ? `Must include: ${b.include}` : '',
-    b.exclude ? `Leave out: ${b.exclude}` : '',
-    b.notes ? `Other notes from the user: ${b.notes}` : '',
-  ];
-  const answered = (b.questions || []).filter((q) => q.answer && q.answer.trim());
-  if (answered.length) {
-    lines.push('Answers to clarifying questions:');
-    for (const q of answered) lines.push(`- Q: ${q.question}\n  A: ${q.answer}`);
-  }
-  return lines.filter(Boolean).join('\n');
+    b.instructions ? `Extra instructions: ${b.instructions}` : '',
+  ].filter(Boolean).join('\n');
 }
 
 export function storylineBlock(storyline) {
   if (!storyline?.messages?.length) return '';
-  const lines = [`Thesis: ${storyline.thesis}`];
-  if (storyline.arc) lines.push(`Arc: ${storyline.arc}`);
-  lines.push('Key messages, in order:');
+  const lines = [`Thesis: ${storyline.thesis}`, 'Key messages, in order:'];
   storyline.messages.forEach((m, i) => lines.push(`${i + 1}. [${m.id}] ${m.text}`));
-  if (storyline.out_of_scope?.length) {
-    lines.push('Deliberately out of scope:');
-    for (const o of storyline.out_of_scope) lines.push(`- ${o.section}${o.reason ? ` (${o.reason})` : ''}`);
-  }
   return lines.join('\n');
 }

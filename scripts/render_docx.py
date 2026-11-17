@@ -23,20 +23,38 @@ COBALT = RGBColor(0x25, 0x63, 0xEB)
 SLATE = RGBColor(0x47, 0x55, 0x69)
 DARK = RGBColor(0x1E, 0x29, 0x3B)
 BORDER_GRAY = RGBColor(0xE2, 0xE8, 0xF0)
+FONT_HEADING = 'Calibri'
+FONT_BODY = 'Calibri'
 
 
-def style_run(run, size=11, bold=False, color=DARK, font_name='Calibri'):
+def hex_color(value):
+    value = value.lstrip('#')
+    return RGBColor(int(value[0:2], 16), int(value[2:4], 16), int(value[4:6], 16))
+
+
+def apply_theme(theme):
+    """Swap colours and fonts for a template from templates/themes.json (read at call time by the renderers)."""
+    global NAVY, COBALT, SLATE, BORDER_GRAY, FONT_HEADING, FONT_BODY
+    if not theme:
+        return
+    c = theme['colors']
+    NAVY, COBALT, SLATE = hex_color(c['primary']), hex_color(c['accent']), hex_color(c['text'])
+    BORDER_GRAY = hex_color(c['border'])
+    FONT_HEADING, FONT_BODY = theme['fonts']['heading'], theme['fonts']['body']
+
+
+def style_run(run, size=11, bold=False, color=DARK, font_name=None):
     run.font.size = Pt(size)
     run.font.bold = bold
     run.font.color.rgb = color
-    run.font.name = font_name
+    run.font.name = font_name or FONT_BODY
 
 
 def add_heading_styled(doc, text, level=1):
     p = doc.add_heading(text, level=level)
     for run in p.runs:
         run.font.color.rgb = NAVY
-        run.font.name = 'Calibri'
+        run.font.name = FONT_HEADING
     return p
 
 
@@ -59,7 +77,7 @@ def render_heading(doc, content):
 
     p = doc.add_paragraph()
     run = p.add_run(content.get('title', ''))
-    style_run(run, size=28, bold=True, color=NAVY)
+    style_run(run, size=28, bold=True, color=NAVY, font_name=FONT_HEADING)
     p.alignment = WD_ALIGN_PARAGRAPH.LEFT
 
     if content.get('subtitle'):
@@ -285,6 +303,7 @@ def render_doc(outline, output_path, template_path=None):
         section.left_margin = Cm(2.5)
         section.right_margin = Cm(2.5)
 
+    apply_theme(outline.get('theme'))
     figure_no = 0
     for section_data in outline.get('sections', []):
         section_type = section_data.get('section_type', 'body')

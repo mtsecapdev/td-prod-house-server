@@ -23,11 +23,11 @@ function systemPrompt(kind, generation) {
 function planBlock(kind, generation) {
   const items = generation.outline[kind.listKey];
   const outlineLines = items.map((it, i) =>
-    `${i + 1}. ${it[kind.typeKey]} | ${it.title} | ${it.point || it.intent || ''}`).join('\n');
+    `${i + 1}. ${it[kind.typeKey]} | ${it.title} | ${(it.bullets || []).filter((b) => b.trim()).join('; ')}`).join('\n');
   return [
     `Brief:\n${briefBlock(generation)}`,
     generation.storyline ? `Storyline:\n${storylineBlock(generation.storyline)}` : '',
-    `Full outline (${kind.nounPlural} in order: type | title | point):\n${outlineLines}`,
+    `Full outline (${kind.nounPlural} in order: type | title | what it covers):\n${outlineLines}`,
   ].filter(Boolean).join('\n\n');
 }
 
@@ -51,7 +51,7 @@ function writtenBlock(kind, items, uptoIndex) {
     if (!it.content) continue;
     const figures = [...new Set(textOf(it.content).match(FIGURE_RE) || [])]
       .map((f) => f.trim()).filter((f) => f.length > 1).slice(0, 8);
-    lines.push(`${i + 1}. ${it.content.title || it.content.statement || it.title}: ${it.point || it.intent || ''}` +
+    lines.push(`${i + 1}. ${it.content.title || it.content.statement || it.title}` +
       (figures.length ? ` Figures used: ${figures.join(', ')}.` : ''));
   }
   return lines.length ? lines.join('\n') : '(none yet)';
@@ -60,12 +60,12 @@ function writtenBlock(kind, items, uptoIndex) {
 async function sourcesFor(generation, kind, item) {
   if (item.sources?.length) return { rows: await getChunksByIdsDb(item.sources.map((s) => s.chunk_id)), sources: item.sources };
   if (kind.noSourceTypes.includes(item[kind.typeKey])) return { rows: [], sources: [] };
-  // Older generations (before planning) have no stored sources: search as the old flow did.
+  // An item the user added or emptied in the outline: search on its title and bullets.
   const q = sourceQuery(item);
   const rows = await getSourcePassagesDb(await requestEmbedding(q), kind.sourcesPerItem, generation.source_document_ids, q);
   return {
     rows,
-    sources: rows.map((r) => ({ chunk_id: r.id, page: r.page, heading: r.heading, preview: r.content.slice(0, 220), pinned: false })),
+    sources: rows.map((r) => ({ chunk_id: r.id, page: r.page, heading: r.heading, preview: r.content.slice(0, 220), added: false })),
   };
 }
 
@@ -75,6 +75,7 @@ async function writeAs(generation, kind, index, type, { note } = {}) {
   const { rows, sources } = await sourcesFor(generation, kind, item);
   const message = generation.storyline?.messages?.find((m) => m.id === item.message_id);
   const userNote = note ?? item.note;
+  const bullets = (item.bullets || []).map((b) => b.trim()).filter(Boolean);
 
   const sourceText = rows.length
     ? rows.map((r) => `[p. ${r.page ?? '?'}${r.heading ? ` · ${r.heading}` : ''}]\n${r.content}`).join('\n\n')
@@ -84,8 +85,7 @@ async function writeAs(generation, kind, index, type, { note } = {}) {
     `Write ${kind.noun} ${index + 1} of ${items.length}` +
       (message ? `, which supports key message ${message.id}: "${message.text}"` : '') + '.',
     `Planned title (improve it if you can): ${item.title}`,
-    `Point it must make: ${item.point || item.intent || ''}`,
-    item.talking_points?.length ? `Talking points:\n${item.talking_points.map((t) => `- ${t}`).join('\n')}` : '',
+    bullets.length ? `What it should cover:\n${bullets.map((t) => `- ${t}`).join('\n')}` : '',
     userNote ? `Note from the user (follow it): ${userNote}` : '',
     `Type: ${type}. How to fill it: ${kind.writeGuide[type] || ''}`,
     `Do not repeat points or figures the earlier ${kind.nounPlural} already made unless this one builds on them.`,
@@ -118,17 +118,17 @@ async function writeAs(generation, kind, index, type, { note } = {}) {
  * Writes one item. Returns { type, content, sources }; type differs from the plan only when a diagram could not
  * be rendered and fell back.
  */
-export async function writeItem(generation, index, { note } = {}) {
+export async function writeItem(generation, index, { note, type: typeOverride } = {}) {
   const kind = kindOf(generation);
   const item = generation.outline[kind.listKey][index];
   if (!item) throw new Error(`${kind.noun} ${index + 1} is not in the outline`);
-  const type = item[kind.typeKey] || kind.defaultType;
+  const type = kind.types.includes(typeOverride) ? typeOverride : (item[kind.typeKey] || kind.defaultType);
 
   const { content, sources } = await writeAs(generation, kind, index, type, { note });
   if (type !== 'diagram') return { type, content, sources };
 
   try {
-    return { type, content: await renderWithRepair(generation.id, content, kind.schemas.diagram), sources };
+    return { type, content: await renderWithRepair(generation, content, kind.schemas.diagram), sources };
   } catch (err) {
     if (!(err instanceof DiagramSyntaxError)) throw err;
     console.warn(`${kind.noun} ${index + 1}: diagram failed to render (${err.message.split('\n')[0]}); using ${kind.diagramFallback}`);
@@ -138,16 +138,16 @@ export async function writeItem(generation, index, { note } = {}) {
 }
 
 /**
- * Writes every item in order. onItemDone(items) runs after each one so the caller can save progress.
- * With resume, items that already have content are kept.
+ * Writes, in order, every item that has no content yet (items the user left unchanged keep theirs).
+ * onItemDone(items, index) runs after each one so the caller can save progress and show the finished item.
  */
-export async function writeAll(generation, { onProgress, onItemDone, resume = false } = {}) {
+export async function writeAll(generation, { onProgress, onItemDone } = {}) {
   const kind = kindOf(generation);
   const items = generation.outline[kind.listKey].map((it) => ({ ...it }));
   const working = { ...generation, outline: { ...generation.outline, [kind.listKey]: items } };
 
   for (let i = 0; i < items.length; i++) {
-    if (resume && items[i].content) continue;
+    if (items[i].content) continue;
     if (onProgress) {
       await onProgress({
         phase: kind.noun, [kind.noun]: i + 1, total: items.length, done: i,
@@ -156,7 +156,7 @@ export async function writeAll(generation, { onProgress, onItemDone, resume = fa
     }
     const { type, content, sources } = await writeItem(working, i);
     items[i] = { ...items[i], [kind.typeKey]: type, content, sources };
-    if (onItemDone) await onItemDone(items);
+    if (onItemDone) await onItemDone(items, i);
   }
   return items;
 }

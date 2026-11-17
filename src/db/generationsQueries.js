@@ -52,7 +52,9 @@ export async function deleteGenerationDb(id) {
 // server instance can see it, a second request can watch instead of starting a duplicate, and a job whose
 // heartbeat stopped (server restart) can be taken over.
 
-export const JOB_STALE_MS = 5 * 60 * 1000;
+// Running jobs heartbeat every JOB_HEARTBEAT_MS; one silent for JOB_STALE_MS died with its server process.
+export const JOB_HEARTBEAT_MS = 30 * 1000;
+export const JOB_STALE_MS = 90 * 1000;
 
 /** Claims the job slot. Returns false if another live job is running for this generation. */
 export async function claimJobDb(id, kind) {
@@ -72,14 +74,12 @@ export async function claimJobDb(id, kind) {
 export async function heartbeatJobDb(id, progress) {
   await pool.query(
     `UPDATE generations
-     SET job = job || jsonb_build_object('heartbeat_at', NOW(), 'progress', $2::jsonb), updated_at = NOW()
+     SET job = job || jsonb_build_object('heartbeat_at', NOW())
+               || CASE WHEN $2::jsonb IS NULL THEN '{}'::jsonb ELSE jsonb_build_object('progress', $2::jsonb) END,
+         updated_at = NOW()
      WHERE id = $1 AND job->>'state' = 'running'`,
-    [id, JSON.stringify(progress ?? null)],
+    [id, progress === undefined ? null : JSON.stringify(progress)],
   );
-}
-
-export async function clearJobDb(id) {
-  await pool.query(`UPDATE generations SET job = NULL, updated_at = NOW() WHERE id = $1`, [id]);
 }
 
 export async function failJobDb(id, kind, error) {
@@ -89,4 +89,23 @@ export async function failJobDb(id, kind, error) {
 
 export function isJobLive(job) {
   return job?.state === 'running' && Date.now() - new Date(job.heartbeat_at).getTime() < JOB_STALE_MS;
+}
+
+/** What clients see: a running job whose heartbeat stopped is reported as failed, so the UI offers a retry. */
+export function presentGeneration(generation) {
+  const { job } = generation;
+  if (job?.state === 'running' && !isJobLive(job)) {
+    return { ...generation, job: { ...job, state: 'failed', error: 'Interrupted (the server restarted). Try again.' } };
+  }
+  return generation;
+}
+
+/** Keeps a job's heartbeat fresh while `work` runs. */
+export async function withHeartbeat(id, work) {
+  const timer = setInterval(() => { heartbeatJobDb(id).catch(() => {}); }, JOB_HEARTBEAT_MS);
+  try {
+    return await work();
+  } finally {
+    clearInterval(timer);
+  }
 }

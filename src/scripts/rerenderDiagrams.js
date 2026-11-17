@@ -3,7 +3,7 @@
 import pool from '../db/pool.js';
 import { renderDiagram } from '../services/diagrams.js';
 
-const { rows } = await pool.query(`SELECT id, type, outline FROM generations WHERE type IN ('deck', 'doc') AND outline IS NOT NULL`);
+const { rows } = await pool.query(`SELECT id, type, brief, outline FROM generations WHERE type IN ('deck', 'doc') AND outline IS NOT NULL`);
 let rendered = 0;
 let failed = 0;
 
@@ -16,7 +16,7 @@ for (const gen of rows) {
     const c = item.content;
     if (!c?.mermaid_code) continue;
     try {
-      const key = await renderDiagram(gen.id, c.mermaid_code);
+      const key = await renderDiagram(gen, c.mermaid_code);
       if (key !== c.diagram_file) {
         c.diagram_file = key;
         changed = true;

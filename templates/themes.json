@@ -1,0 +1,84 @@
+{
+  "_comment": "Visual templates for decks and documents. One source of truth for the PPTX/DOCX renderers (scripts/), the diagram renderer (renderer/) and the editor preview (GET /templates). Colours are hex. Fonts must be ones PowerPoint and Word ship with, since the files are opened on other machines. All templates use light backgrounds: the slide layouts assume dark text on a light canvas with dark accent bands.",
+  "default": "harbour",
+  "templates": [
+    {
+      "id": "harbour",
+      "name": "Harbour",
+      "description": "Navy and cobalt. Calm and corporate.",
+      "colors": {
+        "primary": "#0F2B48", "primary_mid": "#163A60", "primary_light": "#1E4A7A",
+        "accent": "#2563EB", "accent_light": "#60A5FA",
+        "text": "#475569", "text_light": "#94A3B8",
+        "border": "#E2E8F0", "canvas": "#F0F4F8", "surface": "#FFFFFF",
+        "positive": "#10B981", "warning": "#F59E0B"
+      },
+      "fonts": { "heading": "Calibri", "body": "Calibri" }
+    },
+    {
+      "id": "evergreen",
+      "name": "Evergreen",
+      "description": "Deep green with a serif headline. Safety, sustainability, operations.",
+      "colors": {
+        "primary": "#14382D", "primary_mid": "#1B4A3B", "primary_light": "#2A6550",
+        "accent": "#0E9F6E", "accent_light": "#6EE7B7",
+        "text": "#44544D", "text_light": "#93A69C",
+        "border": "#DCE8E1", "canvas": "#F1F6F3", "surface": "#FFFFFF",
+        "positive": "#0E9F6E", "warning": "#D97706"
+      },
+      "fonts": { "heading": "Georgia", "body": "Calibri" }
+    },
+    {
+      "id": "ember",
+      "name": "Ember",
+      "description": "Warm brown and orange. Energetic workshops and kick-offs.",
+      "colors": {
+        "primary": "#3B1D14", "primary_mid": "#522819", "primary_light": "#6E3622",
+        "accent": "#E4572E", "accent_light": "#F4A582",
+        "text": "#5A4A43", "text_light": "#A8968E",
+        "border": "#EEDFD6", "canvas": "#FBF5F1", "surface": "#FFFFFF",
+        "positive": "#2F9E44", "warning": "#E8590C"
+      },
+      "fonts": { "heading": "Trebuchet MS", "body": "Calibri" }
+    },
+    {
+      "id": "graphite",
+      "name": "Graphite",
+      "description": "Charcoal with a violet accent. Technical and product decks.",
+      "colors": {
+        "primary": "#1F2328", "primary_mid": "#2B3037", "primary_light": "#3D444D",
+        "accent": "#7C5CFC", "accent_light": "#B9A8FF",
+        "text": "#4B5058", "text_light": "#9AA0A8",
+        "border": "#E3E3E8", "canvas": "#F4F4F6", "surface": "#FFFFFF",
+        "positive": "#2EA043", "warning": "#D29922"
+      },
+      "fonts": { "heading": "Segoe UI", "body": "Segoe UI" }
+    },
+    {
+      "id": "ocean",
+      "name": "Ocean",
+      "description": "Petrol blue and cyan. Clear and modern.",
+      "colors": {
+        "primary": "#083344", "primary_mid": "#0B4459", "primary_light": "#155E75",
+        "accent": "#0891B2", "accent_light": "#67E8F9",
+        "text": "#3F5560", "text_light": "#8EA6B0",
+        "border": "#D5EBF0", "canvas": "#EFF8FA", "surface": "#FFFFFF",
+        "positive": "#059669", "warning": "#D97706"
+      },
+      "fonts": { "heading": "Arial", "body": "Arial" }
+    },
+    {
+      "id": "plum",
+      "name": "Plum",
+      "description": "Plum and rose with a serif headline. People and culture topics.",
+      "colors": {
+        "primary": "#3B0F3A", "primary_mid": "#4F1A4D", "primary_light": "#6B2A68",
+        "accent": "#D9468F", "accent_light": "#F5A3CB",
+        "text": "#584A57", "text_light": "#A795A6",
+        "border": "#EEDDEA", "canvas": "#FAF3F8", "surface": "#FFFFFF",
+        "positive": "#2F9E44", "warning": "#E8590C"
+      },
+      "fonts": { "heading": "Georgia", "body": "Calibri" }
+    }
+  ]
+}

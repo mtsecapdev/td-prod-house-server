@@ -71,7 +71,7 @@ export async function editSlide(generationId, slideIndex, instruction, history =
   ];
 
   let updatedContent = await chatStructured(messages, config.ollama.generateModel, schema, { think: true });
-  if (layout === 'diagram') updatedContent = await renderEditedDiagram(generationId, updatedContent, schema);
+  if (layout === 'diagram') updatedContent = await renderEditedDiagram(generation, updatedContent, schema);
 
   const updatedSlides = [...outline.slides];
   updatedSlides[slideIndex] = {
@@ -152,7 +152,7 @@ export async function editSection(generationId, sectionIndex, instruction, histo
   ];
 
   let updatedContent = await chatStructured(messages, config.ollama.generateModel, schema, { think: true });
-  if (sType === 'diagram') updatedContent = await renderEditedDiagram(generationId, updatedContent, schema);
+  if (sType === 'diagram') updatedContent = await renderEditedDiagram(generation, updatedContent, schema);
 
   const updatedSections = [...outline.sections];
   updatedSections[sectionIndex] = {
@@ -179,9 +179,9 @@ export async function editSection(generationId, sectionIndex, instruction, histo
 
 // Edited diagrams are re-rendered before saving. If the code still doesn't parse after one repair, the edit is
 // rejected and the previous version stays, so a slide or section never points at a missing image.
-async function renderEditedDiagram(generationId, content, schema) {
+async function renderEditedDiagram(generation, content, schema) {
   try {
-    return await renderWithRepair(generationId, content, schema);
+    return await renderWithRepair(generation, content, schema);
   } catch (err) {
     if (err instanceof DiagramSyntaxError) {
       throw new Error(`That change produced a diagram that doesn't render, so nothing was changed. Mermaid said: ${err.message.split('\n')[0]}`);

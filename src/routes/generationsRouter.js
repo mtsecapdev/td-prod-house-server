@@ -6,23 +6,22 @@ const generationsRouter = Router();
 
 generationsRouter.post('/', generationsController.createGeneration);
 generationsRouter.get('/', generationsController.listGenerations);
+generationsRouter.get('/templates', generationsController.getTemplates);
 generationsRouter.get('/:id', generationsController.getGeneration);
 generationsRouter.put('/:id/outline', generationsController.updateOutline);
 
 // Planning (decks and documents)
 generationsRouter.put('/:id/brief', generationsController.updateBrief);
-generationsRouter.post('/:id/questions', generationsController.regenerateQuestions);
-generationsRouter.post('/:id/storyline', generationsController.createStoryline);
-generationsRouter.put('/:id/storyline', generationsController.updateStoryline);
 generationsRouter.post('/:id/outline', generationsController.createOutline);
 generationsRouter.post('/:id/outline/:index/sources', generationsController.refreshItemSources);
 generationsRouter.get('/:id/sources', generationsController.findSources);
 
-// Writing (decks: /generate, documents: /generate-sections; same handler)
-generationsRouter.post('/:id/generate', generationsController.writeSSE);
-generationsRouter.post('/:id/generate-sections', generationsController.writeSSE);
+// Writing: writes every item without content, streaming each as it finishes
+generationsRouter.post('/:id/write', generationsController.writeSSE);
 generationsRouter.post('/:id/slides/:index/regenerate', generationsController.regenerateItem);
 generationsRouter.post('/:id/sections/:index/regenerate', generationsController.regenerateItem);
+generationsRouter.post('/:id/slides', generationsController.addItem);
+generationsRouter.post('/:id/sections', generationsController.addItem);
 generationsRouter.post('/:id/slides/:slideIndex/chat', generationsController.editSlideChat);
 generationsRouter.post('/:id/sections/:sectionIndex/chat', generationsController.editSectionChat);
 generationsRouter.get('/:id/file', generationsController.downloadFile);

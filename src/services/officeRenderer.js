@@ -6,7 +6,8 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import config from '../config.js';
-import { diagramPath } from './diagrams.js';
+import { ensureDiagramFile } from './diagrams.js';
+import { getTemplate } from './templates.js';
 
 const execFileAsync = promisify(execFile);
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -27,14 +28,16 @@ export function notReadyMessage(generation) {
   return null;
 }
 
-// The scripts get absolute image paths; the stored outline only keeps the diagram's content key.
-function withDiagramPaths(generation) {
+// What the Python scripts read: the outline, the template's colours and fonts, and absolute paths of the
+// diagrams in that template (rendered now if the template changed after writing).
+async function renderInput(generation) {
   const listKey = generation.type === 'deck' ? 'slides' : 'sections';
-  const items = (generation.outline[listKey] || []).map((item) => {
+  const items = await Promise.all((generation.outline[listKey] || []).map(async (item) => {
     const key = item.content?.diagram_file;
-    return key ? { ...item, content: { ...item.content, diagram_path: diagramPath(generation.id, key) } } : item;
-  });
-  return { ...generation.outline, [listKey]: items };
+    if (!key) return item;
+    return { ...item, content: { ...item.content, diagram_path: await ensureDiagramFile(generation, key) } };
+  }));
+  return { ...generation.outline, [listKey]: items, theme: getTemplate(generation.brief?.template) };
 }
 
 /**
@@ -52,7 +55,7 @@ export async function renderOfficeFile(generation, mode = 'temp') {
   const outputPath = join(outDir, `${stem}.${ext}`);
   const scriptPath = join(__dirname, '..', '..', 'scripts', ext === 'pptx' ? 'render_pptx.py' : 'render_docx.py');
 
-  await writeFile(inputPath, JSON.stringify(withDiagramPaths(generation)), 'utf-8');
+  await writeFile(inputPath, JSON.stringify(await renderInput(generation)), 'utf-8');
   try {
     await execFileAsync(config.pythonPath, [scriptPath, inputPath, outputPath], { timeout: 60_000 });
   } catch (err) {

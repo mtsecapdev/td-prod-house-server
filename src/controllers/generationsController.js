@@ -14,16 +14,17 @@ import {
   heartbeatJobDb,
   failJobDb,
   isJobLive,
+  presentGeneration,
+  withHeartbeat,
 } from '../db/generationsQueries.js';
 import { kindOf } from '../services/planning/kinds.js';
-import {
-  generateQuestions, generateStoryline, generateOutline, attachSources, searchSources,
-} from '../services/planning/planner.js';
+import { planOutline, planOneItem, attachSources, searchSources } from '../services/planning/planner.js';
 import { writeAll, writeItem } from '../services/planning/writer.js';
 import { startJob } from '../services/jobs.js';
 import { editSlide, editSection } from '../services/editChat.js';
 import { craftImagePrompt, generateImageFromPrompt } from '../services/imageGenerator.js';
-import { renderDiagram, diagramPath, deleteDiagrams, DiagramSyntaxError } from '../services/diagrams.js';
+import { renderDiagram, ensureDiagramFile, deleteDiagrams, DiagramSyntaxError } from '../services/diagrams.js';
+import { listTemplates } from '../services/templates.js';
 import { renderOfficeFile, notReadyMessage, officeExt, downloadName } from '../services/officeRenderer.js';
 import { uploadImage as uploadToComfyUI, shutdown as shutdownComfyUI } from '../services/comfyui.js';
 
@@ -34,9 +35,8 @@ async function createGeneration(req, res) {
   const generation = await getGenerationByIdDb(id);
 
   if (type === 'deck' || type === 'doc') {
-    await updateGenerationDb(id, { status: 'brief', brief: JSON.stringify(normalizeBrief(brief)) });
-    const fresh = await getGenerationByIdDb(id);
-    await startQuestionsJob(fresh);
+    await updateGenerationDb(id, { brief: JSON.stringify(normalizeBrief(brief)) });
+    await startOutlineJob(await getGenerationByIdDb(id));
   } else if (type === 'image') {
     await updateGenerationDb(id, { status: 'pending' });
   }
@@ -45,13 +45,17 @@ async function createGeneration(req, res) {
   res.status(201).json(responseFactory.createJsonResponse({ generation: updated }));
 }
 
+async function getTemplates(req, res) {
+  res.json(responseFactory.createJsonResponse(listTemplates()));
+}
+
 async function getGeneration(req, res) {
-  const generation = await getGenerationByIdDb(req.params.id);
+  const generation = presentGeneration(await getGenerationByIdDb(req.params.id));
   res.json(responseFactory.createJsonResponse({ generation }));
 }
 
 async function listGenerations(req, res) {
-  const generations = await getAllGenerationsDb();
+  const generations = (await getAllGenerationsDb()).map(presentGeneration);
   res.json(responseFactory.createJsonResponse({ generations }));
 }
 
@@ -62,20 +66,16 @@ async function updateOutline(req, res) {
   res.json(responseFactory.createJsonResponse({ generation }));
 }
 
-// ── Planning: brief -> clarifying questions -> storyline -> outline ──
+// ── Planning (Gamma-style): prompt -> outline (one job) -> settings ──
 
-const BRIEF_FIELDS = ['topic', 'purpose', 'audience', 'audience_level', 'format', 'tone', 'length', 'include', 'exclude', 'notes'];
+const BRIEF_FIELDS = ['topic', 'count', 'format', 'text_amount', 'audience', 'tone', 'instructions', 'template'];
 
 function normalizeBrief(input = {}, previous = {}) {
   const brief = { ...previous };
-  for (const f of BRIEF_FIELDS) if (input[f] !== undefined) brief[f] = typeof input[f] === 'string' ? input[f].trim() : input[f];
-  if (Array.isArray(input.questions)) {
-    brief.questions = input.questions.map((q) => ({
-      question: String(q.question || ''), why: String(q.why || ''),
-      options: Array.isArray(q.options) ? q.options.map(String) : [], answer: String(q.answer || ''),
-    }));
+  for (const f of BRIEF_FIELDS) {
+    if (input[f] === undefined) continue;
+    brief[f] = f === 'count' ? Number(input[f]) || undefined : String(input[f] ?? '').trim();
   }
-  if (!brief.questions) brief.questions = [];
   return brief;
 }
 
@@ -91,21 +91,28 @@ function busy(res, generation) {
   }));
 }
 
-async function startQuestionsJob(generation) {
-  return startJob(generation.id, 'questions', async () => {
-    const questions = await generateQuestions(generation);
+// Plans the outline in the background. The planner suggests an audience and tone; they fill the brief only
+// where the user left them empty, so the settings panel opens pre-filled (as Gamma does).
+async function startOutlineJob(generation) {
+  return startJob(generation.id, 'outline', async () => {
+    const { storyline, outline } = await planOutline(generation);
     const latest = await getGenerationByIdDb(generation.id);
-    return { brief: JSON.stringify({ ...latest.brief, questions }) };
+    const brief = {
+      ...latest.brief,
+      audience: latest.brief?.audience || storyline.audience,
+      tone: latest.brief?.tone || storyline.tone,
+    };
+    return {
+      brief: JSON.stringify(brief),
+      storyline: JSON.stringify(storyline),
+      outline: JSON.stringify(outline),
+      status: 'outline_ready',
+    };
   });
 }
 
-// Marks a written outline as out of date when the storyline it was built from changes.
-function staleOutline(generation) {
-  const kind = kindOf(generation);
-  const items = generation.outline?.[kind.listKey];
-  return items?.length ? JSON.stringify({ ...generation.outline, stale: true }) : undefined;
-}
-
+// Settings on the outline screen (text amount, audience, tone, format, instructions). They apply when
+// writing, so changing them never rebuilds the outline.
 async function updateBrief(req, res) {
   const generation = await getPlannable(req.params.id);
   const brief = normalizeBrief(req.body.brief, generation.brief);
@@ -113,76 +120,24 @@ async function updateBrief(req, res) {
   res.json(responseFactory.createJsonResponse({ generation: await getGenerationByIdDb(generation.id) }));
 }
 
-async function regenerateQuestions(req, res) {
-  const generation = await getPlannable(req.params.id);
-  if (!(await startQuestionsJob(generation))) return busy(res, generation);
-  res.status(202).json(responseFactory.createJsonResponse({ generation: await getGenerationByIdDb(generation.id) }));
-}
-
-async function createStoryline(req, res) {
-  const generation = await getPlannable(req.params.id);
-  const instruction = (req.body?.instruction || '').trim() || undefined;
-  const started = await startJob(generation.id, 'storyline', async () => {
-    const storyline = await generateStoryline(generation, { instruction });
-    const latest = await getGenerationByIdDb(generation.id);
-    const outline = staleOutline(latest);
-    return {
-      storyline: JSON.stringify(storyline),
-      status: ['outline_ready', 'writing', 'done'].includes(latest.status) ? latest.status : 'storyline_ready',
-      ...(outline ? { outline } : {}),
-    };
-  });
-  if (!started) return busy(res, generation);
-  res.status(202).json(responseFactory.createJsonResponse({ generation: await getGenerationByIdDb(generation.id) }));
-}
-
-async function updateStoryline(req, res) {
-  const generation = await getPlannable(req.params.id);
-  const s = req.body.storyline || {};
-  const storyline = {
-    thesis: String(s.thesis || ''),
-    arc: String(s.arc || ''),
-    messages: (s.messages || []).map((m, i) => ({
-      id: m.id || `m${i + 1}`, text: String(m.text || ''),
-      section_ids: (m.section_ids || []).map(Number).filter(Number.isFinite),
-      sections: (m.sections || []).map((x) => ({ id: Number(x.id), heading: String(x.heading || ''), page: x.page ?? null })),
-    })).filter((m) => m.text.trim()),
-    out_of_scope: (s.out_of_scope || []).map((o) => ({ section: String(o.section || ''), reason: String(o.reason || '') })),
-    generated_at: generation.storyline?.generated_at,
-    edited_at: new Date().toISOString(),
-  };
-  const outline = staleOutline(generation);
-  await updateGenerationDb(generation.id, {
-    storyline: JSON.stringify(storyline),
-    status: generation.status === 'brief' ? 'storyline_ready' : generation.status,
-    ...(outline ? { outline } : {}),
-  });
-  res.json(responseFactory.createJsonResponse({ generation: await getGenerationByIdDb(generation.id) }));
-}
-
 async function createOutline(req, res) {
   const generation = await getPlannable(req.params.id);
-  if (!generation.storyline?.messages?.length) {
-    throw new AppError('Create the storyline first', 400);
+  if (req.body?.brief) {
+    await updateGenerationDb(generation.id, { brief: JSON.stringify(normalizeBrief(req.body.brief, generation.brief)) });
   }
-  const instruction = (req.body?.instruction || '').trim() || undefined;
-  const started = await startJob(generation.id, 'outline', async () => {
-    const outline = await generateOutline(generation, { instruction });
-    return { outline: JSON.stringify(outline), status: 'outline_ready' };
-  });
-  if (!started) return busy(res, generation);
+  if (!(await startOutlineJob(await getGenerationByIdDb(generation.id)))) return busy(res, generation);
   res.status(202).json(responseFactory.createJsonResponse({ generation: await getGenerationByIdDb(generation.id) }));
 }
 
-// Re-finds the unpinned sources of one outline item (after its point changed, or for a new item).
+// Re-finds the sources of one outline item from its current title and bullets; sources the user added stay.
 async function refreshItemSources(req, res) {
   const generation = await getPlannable(req.params.id);
   const kind = kindOf(generation);
   const index = Number(req.params.index);
   const item = req.body?.item || generation.outline?.[kind.listKey]?.[index];
   if (!item) throw new AppError(`${kind.noun} ${index + 1} not found`, 404);
-  const copy = { ...item, locked: false, sources: (item.sources || []).filter((s) => s.pinned) };
-  await attachSources(generation, { ...kind, noSourceTypes: [] }, [copy]);
+  const copy = { ...item, sources: (item.sources || []).filter((s) => s.added) };
+  await attachSources(generation, kind, [copy], { force: true });
   res.json(responseFactory.createJsonResponse({ sources: copy.sources }));
 }
 
@@ -194,9 +149,9 @@ async function findSources(req, res) {
 }
 
 // ── Writing ──
-// One endpoint per kind (POST /generate for decks, /generate-sections for documents), same behaviour:
-// starts writing, or, if a write is already running (another tab, a reload), streams that one's progress.
-// Writing continues if the client disconnects; a run cut off by a restart resumes where it stopped.
+// POST /:id/write writes every slide/section that has no content yet: the whole deck after planning, or the
+// items the user changed in the outline afterwards. If a write is already running (another tab, a reload),
+// it streams that one instead. Writing continues if the client disconnects.
 
 const WATCH_INTERVAL_MS = 2000;
 
@@ -221,18 +176,17 @@ async function writeSSE(req, res) {
   }
 
   try {
-    const resume = ['writing', 'generating'].includes(generation.status);
     await updateGenerationDb(generation.id, { status: 'writing' });
-    const written = await writeAll(generation, {
-      resume,
+    const written = await withHeartbeat(generation.id, () => writeAll(generation, {
       onProgress: async (progress) => {
         send(progress);
         await heartbeatJobDb(generation.id, { done: progress.done, total: progress.total, title: progress.title });
       },
-      onItemDone: (soFar) => updateGenerationDb(generation.id, {
-        outline: JSON.stringify({ ...generation.outline, [kind.listKey]: soFar }),
-      }),
-    });
+      onItemDone: async (soFar, index) => {
+        await updateGenerationDb(generation.id, { outline: JSON.stringify({ ...generation.outline, [kind.listKey]: soFar }) });
+        send({ phase: 'item_done', index, item: soFar[index] });
+      },
+    }));
     await updateGenerationDb(generation.id, {
       outline: JSON.stringify({ ...generation.outline, [kind.listKey]: written }),
       status: 'done',
@@ -241,25 +195,29 @@ async function writeSSE(req, res) {
     send({ phase: 'done' });
   } catch (err) {
     console.error(`Generation ${generation.id}: writing failed: ${err.message}`);
-    // Status stays 'writing' so retrying resumes from the last finished item.
+    // Status stays 'writing'; retrying continues from the first item without content.
     await failJobDb(generation.id, 'write', err.message);
     send({ phase: 'error', message: err.message });
   }
   res.end();
 }
 
+// Streams a write that another request is running: progress, and each item as it lands in the database.
 async function watchWrite(id, kind, send, isOpen) {
-  let lastDone = -1;
+  const sent = new Set();
   while (isOpen()) {
     const g = await getGenerationByIdDb(id);
+    (g.outline?.[kind.listKey] || []).forEach((item, index) => {
+      if (item.content && !sent.has(item.id ?? index)) {
+        sent.add(item.id ?? index);
+        send({ phase: 'item_done', index, item });
+      }
+    });
     if (g.status === 'done' && !g.job) { send({ phase: 'done' }); return; }
     if (g.job?.state === 'failed') { send({ phase: 'error', message: g.job.error }); return; }
     if (!isJobLive(g.job)) { send({ phase: 'error', message: 'Writing stopped unexpectedly. Retry to continue where it left off.' }); return; }
     const p = g.job.progress;
-    if (p && p.done !== lastDone) {
-      lastDone = p.done;
-      send({ phase: kind.noun, [kind.noun]: p.done + 1, total: p.total, title: p.title });
-    }
+    if (p) send({ phase: kind.noun, [kind.noun]: p.done + 1, total: p.total, title: p.title });
     await new Promise((r) => setTimeout(r, WATCH_INTERVAL_MS));
   }
 }
@@ -275,7 +233,8 @@ async function regenerateItem(req, res) {
   if (isJobLive(generation.job)) return busy(res, generation);
 
   const note = typeof req.body?.note === 'string' ? req.body.note.trim() : undefined;
-  const { type, content, sources } = await writeItem(generation, index, { note });
+  const requestedType = req.body?.type; // "try a different layout"
+  const { type, content, sources } = await writeItem(generation, index, { note, type: requestedType });
 
   const latest = await getGenerationByIdDb(generation.id);
   const latestItems = [...latest.outline[kind.listKey]];
@@ -284,10 +243,38 @@ async function regenerateItem(req, res) {
   await updateGenerationDb(generation.id, {
     outline: JSON.stringify({ ...latest.outline, [kind.listKey]: latestItems }),
     edit_history: [...(latest.edit_history || []), {
-      [indexKey]: index, instruction: note ? `Regenerate: ${note}` : 'Regenerate', before: item.content, timestamp: new Date().toISOString(),
+      [indexKey]: index,
+      instruction: requestedType ? `Change layout to ${type}` : note ? `Regenerate: ${note}` : 'Regenerate',
+      before: item.content,
+      timestamp: new Date().toISOString(),
     }],
   });
   res.json(responseFactory.createJsonResponse({ item: latestItems[index] }));
+}
+
+// "Add with AI": plans one new slide/section from a description, writes it, and inserts it after `after`.
+async function addItem(req, res) {
+  const generation = await getPlannable(req.params.id);
+  const kind = kindOf(generation);
+  const description = String(req.body?.description || '').trim();
+  if (!description) throw new AppError('Describe what to add', 400);
+  if (isJobLive(generation.job)) return busy(res, generation);
+
+  const items = generation.outline?.[kind.listKey] || [];
+  const after = Math.min(Math.max(Number(req.body?.after ?? items.length - 1), -1), items.length - 1);
+  const item = await planOneItem(generation, description, after);
+
+  const withNew = [...items];
+  withNew.splice(after + 1, 0, item);
+  const planned = { ...generation, outline: { ...generation.outline, [kind.listKey]: withNew } };
+  const written = await writeItem(planned, after + 1);
+  withNew[after + 1] = { ...item, [kind.typeKey]: written.type, content: written.content, sources: written.sources };
+
+  const latest = await getGenerationByIdDb(generation.id);
+  const latestItems = [...(latest.outline?.[kind.listKey] || [])];
+  latestItems.splice(after + 1, 0, withNew[after + 1]);
+  await updateGenerationDb(generation.id, { outline: JSON.stringify({ ...latest.outline, [kind.listKey]: latestItems }) });
+  res.status(201).json(responseFactory.createJsonResponse({ index: after + 1, item: withNew[after + 1] }));
 }
 
 async function editSlideChat(req, res) {
@@ -357,9 +344,9 @@ const openInWordCraft = (req, res) => openInDesktopApp(req, res, config.wordCraf
 // normal outline save, which keeps undo working.
 async function renderDiagramCode(req, res) {
   const { mermaid_code: code } = req.body;
-  await getGenerationByIdDb(req.params.id); // 404s for unknown generations
+  const generation = await getGenerationByIdDb(req.params.id);
   try {
-    const key = await renderDiagram(req.params.id, code);
+    const key = await renderDiagram(generation, code);
     res.json(responseFactory.createJsonResponse({ diagram_file: key }));
   } catch (err) {
     if (err instanceof DiagramSyntaxError) {
@@ -370,13 +357,11 @@ async function renderDiagramCode(req, res) {
 }
 
 async function serveDiagram(req, res) {
-  const filePath = diagramPath(req.params.id, req.params.key);
-  if (!filePath) return res.status(400).json(responseFactory.createJsonResponse(null, { message: 'Invalid diagram id' }));
-  try {
-    await access(filePath);
-  } catch {
-    return res.status(404).json(responseFactory.createJsonResponse(null, { message: 'Diagram not found' }));
-  }
+  const generation = await getGenerationByIdDb(req.params.id);
+  // ?template= picks the colours (the client passes the deck's template, which also busts the browser cache).
+  const template = String(req.query.template || generation.brief?.template || '');
+  const filePath = await ensureDiagramFile({ ...generation, brief: { ...generation.brief, template } }, req.params.key);
+  if (!filePath) return res.status(404).json(responseFactory.createJsonResponse(null, { message: 'Diagram not found' }));
   if (req.query.download) {
     const name = String(req.query.name || 'diagram').replace(/[^a-zA-Z0-9 _-]/g, '').slice(0, 60).trim() || 'diagram';
     return res.download(filePath, `${name}.png`);
@@ -490,17 +475,16 @@ async function deleteGeneration(req, res) {
 export default {
   createGeneration,
   getGeneration,
+  getTemplates,
   listGenerations,
   updateOutline,
   updateBrief,
-  regenerateQuestions,
-  createStoryline,
-  updateStoryline,
   createOutline,
   refreshItemSources,
   findSources,
   writeSSE,
   regenerateItem,
+  addItem,
   editSlideChat,
   editSectionChat,
   downloadFile,

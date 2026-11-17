@@ -41,6 +41,28 @@ FONT_HEADING = 'Calibri'
 FONT_BODY    = 'Calibri'
 
 
+def hex_color(value):
+    value = value.lstrip('#')
+    return RGBColor(int(value[0:2], 16), int(value[2:4], 16), int(value[4:6], 16))
+
+
+def apply_theme(theme):
+    """Swap the design tokens for a template from templates/themes.json. The layout renderers read these
+    module globals at call time, so every slide picks up the template."""
+    global NAVY, NAVY_MID, NAVY_LIGHT, COBALT, COBALT_LT, SLATE, SLATE_LT, BORDER, CANVAS, WHITE, GREEN, AMBER
+    global FONT_HEADING, FONT_BODY
+    if not theme:
+        return
+    c = theme['colors']
+    NAVY, NAVY_MID, NAVY_LIGHT = hex_color(c['primary']), hex_color(c['primary_mid']), hex_color(c['primary_light'])
+    COBALT, COBALT_LT = hex_color(c['accent']), hex_color(c['accent_light'])
+    SLATE, SLATE_LT = hex_color(c['text']), hex_color(c['text_light'])
+    BORDER, CANVAS, WHITE = hex_color(c['border']), hex_color(c['canvas']), hex_color(c['surface'])
+    GREEN, AMBER = hex_color(c['positive']), hex_color(c['warning'])
+    FONT_HEADING = theme['fonts']['heading']
+    FONT_BODY = theme['fonts']['body']
+
+
 # ── Helpers ──
 
 def set_slide_bg(slide, color):
@@ -50,8 +72,9 @@ def set_slide_bg(slide, color):
 
 
 def add_textbox(slide, left, top, width, height, text, font_size=18,
-                bold=False, color=NAVY, alignment=PP_ALIGN.LEFT,
+                bold=False, color=None, alignment=PP_ALIGN.LEFT,
                 font_name=None, italic=False, anchor=None):
+    color = color or NAVY  # resolved at call time so the template applies
     txBox = slide.shapes.add_textbox(left, top, width, height)
     tf = txBox.text_frame
     tf.word_wrap = True
@@ -887,6 +910,7 @@ def render_deck(outline, output_path, template_path=None):
 
     blank_layout = prs.slide_layouts[6]  # blank layout
 
+    apply_theme(outline.get('theme'))
     slides_data = outline.get('slides', [])
     total = len(slides_data)
 
