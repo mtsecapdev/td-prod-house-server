@@ -41,8 +41,8 @@ const uploadDocumentsPost = [
     }));
 
     try {
-      const { markdown, pageCount, pageMarkers } = await extractMarkdownFromFile(filePath, originalname);
-      const chunks = await splitMarkdown(markdown, pageMarkers);
+      const { markdown, pageCount, pageStarts } = await extractMarkdownFromFile(filePath, originalname);
+      const chunks = await splitMarkdown(markdown, pageStarts);
       const embeddings = await requestEmbeddingBatch(chunks.map((c) => enrichTextForEmbedding(c.text, c)));
 
       for (let i = 0; i < chunks.length; i++) {
@@ -182,14 +182,14 @@ const uploadDocumentsStream = [
     const aborted = async () => !(await documentExistsDb(docId));
 
     try {
-      const { markdown, pageCount, pageMarkers } = await extractMarkdownFromFile(filePath, originalname, (progress) => {
+      const { markdown, pageCount, pageStarts } = await extractMarkdownFromFile(filePath, originalname, (progress) => {
         send(progress);
       });
 
       if (await aborted()) { send({ phase: 'error', message: 'Document was deleted' }); res.end(); return; }
 
       send({ phase: 'chunking', message: 'Splitting into text chunks...' });
-      const chunks = await splitMarkdown(markdown, pageMarkers);
+      const chunks = await splitMarkdown(markdown, pageStarts);
 
       if (await aborted()) { send({ phase: 'error', message: 'Document was deleted' }); res.end(); return; }
 

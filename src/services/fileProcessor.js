@@ -8,6 +8,8 @@ import config from '../config.js';
 
 const execFileAsync = promisify(execFile);
 const PAGES_PER_CHUNK = 25;
+// Docling inserts this between pages; we strip it and keep page start offsets instead.
+const PAGE_BREAK = '<!-- page-break -->';
 const SPLIT_SCRIPT = path.join(import.meta.dirname, '../../scripts/split_pdf.py');
 
 export async function extractMarkdownFromFile(filePath, filename, onProgress) {
@@ -39,24 +41,26 @@ async function extractLargePdf(filePath, filename, totalPages, onProgress) {
     const { chunks } = JSON.parse(stdout);
 
     let allMarkdown = '';
-    const allMarkers = [];
+    const allPageStarts = [];
     let pageOffset = 0;
 
     for (let i = 0; i < chunks.length; i++) {
       if (onProgress) onProgress({ phase: 'converting', current: i + 1, total: chunks.length, message: `Converting section ${i + 1} of ${chunks.length}...` });
       const chunkPath = path.join(tmpDir, chunks[i]);
       const chunkBuffer = await fs.readFile(chunkPath);
-      const { markdown, pageMarkers } = await extractMarkdownFromBuffer(chunkBuffer, chunks[i]);
+      const { markdown, pageStarts } = await extractMarkdownFromBuffer(chunkBuffer, chunks[i]);
 
-      allMarkdown += (allMarkdown ? '\n\n' : '') + markdown;
+      if (allMarkdown) allMarkdown += '\n\n';
+      const base = allMarkdown.length;
+      allMarkdown += markdown;
 
-      for (const m of pageMarkers) {
-        allMarkers.push({ page: m.page + pageOffset, snippet: m.snippet });
+      for (const p of pageStarts) {
+        allPageStarts.push({ page: p.page + pageOffset, offset: p.offset + base });
       }
       pageOffset += PAGES_PER_CHUNK;
     }
 
-    return { markdown: allMarkdown, pageCount: totalPages, pageMarkers: allMarkers };
+    return { markdown: allMarkdown, pageCount: totalPages, pageStarts: allPageStarts };
   } finally {
     await fs.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
   }
@@ -73,8 +77,9 @@ export async function extractMarkdownFromBuffer(buffer, filename) {
   const blob = new Blob([buffer]);
   form.append('files', blob, filename);
   form.append('to_formats', 'md');
-  // JSON output carries page provenance (texts[].prov[].page_no) used for page markers.
+  // JSON output is used for the page count.
   form.append('to_formats', 'json');
+  form.append('md_page_break_placeholder', PAGE_BREAK);
 
   try {
     const res = await fetch(config.docling.endpoint, {
@@ -89,11 +94,10 @@ export async function extractMarkdownFromBuffer(buffer, filename) {
     }
 
     const data = await res.json();
-    const md = cleanMarkdown(data.document.md_content);
+    const { markdown, pageStarts } = splitPages(data.document.md_content);
     const pageCount = extractPageCount(data);
-    const pageMarkers = extractPageMarkers(data);
 
-    return { markdown: md, pageCount, pageMarkers };
+    return { markdown, pageCount, pageStarts };
   } catch (err) {
     throw new AppError(
       `Docling service error. Original error message: ${err.message}`,
@@ -119,20 +123,24 @@ function extractPageCount(data) {
   }
 }
 
-function extractPageMarkers(data) {
-  try {
-    const items = data.document?.json_content?.texts ?? [];
-    const markers = [];
-    for (const item of items) {
-      const page = item.prov?.[0]?.page_no;
-      if (page && item.text) {
-        markers.push({ page, snippet: item.text.slice(0, 80) });
-      }
-    }
-    return markers;
-  } catch {
-    return [];
-  }
+/**
+ * Removes docling's page-break placeholders and records where each page starts in the
+ * resulting markdown, so chunks can be assigned pages by position (tables included).
+ * @returns {{ markdown: string, pageStarts: { page: number, offset: number }[] }}
+ */
+function splitPages(rawMarkdown) {
+  const pages = rawMarkdown.split(PAGE_BREAK).map(cleanMarkdown);
+  // Docling also emits a placeholder after the last page.
+  while (pages.length > 1 && pages[pages.length - 1] === '') pages.pop();
+
+  let markdown = '';
+  const pageStarts = [];
+  pages.forEach((text, i) => {
+    if (markdown && text) markdown += '\n\n';
+    pageStarts.push({ page: i + 1, offset: markdown.length });
+    markdown += text;
+  });
+  return { markdown, pageStarts };
 }
 
 function cleanMarkdown(markdown) {

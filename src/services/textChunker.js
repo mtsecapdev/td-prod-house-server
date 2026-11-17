@@ -9,39 +9,51 @@ const markdownSplitter = new MarkdownTextSplitter({
   keepSeparator: true,
 });
 
+const HEADING_RE = /^#{1,6}\s+(.+)$/gm;
+
 /**
+ * Splits markdown into chunks and labels each with the page and section heading in effect where
+ * the chunk starts. Both come from the chunk's position in the document, so a chunk that
+ * continues a table or section still gets the right page and heading.
  * @param {string} markdown
- * @param {{ page: number, snippet: string }[]} pageMarkers
- * @returns {{ text: string, page: number | null, heading: string | null }[]}
+ * @param {{ page: number, offset: number }[]} pageStarts  from fileProcessor, ascending by offset
+ * @returns {Promise<{ text: string, page: number | null, heading: string | null }[]>}
  */
-export async function splitMarkdown(markdown, pageMarkers = []) {
+export async function splitMarkdown(markdown, pageStarts = []) {
   const rawChunks = await markdownSplitter.splitText(markdown);
   const filtered = rawChunks.filter((chunk) => chunk.trim().length > 100);
+  const headings = [...markdown.matchAll(HEADING_RE)].map((m) => ({ offset: m.index, text: m[1].trim() }));
 
+  let searchFrom = 0;
   return filtered.map((text) => {
-    const page = guessPage(text, pageMarkers);
-    const heading = extractHeading(text);
-    return { text, page, heading };
+    const offset = findOffset(markdown, text, searchFrom);
+    if (offset === -1) {
+      // Should not happen; fall back to what the chunk itself contains.
+      return { text, page: null, heading: extractHeading(text) };
+    }
+    searchFrom = offset + 1; // chunks are in order; overlap means the next one starts after this start
+    return {
+      text,
+      page: lastAtOrBefore(pageStarts, offset)?.page ?? null,
+      heading: lastAtOrBefore(headings, offset)?.text ?? null,
+    };
   });
 }
 
-function guessPage(chunkText, markers) {
-  if (!markers.length) return null;
-  const sample = chunkText.slice(0, 120);
-  let best = null;
-  let bestScore = 0;
-  for (const m of markers) {
-    const words = m.snippet.split(/\s+/).slice(0, 6);
-    let matches = 0;
-    for (const w of words) {
-      if (w.length > 3 && sample.includes(w)) matches++;
-    }
-    if (matches > bestScore) {
-      bestScore = matches;
-      best = m.page;
-    }
+// The splitter can normalise whitespace where it joins pieces, so match on the chunk's opening text.
+function findOffset(markdown, chunk, from) {
+  const probe = chunk.trimStart().slice(0, 80);
+  const at = markdown.indexOf(probe, from);
+  return at !== -1 ? at : markdown.indexOf(probe);
+}
+
+function lastAtOrBefore(items, offset) {
+  let found = null;
+  for (const item of items) {
+    if (item.offset > offset) break;
+    found = item;
   }
-  return best;
+  return found;
 }
 
 function extractHeading(text) {

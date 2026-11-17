@@ -53,8 +53,10 @@ function groupBySection(chunks) {
   const sections = [];
   let current = { heading: null, chunks: [] };
 
+  // Continuation chunks carry their section's heading (textChunker), so start a new section
+  // only when the heading changes.
   for (const chunk of chunks) {
-    if (chunk.heading && current.chunks.length > 0) {
+    if (chunk.heading && chunk.heading !== current.heading && current.chunks.length > 0) {
       sections.push(current);
       current = { heading: chunk.heading, chunks: [chunk] };
     } else {

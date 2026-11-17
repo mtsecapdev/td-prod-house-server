@@ -58,8 +58,8 @@ async function ingestFile(filePath) {
   console.log(`  Processing: ${filename} (doc ${docId})`);
 
   try {
-    const { markdown, pageCount, pageMarkers } = await extractMarkdownFromFile(filePath, filename);
-    const chunks = await splitMarkdown(markdown, pageMarkers);
+    const { markdown, pageCount, pageStarts } = await extractMarkdownFromFile(filePath, filename);
+    const chunks = await splitMarkdown(markdown, pageStarts);
     const embeddings = await requestEmbeddingBatch(chunks.map((c) => enrichTextForEmbedding(c.text, c)));
 
     for (let i = 0; i < chunks.length; i++) {
