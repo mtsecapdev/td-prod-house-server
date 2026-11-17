@@ -56,6 +56,9 @@ export async function rewriteQuery(history, originalQuery) {
   }
 }
 
+const NOT_IN_DOCS_MARKER = '[NOT IN DOCUMENTS]';
+const NOT_IN_DOCS_RE = /\[\s*NOT[ _]IN[ _]DOCUMENTS\s*\]/gi;
+
 export async function generateAnswer(query, history, chunks) {
   let listOfChunks = '';
   let totalScore = 0;
@@ -84,10 +87,14 @@ export async function generateAnswer(query, history, chunks) {
     `- When the user asks to be taught something or to explain a topic, give a thorough answer using all relevant excerpts. Do not hold back content.\n` +
     `- For direct questions, be concise but substantive.\n` +
     `- Each excerpt is labelled with its page and section, e.g. [p. 4 · 2.4 Group at a glance]. ` +
-    `When you state a fact from the documents, cite its page in parentheses, e.g. (p. 4). ` +
+    `When you state a fact from the documents, cite only its page number in parentheses, e.g. (p. 4). ` +
     `When the user asks where something is stated, list the pages and section names. ` +
     `Never mention excerpts, chunks or their labels; the user cannot see them.\n` +
-    `- Use plain text only. Do not use markdown formatting (no **, *, #, or bullet symbols like -).\n\n` +
+    `- Use plain text only: no markdown (no **, *, # or - bullets). For a list, write numbered lines (1. 2. 3.).\n` +
+    `- Last step, always: decide whether the excerpts contain the answer. If they do not (the question is about ` +
+    `something the documents don't mention, or is unrelated to them, such as general trivia, and you answer from ` +
+    `general knowledge or say it isn't covered), end your reply with ${NOT_IN_DOCS_MARKER} on its own line. ` +
+    `Do not add it when the excerpts answer the question.\n\n` +
     `Document excerpts:\n` +
     listOfChunks;
 
@@ -96,7 +103,11 @@ export async function generateAnswer(query, history, chunks) {
       [{ role: 'system', content: systemPrompt }, ...history, { role: 'user', content: query }],
       generateModel,
     );
-    return { llmResponse, avgConfidenceScore };
+    // The model flags answers the excerpts don't support. Retrieval scores can't: unanswerable questions about
+    // the document's subject ("staff in Brazil?") score as high as answerable ones.
+    const grounded = !NOT_IN_DOCS_RE.test(llmResponse.content);
+    llmResponse.content = llmResponse.content.replace(NOT_IN_DOCS_RE, '').trimEnd();
+    return { llmResponse, avgConfidenceScore, grounded };
   } catch (error) {
     throw new AppError(`Answer generation failed: ${error.message}`, 503, error);
   }

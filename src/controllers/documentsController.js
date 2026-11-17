@@ -122,7 +122,7 @@ async function queryDocumentsPost(req, res) {
 
     send({ phase: 'generating' });
     // The rewrite is only for retrieval. Answer what the user actually asked; history supplies the context.
-    const { llmResponse, avgConfidenceScore } = await generateAnswer(
+    const { llmResponse, avgConfidenceScore, grounded } = await generateAnswer(
       originalQuery,
       history,
       finalChunks,
@@ -144,6 +144,7 @@ async function queryDocumentsPost(req, res) {
       ],
       chunks: chunksByDoc,
       avgConfidenceScore,
+      grounded,
     });
   } catch (err) {
     send({ phase: 'error', message: err.message });
