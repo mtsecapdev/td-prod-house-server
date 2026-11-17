@@ -18,8 +18,10 @@ import {
   withHeartbeat,
 } from '../db/generationsQueries.js';
 import { kindOf } from '../services/planning/kinds.js';
-import { planOutline, planOneItem, attachSources, searchSources, suggestTypes } from '../services/planning/planner.js';
-import { writeAll, writeItem } from '../services/planning/writer.js';
+import { planOutline, attachSources, searchSources, suggestTypes } from '../services/planning/planner.js';
+import { writeAll } from '../services/planning/writer.js';
+import { rewriteItem, insertItem } from '../services/planning/itemOps.js';
+import { planAgent, applyAgent, undoAgent } from '../services/planning/agent.js';
 import { startJob } from '../services/jobs.js';
 import { editSlide, editSection } from '../services/editChat.js';
 import { craftImagePrompt, generateImageFromPrompt } from '../services/imageGenerator.js';
@@ -227,34 +229,17 @@ async function watchWrite(id, kind, send, isOpen) {
   }
 }
 
-// Rewrites one slide/section from its plan, optionally with a note from the user.
+// Rewrites one slide/section from its plan, optionally with a note or a different layout.
 async function regenerateItem(req, res) {
   const generation = await getPlannable(req.params.id);
   const kind = kindOf(generation);
   const index = Number(req.params.index);
-  const items = generation.outline?.[kind.listKey] || [];
-  const item = items[index];
-  if (!item) throw new AppError(`${kind.noun} ${index + 1} not found`, 404);
+  if (!generation.outline?.[kind.listKey]?.[index]) throw new AppError(`${kind.noun} ${index + 1} not found`, 404);
   if (isJobLive(generation.job)) return busy(res, generation);
 
   const note = typeof req.body?.note === 'string' ? req.body.note.trim() : undefined;
-  const requestedType = req.body?.type; // "try a different layout"
-  const { type, content, sources } = await writeItem(generation, index, { note, type: requestedType });
-
-  const latest = await getGenerationByIdDb(generation.id);
-  const latestItems = [...latest.outline[kind.listKey]];
-  latestItems[index] = { ...latestItems[index], [kind.typeKey]: type, content, sources, ...(note !== undefined ? { note } : {}) };
-  const indexKey = kind.name === 'deck' ? 'slide_index' : 'section_index';
-  await updateGenerationDb(generation.id, {
-    outline: JSON.stringify({ ...latest.outline, [kind.listKey]: latestItems }),
-    edit_history: [...(latest.edit_history || []), {
-      [indexKey]: index,
-      instruction: requestedType ? `Change layout to ${type}` : note ? `Regenerate: ${note}` : 'Regenerate',
-      before: item.content,
-      timestamp: new Date().toISOString(),
-    }],
-  });
-  res.json(responseFactory.createJsonResponse({ item: latestItems[index] }));
+  const item = await rewriteItem(generation.id, index, { note, type: req.body?.type });
+  res.json(responseFactory.createJsonResponse({ item }));
 }
 
 // Remix: the best other layouts for one slide/section, with reasons. ?visual=1 limits to visual layouts.
@@ -273,20 +258,39 @@ async function addItem(req, res) {
   if (isJobLive(generation.job)) return busy(res, generation);
 
   const items = generation.outline?.[kind.listKey] || [];
-  const after = Math.min(Math.max(Number(req.body?.after ?? items.length - 1), -1), items.length - 1);
-  const item = await planOneItem(generation, description, after);
+  const result = await insertItem(generation.id, req.body?.after ?? items.length - 1, description);
+  res.status(201).json(responseFactory.createJsonResponse(result));
+}
 
-  const withNew = [...items];
-  withNew.splice(after + 1, 0, item);
-  const planned = { ...generation, outline: { ...generation.outline, [kind.listKey]: withNew } };
-  const written = await writeItem(planned, after + 1);
-  withNew[after + 1] = { ...item, [kind.typeKey]: written.type, content: written.content, sources: written.sources };
+// ── Deck-wide agent ──
 
-  const latest = await getGenerationByIdDb(generation.id);
-  const latestItems = [...(latest.outline?.[kind.listKey] || [])];
-  latestItems.splice(after + 1, 0, withNew[after + 1]);
-  await updateGenerationDb(generation.id, { outline: JSON.stringify({ ...latest.outline, [kind.listKey]: latestItems }) });
-  res.status(201).json(responseFactory.createJsonResponse({ index: after + 1, item: withNew[after + 1] }));
+// Proposes the steps for a deck-wide request. Nothing changes until /agent/apply.
+async function agentPlan(req, res) {
+  const generation = await getPlannable(req.params.id);
+  const instruction = String(req.body?.instruction || '').trim();
+  if (!instruction) throw new AppError('Say what to change', 400);
+  if (isJobLive(generation.job)) return busy(res, generation);
+  res.json(responseFactory.createJsonResponse(await planAgent(generation, instruction)));
+}
+
+// Applies the steps the user kept, as a background job; poll the generation to watch items change.
+async function agentApply(req, res) {
+  const generation = await getPlannable(req.params.id);
+  const steps = Array.isArray(req.body?.steps) ? req.body.steps : [];
+  if (!steps.length) throw new AppError('No steps to apply', 400);
+  const started = await startJob(generation.id, 'agent', async () => {
+    await applyAgent(generation.id, steps);
+    return {};
+  });
+  if (!started) return busy(res, generation);
+  res.status(202).json(responseFactory.createJsonResponse({ generation: presentGeneration(await getGenerationByIdDb(generation.id)) }));
+}
+
+async function agentUndo(req, res) {
+  const generation = await getPlannable(req.params.id);
+  if (isJobLive(generation.job)) return busy(res, generation);
+  await undoAgent(generation.id);
+  res.json(responseFactory.createJsonResponse({ generation: await getGenerationByIdDb(generation.id) }));
 }
 
 async function editSlideChat(req, res) {
@@ -498,6 +502,9 @@ export default {
   regenerateItem,
   suggestLayouts,
   addItem,
+  agentPlan,
+  agentApply,
+  agentUndo,
   editSlideChat,
   editSectionChat,
   downloadFile,

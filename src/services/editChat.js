@@ -18,8 +18,10 @@ export async function editSlide(generationId, slideIndex, instruction, history =
   const schema = LAYOUT_SCHEMAS[layout];
   if (!schema) throw new Error(`Unknown layout: ${layout}`);
 
-  const instructionEmbedding = await requestEmbedding(instruction);
-  const chunks = await getSimilarChunksDb(instructionEmbedding, 3, docIds);
+  // Sources for the edit, when the generation has documents (pasted-text decks may have none).
+  const chunks = docIds?.length && instruction.trim()
+    ? await getSimilarChunksDb(await requestEmbedding(instruction), 3, docIds)
+    : [];
 
   const context = chunks
     .map((c, i) => `[${i + 1}] (page ${c.page ?? '?'}): ${c.content}`)
@@ -119,8 +121,10 @@ export async function editSection(generationId, sectionIndex, instruction, histo
   const schema = SECTION_SCHEMAS[sType];
   if (!schema) throw new Error(`Unknown section type: ${sType}`);
 
-  const instructionEmbedding = await requestEmbedding(instruction);
-  const chunks = await getSimilarChunksDb(instructionEmbedding, 3, docIds);
+  // Sources for the edit, when the generation has documents (pasted-text decks may have none).
+  const chunks = docIds?.length && instruction.trim()
+    ? await getSimilarChunksDb(await requestEmbedding(instruction), 3, docIds)
+    : [];
 
   const context = chunks
     .map((c, i) => `[${i + 1}] (page ${c.page ?? '?'}): ${c.content}`)
