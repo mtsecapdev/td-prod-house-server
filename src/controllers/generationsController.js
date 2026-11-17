@@ -18,7 +18,7 @@ import {
   withHeartbeat,
 } from '../db/generationsQueries.js';
 import { kindOf } from '../services/planning/kinds.js';
-import { planOutline, planOneItem, attachSources, searchSources } from '../services/planning/planner.js';
+import { planOutline, planOneItem, attachSources, searchSources, suggestTypes } from '../services/planning/planner.js';
 import { writeAll, writeItem } from '../services/planning/writer.js';
 import { startJob } from '../services/jobs.js';
 import { editSlide, editSection } from '../services/editChat.js';
@@ -257,6 +257,13 @@ async function regenerateItem(req, res) {
   res.json(responseFactory.createJsonResponse({ item: latestItems[index] }));
 }
 
+// Remix: the best other layouts for one slide/section, with reasons. ?visual=1 limits to visual layouts.
+async function suggestLayouts(req, res) {
+  const generation = await getPlannable(req.params.id);
+  const suggestions = await suggestTypes(generation, Number(req.params.index), { visualOnly: req.query.visual === '1' });
+  res.json(responseFactory.createJsonResponse({ suggestions }));
+}
+
 // "Add with AI": plans one new slide/section from a description, writes it, and inserts it after `after`.
 async function addItem(req, res) {
   const generation = await getPlannable(req.params.id);
@@ -489,6 +496,7 @@ export default {
   findSources,
   writeSSE,
   regenerateItem,
+  suggestLayouts,
   addItem,
   editSlideChat,
   editSectionChat,

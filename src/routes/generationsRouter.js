@@ -20,6 +20,8 @@ generationsRouter.get('/:id/sources', generationsController.findSources);
 generationsRouter.post('/:id/write', generationsController.writeSSE);
 generationsRouter.post('/:id/slides/:index/regenerate', generationsController.regenerateItem);
 generationsRouter.post('/:id/sections/:index/regenerate', generationsController.regenerateItem);
+generationsRouter.get('/:id/slides/:index/layouts', generationsController.suggestLayouts);
+generationsRouter.get('/:id/sections/:index/layouts', generationsController.suggestLayouts);
 generationsRouter.post('/:id/slides', generationsController.addItem);
 generationsRouter.post('/:id/sections', generationsController.addItem);
 generationsRouter.post('/:id/slides/:slideIndex/chat', generationsController.editSlideChat);

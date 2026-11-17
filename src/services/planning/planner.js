@@ -304,3 +304,50 @@ export async function searchSources(generation, q, limit = 8) {
   const rows = await getSourcePassagesDb(embedding, limit, generation.source_document_ids, q);
   return rows.map((r) => toSource(r, true));
 }
+
+// ── Layout suggestions (remix) ──
+
+// Layouts that show content as a picture or structure rather than text.
+const VISUAL_TYPES = {
+  deck: ['diagram', 'key_stats', 'stat_focus', 'process_flow', 'timeline', 'comparison_table', 'icon_grid', 'two_column'],
+  doc: ['diagram', 'reference_table', 'procedure', 'key_points'],
+};
+
+/**
+ * The layouts (other than the current one) that would present this item best, each with a reason.
+ * With visualOnly, only layouts that turn text into a picture or structure ("Make visual").
+ */
+export async function suggestTypes(generation, index, { visualOnly = false } = {}) {
+  const kind = kindOf(generation);
+  const item = generation.outline?.[kind.listKey]?.[index];
+  if (!item) throw new Error(`${kind.noun} ${index + 1} not found`);
+  const current = item[kind.typeKey];
+  const candidates = (visualOnly ? VISUAL_TYPES[kind.name] : kind.types)
+    .filter((t) => t !== current && t !== kind.firstType && t !== kind.lastType);
+  const { source_chunk_ids: _ids, used_pages: _pages, diagram_file: _d, speaker_notes: _n, ...content } = item.content || {};
+
+  const prompt =
+    `A ${kind.noun} in a ${kind.product} currently uses the "${current}" layout.\n\n` +
+    `Title: ${item.title}\nContent:\n${JSON.stringify(content, null, 2)}\n\n` +
+    `Layouts to choose from:\n${candidates.map((t) => `- "${t}": ${kind.typeGuide[t]}`).join('\n')}\n\n` +
+    `Pick the ${Math.min(3, candidates.length)} layouts that would present this content best, best first. ` +
+    `For each give a one-line reason a user would understand, e.g. "The four steps read as a sequence".`;
+  const schema = {
+    type: 'object',
+    properties: {
+      suggestions: {
+        type: 'array',
+        maxItems: 3,
+        items: {
+          type: 'object',
+          properties: { type: { type: 'string', enum: candidates }, reason: { type: 'string' } },
+          required: ['type', 'reason'],
+        },
+      },
+    },
+    required: ['suggestions'],
+  };
+  const result = await generateStructured(prompt, generateModel, schema, { think: false });
+  const seen = new Set();
+  return (result.suggestions || []).filter((s) => candidates.includes(s.type) && !seen.has(s.type) && seen.add(s.type));
+}
