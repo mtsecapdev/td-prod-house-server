@@ -15,7 +15,7 @@ export const bodySectionSchema = {
   properties: {
     title: { type: 'string' },
     paragraphs: {
-      type: 'array',
+      type: 'array', maxItems: 5,
       items: {
         type: 'object',
         properties: {
@@ -36,7 +36,7 @@ export const procedureSectionSchema = {
     title:        { type: 'string' },
     introduction: { type: 'string' },
     steps: {
-      type: 'array',
+      type: 'array', maxItems: 12,
       items: {
         type: 'object',
         properties: {
@@ -59,7 +59,7 @@ export const keyPointsSectionSchema = {
     title:        { type: 'string' },
     introduction: { type: 'string' },
     points: {
-      type: 'array',
+      type: 'array', maxItems: 8,
       items: {
         type: 'object',
         properties: {
@@ -79,9 +79,9 @@ export const referenceTableSectionSchema = {
   properties: {
     title:        { type: 'string' },
     introduction: { type: 'string' },
-    columns:      { type: 'array', items: { type: 'string' } },
+    columns:      { type: 'array', maxItems: 6, items: { type: 'string' } },
     rows: {
-      type: 'array',
+      type: 'array', maxItems: 15,
       items: {
         type: 'array',
         items: { type: 'string' },
@@ -96,7 +96,7 @@ export const summarySectionSchema = {
   type: 'object',
   properties: {
     title:         { type: 'string' },
-    recap_points:  { type: 'array', items: { type: 'string' } },
+    recap_points:  { type: 'array', maxItems: 6, items: { type: 'string' } },
     next_steps:    { type: 'string' },
     notes:         { type: 'string' },
   },

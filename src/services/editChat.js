@@ -5,6 +5,7 @@ import { getGenerationByIdDb, updateGenerationDb } from '../db/generationsQuerie
 import { LAYOUT_SCHEMAS } from './slideSchemas.js';
 import { SECTION_SCHEMAS } from './docSchemas.js';
 import { mermaidGuide, renderWithRepair, DiagramSyntaxError } from './diagrams.js';
+import { DECK_LIMITS, DOC_LIMITS, fitContent } from './planning/fit.js';
 
 export async function editSlide(generationId, slideIndex, instruction, history = []) {
   const generation = await getGenerationByIdDb(generationId);
@@ -71,6 +72,7 @@ export async function editSlide(generationId, slideIndex, instruction, history =
   ];
 
   let updatedContent = await chatStructured(messages, config.ollama.generateModel, schema, { think: true });
+  updatedContent = await fitContent(DECK_LIMITS[layout], schema, updatedContent);
   if (layout === 'diagram') updatedContent = await renderEditedDiagram(generation, updatedContent, schema);
 
   const updatedSlides = [...outline.slides];
@@ -152,6 +154,7 @@ export async function editSection(generationId, sectionIndex, instruction, histo
   ];
 
   let updatedContent = await chatStructured(messages, config.ollama.generateModel, schema, { think: true });
+  updatedContent = await fitContent(DOC_LIMITS[sType], schema, updatedContent);
   if (sType === 'diagram') updatedContent = await renderEditedDiagram(generation, updatedContent, schema);
 
   const updatedSections = [...outline.sections];

@@ -8,6 +8,7 @@ import { chatStructured, requestEmbedding } from '../llm.js';
 import { getChunksByIdsDb, getSourcePassagesDb } from '../../db/chunksQueries.js';
 import { renderWithRepair, DiagramSyntaxError } from '../diagrams.js';
 import { kindOf, styleGuide, briefBlock, storylineBlock } from './kinds.js';
+import { fitContent } from './fit.js';
 import { sourceQuery } from './planner.js';
 
 const { generateModel } = config.ollama;
@@ -104,14 +105,12 @@ async function writeAs(generation, kind, index, type, { note } = {}) {
 
   const schema = kind.schemas[type];
   const result = await chatStructured(messages, generateModel, schema, { think: true });
-  return {
-    content: {
-      ...result,
-      source_chunk_ids: rows.map((r) => r.id),
-      used_pages: [...new Set(rows.map((r) => r.page).filter((p) => p != null))].sort((a, b) => a - b),
-    },
-    sources,
-  };
+  const content = await fitContent(kind.limits[type], schema, {
+    ...result,
+    source_chunk_ids: rows.map((r) => r.id),
+    used_pages: [...new Set(rows.map((r) => r.page).filter((p) => p != null))].sort((a, b) => a - b),
+  });
+  return { content, sources };
 }
 
 /**

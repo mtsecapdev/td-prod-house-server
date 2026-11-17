@@ -3,6 +3,7 @@
 import { LAYOUT_SCHEMAS, LAYOUT_TYPES } from '../slideSchemas.js';
 import { SECTION_SCHEMAS, SECTION_TYPES } from '../docSchemas.js';
 import { mermaidGuide } from '../diagrams.js';
+import { DECK_LIMITS, DOC_LIMITS } from './fit.js';
 
 const DECK = {
   name: 'deck',
@@ -13,6 +14,7 @@ const DECK = {
   typeKey: 'layout',
   types: LAYOUT_TYPES,
   schemas: LAYOUT_SCHEMAS,
+  limits: DECK_LIMITS,
   defaultType: 'bullets',
   firstType: 'title',
   lastType: 'closing',
@@ -85,6 +87,7 @@ const DOC = {
   typeKey: 'section_type',
   types: SECTION_TYPES,
   schemas: SECTION_SCHEMAS,
+  limits: DOC_LIMITS,
   defaultType: 'body',
   firstType: 'heading',
   lastType: 'summary',

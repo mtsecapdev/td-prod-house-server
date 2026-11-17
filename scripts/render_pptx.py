@@ -71,10 +71,28 @@ def set_slide_bg(slide, color):
     fill.fore_color.rgb = color
 
 
+def fitted_size(text, width, height, size, min_ratio=0.6):
+    """Largest font size (down to min_ratio of `size`) at which `text` is estimated to fit the box.
+    A safety net: the writer already keeps text within each layout's limits."""
+    if not text:
+        return size
+    w_pt = int(width) / 12700 - 14.4   # box width minus default side insets (0.1in each)
+    h_pt = int(height) / 12700 - 7.2   # box height minus top/bottom insets
+    s = size
+    while s > size * min_ratio:
+        per_line = max(1, int(w_pt / (s * 0.52)))   # average glyph ~0.52em wide
+        lines = sum(max(1, -(-len(par) // per_line)) for par in str(text).split('\n'))
+        if lines * s * 1.2 <= h_pt:
+            break
+        s -= 1
+    return s
+
+
 def add_textbox(slide, left, top, width, height, text, font_size=18,
                 bold=False, color=None, alignment=PP_ALIGN.LEFT,
                 font_name=None, italic=False, anchor=None):
     color = color or NAVY  # resolved at call time so the template applies
+    font_size = fitted_size(text, width, height, font_size)
     txBox = slide.shapes.add_textbox(left, top, width, height)
     tf = txBox.text_frame
     tf.word_wrap = True

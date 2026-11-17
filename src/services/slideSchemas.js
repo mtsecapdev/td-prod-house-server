@@ -14,7 +14,7 @@ export const bulletsSlideSchema = {
   properties: {
     title: { type: 'string' },
     bullets: {
-      type: 'array',
+      type: 'array', maxItems: 6,
       items: {
         type: 'object',
         properties: {
@@ -34,9 +34,9 @@ export const twoColumnSlideSchema = {
   properties: {
     title:             { type: 'string' },
     column_a_heading:  { type: 'string' },
-    column_a_bullets:  { type: 'array', items: { type: 'string' } },
+    column_a_bullets:  { type: 'array', maxItems: 5, items: { type: 'string' } },
     column_b_heading:  { type: 'string' },
-    column_b_bullets:  { type: 'array', items: { type: 'string' } },
+    column_b_bullets:  { type: 'array', maxItems: 5, items: { type: 'string' } },
     verdict:           { type: 'string' }, // optional one-line takeaway under the columns
     speaker_notes:     { type: 'string' },
   },
@@ -72,7 +72,7 @@ export const checklistSlideSchema = {
   properties: {
     title: { type: 'string' },
     items: {
-      type: 'array',
+      type: 'array', maxItems: 8,
       items: {
         type: 'object',
         properties: {
@@ -111,7 +111,7 @@ export const timelineSlideSchema = {
   properties: {
     title: { type: 'string' },
     events: {
-      type: 'array',
+      type: 'array', maxItems: 7,
       items: {
         type: 'object',
         properties: {
@@ -132,7 +132,7 @@ export const processFlowSlideSchema = {
   properties: {
     title: { type: 'string' },
     steps: {
-      type: 'array',
+      type: 'array', maxItems: 7,
       items: {
         type: 'object',
         properties: {
@@ -152,7 +152,7 @@ export const iconGridSlideSchema = {
   properties: {
     title: { type: 'string' },
     items: {
-      type: 'array',
+      type: 'array', maxItems: 6,
       items: {
         type: 'object',
         properties: {
@@ -172,9 +172,9 @@ export const comparisonTableSlideSchema = {
   type: 'object',
   properties: {
     title:   { type: 'string' },
-    columns: { type: 'array', items: { type: 'string' } },
+    columns: { type: 'array', maxItems: 5, items: { type: 'string' } },
     rows: {
-      type: 'array',
+      type: 'array', maxItems: 7,
       items: {
         type: 'array',
         items: { type: 'string' },
@@ -190,7 +190,7 @@ export const closingSlideSchema = {
   properties: {
     title:      { type: 'string' },
     takeaways:  {
-      type: 'array',
+      type: 'array', maxItems: 5,
       items: { type: 'string' },
     },
     call_to_action: { type: 'string' },
@@ -204,7 +204,7 @@ export const keyStatsSlideSchema = {
   properties: {
     title: { type: 'string' },
     stats: {
-      type: 'array',
+      type: 'array', maxItems: 6,
       items: {
         type: 'object',
         properties: {
