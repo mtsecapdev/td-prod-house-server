@@ -66,3 +66,72 @@ export async function getNeighborChunksDb(chunkId, documentId, radius = 3) {
   );
   return res.rows;
 }
+
+/**
+ * The document map used for planning: each document's overview and its section summaries, in reading order.
+ * With topicEmbedding and more than `limit` sections, keeps the `limit` sections closest to the topic.
+ */
+export async function getDocumentMapDb(docIds, { topicEmbedding, limit = 40 } = {}) {
+  const overviews = await pool.query(
+    `SELECT c.document_id, d.name, c.content
+     FROM chunks c JOIN documents d ON d.id = c.document_id
+     WHERE c.document_id = ANY($1) AND c.level = 'document'
+     ORDER BY c.document_id`,
+    [docIds],
+  );
+
+  const count = await pool.query(
+    `SELECT count(*)::int AS n FROM chunks WHERE document_id = ANY($1) AND level = 'section'`,
+    [docIds],
+  );
+  const ranked = topicEmbedding && count.rows[0].n > limit;
+
+  const sections = ranked
+    ? await pool.query(
+      `SELECT * FROM (
+         SELECT c.id, c.document_id, d.name AS document_name, c.content, c.page, c.heading
+         FROM chunks c JOIN documents d ON d.id = c.document_id
+         WHERE c.document_id = ANY($1) AND c.level = 'section'
+         ORDER BY c.embedding <=> $2 LIMIT $3
+       ) s ORDER BY document_id, id`,
+      [docIds, pgvector.toSql(topicEmbedding), limit],
+    )
+    : await pool.query(
+      `SELECT c.id, c.document_id, d.name AS document_name, c.content, c.page, c.heading
+       FROM chunks c JOIN documents d ON d.id = c.document_id
+       WHERE c.document_id = ANY($1) AND c.level = 'section'
+       ORDER BY c.document_id, c.id`,
+      [docIds],
+    );
+
+  return {
+    overviews: overviews.rows,
+    sections: sections.rows.map((r) => ({ ...r, heading: (r.heading || '').replace(/^Summary:\s*/, '') || 'Section' })),
+    truncated: ranked,
+  };
+}
+
+/** Passages (leaf chunks only) for a slide or section, ranked like chat search: meaning + keywords. */
+export async function getSourcePassagesDb(queryEmbedding, k, docIds, queryText) {
+  const res = await pool.query(
+    `SELECT id, document_id, content, page, heading,
+       (1 - (embedding <=> $1)) * ${VECTOR_WEIGHT}
+       + coalesce(ts_rank(tsv, websearch_to_tsquery('english', $4)), 0) * ${TEXT_WEIGHT} AS similarity
+     FROM chunks
+     WHERE document_id = ANY($3) AND level = 'leaf'
+     ORDER BY similarity DESC
+     LIMIT $2`,
+    [pgvector.toSql(queryEmbedding), k, docIds, queryText || ''],
+  );
+  return res.rows;
+}
+
+export async function getChunksByIdsDb(ids) {
+  if (!ids?.length) return [];
+  const res = await pool.query(
+    `SELECT id, document_id, content, page, heading FROM chunks WHERE id = ANY($1)`,
+    [ids.map(Number)],
+  );
+  const byId = new Map(res.rows.map((r) => [r.id, r]));
+  return ids.map((id) => byId.get(Number(id))).filter(Boolean); // keep the caller's order
+}

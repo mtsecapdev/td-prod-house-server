@@ -13,6 +13,9 @@ const config = {
     rewriteModel: required('REWRITE_QUERY_MODEL_NAME'),
     generateModel: required('GENERATE_MODEL_NAME'),
     numCtx: Number(process.env.OLLAMA_NUM_CTX ?? 32768),
+    // Max tokens per call, thinking included. Stops runaway reasoning loops.
+    numPredict: Number(process.env.OLLAMA_NUM_PREDICT ?? 8192),
+    requestTimeoutMs: Number(process.env.OLLAMA_TIMEOUT_MS ?? 600_000),
     // Must match the embedding model's output size (bge-m3: 1024, nomic-embed-text: 768).
     // After changing model/dim, run `npm run reembed`.
     embeddingDim: Number(process.env.EMBEDDING_DIM ?? 1024),

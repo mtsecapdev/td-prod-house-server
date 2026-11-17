@@ -1,0 +1,162 @@
+// Writes slides / sections from the agreed plan. Each item is written with the whole plan in view (brief,
+// storyline, full outline), a one-line summary of every item already written, and its own pinned sources.
+//
+// Prompt order matters for scale: the system prompt and the plan block are identical for every item in a
+// generation, so llama.cpp / vLLM can reuse them from their prompt cache. Item-specific text comes last.
+import config from '../../config.js';
+import { chatStructured, requestEmbedding } from '../llm.js';
+import { getChunksByIdsDb, getSourcePassagesDb } from '../../db/chunksQueries.js';
+import { renderWithRepair, DiagramSyntaxError } from '../diagrams.js';
+import { kindOf, styleGuide, briefBlock, storylineBlock } from './kinds.js';
+import { sourceQuery } from './planner.js';
+
+const { generateModel } = config.ollama;
+const FIGURE_RE = /[€$£]?\d[\d,.]*\s?(?:%|[MBK]\b|bn\b|million\b|billion\b)?/g;
+
+function systemPrompt(kind, generation) {
+  return (
+    `You are an expert instructional designer writing one ${kind.noun} of a ${kind.product}. ` +
+    `Return only JSON matching the schema.\n\n${styleGuide(kind, generation.brief)}`
+  );
+}
+
+function planBlock(kind, generation) {
+  const items = generation.outline[kind.listKey];
+  const outlineLines = items.map((it, i) =>
+    `${i + 1}. ${it[kind.typeKey]} | ${it.title} | ${it.point || it.intent || ''}`).join('\n');
+  return [
+    `Brief:\n${briefBlock(generation)}`,
+    generation.storyline ? `Storyline:\n${storylineBlock(generation.storyline)}` : '',
+    `Full outline (${kind.nounPlural} in order: type | title | point):\n${outlineLines}`,
+  ].filter(Boolean).join('\n\n');
+}
+
+function textOf(content) {
+  const out = [];
+  const skip = new Set(['source_chunk_ids', 'used_pages', 'speaker_notes', 'mermaid_code', 'diagram_file', 'diagram_type']);
+  (function walk(v, key) {
+    if (skip.has(key)) return;
+    if (typeof v === 'string') out.push(v);
+    else if (Array.isArray(v)) v.forEach((x) => walk(x));
+    else if (v && typeof v === 'object') Object.entries(v).forEach(([k, x]) => walk(x, k));
+  })(content);
+  return out.join(' ');
+}
+
+/** One line per item already written, so the model builds on them instead of repeating them. */
+function writtenBlock(kind, items, uptoIndex) {
+  const lines = [];
+  for (let i = 0; i < uptoIndex; i++) {
+    const it = items[i];
+    if (!it.content) continue;
+    const figures = [...new Set(textOf(it.content).match(FIGURE_RE) || [])]
+      .map((f) => f.trim()).filter((f) => f.length > 1).slice(0, 8);
+    lines.push(`${i + 1}. ${it.content.title || it.content.statement || it.title}: ${it.point || it.intent || ''}` +
+      (figures.length ? ` Figures used: ${figures.join(', ')}.` : ''));
+  }
+  return lines.length ? lines.join('\n') : '(none yet)';
+}
+
+async function sourcesFor(generation, kind, item) {
+  if (item.sources?.length) return { rows: await getChunksByIdsDb(item.sources.map((s) => s.chunk_id)), sources: item.sources };
+  if (kind.noSourceTypes.includes(item[kind.typeKey])) return { rows: [], sources: [] };
+  // Older generations (before planning) have no stored sources: search as the old flow did.
+  const q = sourceQuery(item);
+  const rows = await getSourcePassagesDb(await requestEmbedding(q), kind.sourcesPerItem, generation.source_document_ids, q);
+  return {
+    rows,
+    sources: rows.map((r) => ({ chunk_id: r.id, page: r.page, heading: r.heading, preview: r.content.slice(0, 220), pinned: false })),
+  };
+}
+
+async function writeAs(generation, kind, index, type, { note } = {}) {
+  const items = generation.outline[kind.listKey];
+  const item = items[index];
+  const { rows, sources } = await sourcesFor(generation, kind, item);
+  const message = generation.storyline?.messages?.find((m) => m.id === item.message_id);
+  const userNote = note ?? item.note;
+
+  const sourceText = rows.length
+    ? rows.map((r) => `[p. ${r.page ?? '?'}${r.heading ? ` · ${r.heading}` : ''}]\n${r.content}`).join('\n\n')
+    : `(No sources for this ${kind.noun}: build it from the plan and the ${kind.nounPlural} already written.)`;
+
+  const itemBlock = [
+    `Write ${kind.noun} ${index + 1} of ${items.length}` +
+      (message ? `, which supports key message ${message.id}: "${message.text}"` : '') + '.',
+    `Planned title (improve it if you can): ${item.title}`,
+    `Point it must make: ${item.point || item.intent || ''}`,
+    item.talking_points?.length ? `Talking points:\n${item.talking_points.map((t) => `- ${t}`).join('\n')}` : '',
+    userNote ? `Note from the user (follow it): ${userNote}` : '',
+    `Type: ${type}. How to fill it: ${kind.writeGuide[type] || ''}`,
+    `Do not repeat points or figures the earlier ${kind.nounPlural} already made unless this one builds on them.`,
+    `Sources for this ${kind.noun}:\n${sourceText}`,
+  ].filter(Boolean).join('\n\n');
+
+  const messages = [
+    { role: 'system', content: systemPrompt(kind, generation) },
+    {
+      role: 'user',
+      content:
+        `PLAN\n${planBlock(kind, generation)}\n\n---\n\n` +
+        `ALREADY WRITTEN\n${writtenBlock(kind, items, index)}\n\n---\n\n${itemBlock}`,
+    },
+  ];
+
+  const schema = kind.schemas[type];
+  const result = await chatStructured(messages, generateModel, schema, { think: true });
+  return {
+    content: {
+      ...result,
+      source_chunk_ids: rows.map((r) => r.id),
+      used_pages: [...new Set(rows.map((r) => r.page).filter((p) => p != null))].sort((a, b) => a - b),
+    },
+    sources,
+  };
+}
+
+/**
+ * Writes one item. Returns { type, content, sources }; type differs from the plan only when a diagram could not
+ * be rendered and fell back.
+ */
+export async function writeItem(generation, index, { note } = {}) {
+  const kind = kindOf(generation);
+  const item = generation.outline[kind.listKey][index];
+  if (!item) throw new Error(`${kind.noun} ${index + 1} is not in the outline`);
+  const type = item[kind.typeKey] || kind.defaultType;
+
+  const { content, sources } = await writeAs(generation, kind, index, type, { note });
+  if (type !== 'diagram') return { type, content, sources };
+
+  try {
+    return { type, content: await renderWithRepair(generation.id, content, kind.schemas.diagram), sources };
+  } catch (err) {
+    if (!(err instanceof DiagramSyntaxError)) throw err;
+    console.warn(`${kind.noun} ${index + 1}: diagram failed to render (${err.message.split('\n')[0]}); using ${kind.diagramFallback}`);
+    const fallback = await writeAs(generation, kind, index, kind.diagramFallback, { note });
+    return { type: kind.diagramFallback, content: fallback.content, sources: fallback.sources };
+  }
+}
+
+/**
+ * Writes every item in order. onItemDone(items) runs after each one so the caller can save progress.
+ * With resume, items that already have content are kept.
+ */
+export async function writeAll(generation, { onProgress, onItemDone, resume = false } = {}) {
+  const kind = kindOf(generation);
+  const items = generation.outline[kind.listKey].map((it) => ({ ...it }));
+  const working = { ...generation, outline: { ...generation.outline, [kind.listKey]: items } };
+
+  for (let i = 0; i < items.length; i++) {
+    if (resume && items[i].content) continue;
+    if (onProgress) {
+      await onProgress({
+        phase: kind.noun, [kind.noun]: i + 1, total: items.length, done: i,
+        title: items[i].title, [kind.typeKey]: items[i][kind.typeKey],
+      });
+    }
+    const { type, content, sources } = await writeItem(working, i);
+    items[i] = { ...items[i], [kind.typeKey]: type, content, sources };
+    if (onItemDone) await onItemDone(items);
+  }
+  return items;
+}

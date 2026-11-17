@@ -125,10 +125,22 @@ export async function generateAnswer(query, history, chunks) {
   }
 }
 
+// Structured calls retry once without thinking when the first attempt runs out of tokens or returns
+// unparseable JSON: reasoning loops are the usual cause, and the answer without them is still good.
+async function structuredWithRetry(call, think) {
+  try {
+    return JSON.parse(await call(think));
+  } catch (first) {
+    const retryable = first instanceof SyntaxError || first instanceof provider.OutputTruncatedError;
+    if (!retryable || think === false) throw first;
+    console.warn(`Structured output failed (${first.message}); retrying without thinking`);
+    return JSON.parse(await call(false));
+  }
+}
+
 export async function generateStructured(prompt, model, format, { think } = {}) {
   try {
-    const response = await provider.generate(prompt, model, { format, think });
-    return JSON.parse(response);
+    return await structuredWithRetry((t) => provider.generate(prompt, model, { format, think: t }), think);
   } catch (error) {
     throw new AppError(`Structured generation failed: ${error.message}`, 503, error);
   }
@@ -136,8 +148,10 @@ export async function generateStructured(prompt, model, format, { think } = {}) 
 
 export async function chatStructured(messages, model, format, { think = false } = {}) {
   try {
-    const response = await provider.chat(messages, model, { format, think });
-    return JSON.parse(response.content);
+    return await structuredWithRetry(
+      async (t) => (await provider.chat(messages, model, { format, think: t })).content,
+      think,
+    );
   } catch (error) {
     throw new AppError(`Structured chat failed: ${error.message}`, 503, error);
   }

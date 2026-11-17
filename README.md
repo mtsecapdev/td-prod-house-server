@@ -15,6 +15,13 @@ The renderer is built from `renderer/` and keeps one headless Chromium running w
 (default `http://127.0.0.1:5002`). After changing `renderer/` or `scripts/vendor/`, rebuild it with
 `docker compose up -d --build renderer`.
 
+## Database
+
+```bash
+npm run table     # creates the base tables on a fresh database (after CREATE EXTENSION vector)
+npm run migrate   # applies src/db/migrations/*.sql that have not run yet; run on every deploy
+```
+
 ## Python scripts setup
 
 The renderers in `scripts/` (docx, pptx, PDF splitting) use a uv-managed environment.

@@ -1,5 +1,5 @@
 // Diagrams for slides and document sections: the model writes Mermaid, the render service turns it into a PNG.
-// Shared by deckGenerator, docGenerator and editChat.
+// Shared by the planning writer and editChat.
 import { createHash } from 'node:crypto';
 import { access, mkdir, rename, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
