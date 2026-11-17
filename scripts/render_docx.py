@@ -212,8 +212,8 @@ def render_summary(doc, content):
         add_body_text(doc, content['notes'], size=10, color=SLATE)
 
 
-# Diagram PNGs are rendered at 2x; treat them as 192 dpi so text in the figure prints at a readable size.
-DIAGRAM_DPI = 192
+# Diagram PNGs are rendered at 3x (renderer RENDER_SCALE); 288 dpi keeps their natural on-screen size.
+DIAGRAM_DPI = 288
 FIGURE_MAX_W = Cm(16)
 FIGURE_MAX_H = Cm(18)
 

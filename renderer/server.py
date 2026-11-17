@@ -21,6 +21,8 @@ from playwright.async_api import async_playwright
 
 POOL_SIZE = int(os.environ.get("RENDER_POOL_SIZE", "4"))
 RENDER_TIMEOUT_S = float(os.environ.get("RENDER_TIMEOUT_S", "20"))
+# 3x so a diagram stretched across a 13.3-inch slide still has ~200 dpi.
+SCALE = float(os.environ.get("RENDER_SCALE", "3"))
 MAX_CODE_CHARS = 20_000
 VENDOR = Path(os.environ.get("VENDOR_DIR", Path(__file__).resolve().parent / "vendor"))
 
@@ -88,13 +90,16 @@ class Pool:
         log.info("renderer ready with %d pages", POOL_SIZE)
 
     async def new_page(self):
-        page = await self.browser.new_page(viewport={"width": 1600, "height": 1000}, device_scale_factor=2)
+        page = await self.browser.new_page(viewport={"width": 1600, "height": 1000}, device_scale_factor=SCALE)
         await page.set_content(self.html)
         await page.add_script_tag(path=str(VENDOR / "mermaid.min.js"))
         await page.evaluate("() => document.fonts.load('16px Inter')")
         await page.evaluate(
+            # useMaxWidth false: draw at natural size. With the default, every diagram was squeezed to the
+            # page container's width (~350 px), which made wide flowcharts tiny and blurry on slides.
             "(t) => mermaid.initialize({ startOnLoad: false, securityLevel: 'strict', theme: 'base', "
-            "themeVariables: t, flowchart: { htmlLabels: true, curve: 'basis' } })",
+            "themeVariables: t, flowchart: { htmlLabels: true, curve: 'basis', useMaxWidth: false }, "
+            "sequence: { useMaxWidth: false }, mindmap: { useMaxWidth: false } })",
             THEME,
         )
         return page

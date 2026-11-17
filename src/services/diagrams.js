@@ -8,6 +8,9 @@ import { chatStructured } from './llm.js';
 
 const RENDER_TIMEOUT_MS = 30_000;
 const KEY_RE = /^[a-f0-9]{16}$/;
+// Part of the file key. Bump when the renderer's output changes (scale, theme, fonts) so cached PNGs aren't
+// reused; `npm run rerender-diagrams` then refreshes existing slides and sections.
+export const RENDER_VERSION = 2;
 
 export const DIAGRAM_TYPES = ['flowchart', 'sequence', 'mindmap'];
 
@@ -64,7 +67,7 @@ export async function renderDiagram(generationId, rawCode) {
   const code = cleanCode(rawCode);
   if (!code) throw new DiagramSyntaxError('The diagram has no Mermaid code.');
 
-  const key = createHash('sha256').update(code).digest('hex').slice(0, 16);
+  const key = createHash('sha256').update(`v${RENDER_VERSION}\n${code}`).digest('hex').slice(0, 16);
   const file = diagramPath(generationId, key);
   try {
     await access(file);
