@@ -16,5 +16,26 @@ services:
       interval: 5s
       retries: 10
 
+  docling:
+    # CUDA 13 build; use quay.io/docling-project/docling-serve-cpu:v1.38.2 on machines without an NVIDIA GPU
+    # (and remove the deploy block).
+    image: quay.io/docling-project/docling-serve-cu130:v1.38.2
+    container_name: tdph-docling
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:5001:5001"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:5001/health')"]
+      interval: 10s
+      start_period: 60s
+      retries: 10
+
 volumes:
   pgdata:
