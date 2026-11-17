@@ -30,7 +30,7 @@ import { uploadImage as uploadToComfyUI, shutdown as shutdownComfyUI } from '../
 
 async function createGeneration(req, res) {
   const { type, brief, sourceDocumentIds, model, settings } = req.body;
-  const id = await insertGenerationDb({ type, brief, sourceDocumentIds, model, settings });
+  const id = await insertGenerationDb({ type, brief, sourceDocumentIds: sourceDocumentIds ?? [], model, settings });
 
   const generation = await getGenerationByIdDb(id);
 
@@ -68,13 +68,18 @@ async function updateOutline(req, res) {
 
 // ── Planning (Gamma-style): prompt -> outline (one job) -> settings ──
 
-const BRIEF_FIELDS = ['topic', 'count', 'format', 'text_amount', 'audience', 'tone', 'instructions', 'template'];
+const BRIEF_FIELDS = [
+  'topic', 'count', 'format', 'text_amount', 'audience', 'tone', 'instructions', 'template', 'source_text', 'text_mode',
+];
+const MAX_SOURCE_TEXT = 60000;
 
 function normalizeBrief(input = {}, previous = {}) {
   const brief = { ...previous };
   for (const f of BRIEF_FIELDS) {
     if (input[f] === undefined) continue;
-    brief[f] = f === 'count' ? Number(input[f]) || undefined : String(input[f] ?? '').trim();
+    if (f === 'count') brief[f] = Number(input[f]) || undefined;
+    else if (f === 'source_text') brief[f] = String(input[f] ?? '').slice(0, MAX_SOURCE_TEXT);
+    else brief[f] = String(input[f] ?? '').trim();
   }
   return brief;
 }

@@ -164,7 +164,8 @@ export function styleGuide(kind, brief = {}) {
     brief.audience ? `Audience: ${brief.audience}. Pitch terms and depth to them.` : '',
     brief.tone ? `Tone: ${brief.tone}.` : '',
     brief.instructions ? `Instructions from the user (follow them): ${brief.instructions}` : '',
-    'Grounding: every number, name, date and quote you write must appear in the sources given for this item. ' +
+    'Grounding: every number, name, date and quote you write must appear in the sources given for this item ' +
+      'or in the user\'s own text. ' +
       'The planned bullets are a guide to what to cover, not a source of facts. If the sources do not support a ' +
       'point, leave it out rather than inventing a figure.',
     'Write in plain English. No filler ("it is important to note"), no hype, no emoji.',
@@ -180,6 +181,7 @@ export function briefBlock(generation) {
     b.audience ? `Audience: ${b.audience}` : '',
     b.format && kind.formats[b.format] ? `Format: ${b.format}` : '',
     b.instructions ? `Extra instructions: ${b.instructions}` : '',
+    b.source_text ? `The user supplied their own text to build from (mode: ${b.text_mode || 'generate'}).` : '',
   ].filter(Boolean).join('\n');
 }
 

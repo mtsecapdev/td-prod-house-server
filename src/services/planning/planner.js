@@ -57,21 +57,22 @@ const storylineSchema = {
   required: ['audience', 'tone', 'thesis', 'messages'],
 };
 
-async function draftStoryline(generation, kind, map, count) {
+// `material` is what the plan is built from: the document map, or the user's pasted text.
+async function draftStoryline(generation, kind, material, count) {
   const messageCount = Math.max(2, Math.min(6, Math.round(count / 3)));
   const prompt =
-    `You are planning a ${kind.product} of ${count} ${kind.nounPlural} from the documents below.\n\n` +
-    `${briefBlock(generation)}\n\nWhat the documents contain:\n${mapBlock(map)}\n\n` +
+    `You are planning a ${kind.product} of ${count} ${kind.nounPlural} from the material below.\n\n` +
+    `${briefBlock(generation)}\n\n${material.block}\n\n` +
     `Produce:\n` +
     `- audience: who this is for, in a few words. Use the user's audience if given, otherwise infer it from the request.\n` +
     `- tone: 2-4 adjectives for the voice, e.g. "clear, practical, encouraging".\n` +
     `- thesis: the one sentence the ${kind.name === 'deck' ? 'audience' : 'reader'} should leave with.\n` +
     `- messages: about ${messageCount} key messages in the order to tell them. Each is one sentence making a different ` +
     `claim (never two about the same example or incident), with the ids of the sections that support it.\n` +
-    `Serve what the user asked for. Use only what the documents contain. ${NO_FIGURES}`;
+    `Serve what the user asked for. Use only what the material contains. ${NO_FIGURES}`;
 
   const result = await generateStructured(prompt, generateModel, storylineSchema, { think: true });
-  const byId = new Map(map.sections.map((s) => [s.id, s]));
+  const byId = new Map(material.sections.map((s) => [s.id, s]));
   return {
     audience: result.audience,
     tone: result.tone,
@@ -118,18 +119,39 @@ function itemRules(kind) {
   );
 }
 
-/** Builds the whole plan: storyline, outline of `count` items, and sources per item. */
+// Pasted text is read in full when planning; very long pastes are cut to stay inside the model's context.
+const MAX_PASTED_CHARS = 20000;
+// Slides marked by the user: a line containing only "---".
+const SPLIT_RE = /\n\s*-{3,}\s*\n/;
+
+export function pastedText(brief) {
+  return (brief?.source_text || '').trim().slice(0, MAX_PASTED_CHARS);
+}
+
+/** Builds the whole plan: storyline, outline of items, and sources per item. */
 export async function planOutline(generation) {
   const kind = kindOf(generation);
+  const pasted = pastedText(generation.brief);
+  if (pasted && SPLIT_RE.test(`\n${pasted}\n`)) return planFromSegments(generation, kind, pasted);
+
   const count = itemCount(kind, generation.brief);
-  const map = await documentMap(generation);
-  const storyline = await draftStoryline(generation, kind, map, count);
+  let material;
+  if (pasted) {
+    material = { block: `The user's own text, to build from:\n\"\"\"\n${pasted}\n\"\"\"`, sections: [] };
+  } else {
+    const map = await documentMap(generation);
+    material = { block: `What the documents contain:\n${mapBlock(map)}`, sections: map.sections, map };
+  }
+  const storyline = await draftStoryline(generation, kind, material, count);
   const inScope = new Set(storyline.messages.flatMap((m) => m.section_ids));
+  const materialForOutline = material.map
+    ? `Sections the storyline draws on:\n${mapBlock(material.map, { onlySectionIds: inScope.size ? inScope : undefined })}`
+    : material.block;
 
   const prompt =
     `You are outlining a ${kind.product} of exactly ${count} ${kind.nounPlural}.\n\n` +
     `${briefBlock(generation)}\n\nStoryline:\n${storylineBlock(storyline)}\n\n` +
-    `Sections the storyline draws on:\n${mapBlock(map, { onlySectionIds: inScope.size ? inScope : undefined })}\n\n` +
+    `${materialForOutline}\n\n` +
     `${kind.noun[0].toUpperCase() + kind.noun.slice(1)} types and what each is for:\n${typeGuideBlock(kind)}\n\n` +
     `${itemRules(kind)}\n\n` +
     `Rules:\n` +
@@ -147,6 +169,46 @@ export async function planOutline(generation) {
 
   return {
     storyline: { ...storyline, generated_at: new Date().toISOString() },
+    outline: { [kind.listKey]: items, generated_at: new Date().toISOString() },
+  };
+}
+
+// The user split their text into slides with "---": one item per part, in their order, each carrying its
+// part as `own_text`. The model only titles, summarises and picks a layout for each part.
+async function planFromSegments(generation, kind, pasted) {
+  const parts = pasted.split(SPLIT_RE).map((p) => p.trim()).filter(Boolean).slice(0, kind.countRange[1]);
+  const prompt =
+    `The user wrote a ${kind.product} as ${parts.length} parts, one ${kind.noun} each, in this order.\n\n` +
+    `${briefBlock(generation)}\n\n` +
+    parts.map((p, i) => `--- Part ${i + 1} ---\n${p}`).join('\n\n') + '\n\n' +
+    `${kind.noun[0].toUpperCase() + kind.noun.slice(1)} types and what each is for:\n${typeGuideBlock(kind)}\n\n` +
+    `Return audience (who it is for, a few words), tone (2-4 adjectives) and exactly ${parts.length} items, item i for part i:\n` +
+    `- title: the part's own heading if it has one, otherwise a specific title (max 10 words).\n` +
+    `- bullets: 2-5 short lines on what the part covers, taken from its text.\n` +
+    `- type: the type that best fits the part's content; "${kind.firstType}" only for part 1 if it is an opening, ` +
+    `"${kind.lastType}" only for the last part if it wraps up.\n- type_reason: a few words.\n- message_id: "".`;
+  const schema = {
+    type: 'object',
+    properties: {
+      audience: { type: 'string' },
+      tone: { type: 'string' },
+      items: { type: 'array', minItems: parts.length, maxItems: parts.length, items: itemSchema(kind) },
+    },
+    required: ['audience', 'tone', 'items'],
+  };
+  const result = await generateStructured(prompt, generateModel, schema, { think: false });
+
+  const items = parts.map((part, i) => {
+    const raw = result.items?.[i] || { title: part.split('\n')[0].slice(0, 80), bullets: [], type: kind.defaultType };
+    const item = toItem(kind, raw);
+    const t = item[kind.typeKey];
+    // Keep the user's structure: bookend types only where they fit, nothing forced.
+    if ((t === kind.firstType && i !== 0) || (t === kind.lastType && i !== parts.length - 1)) item[kind.typeKey] = kind.defaultType;
+    return { ...item, own_text: part };
+  });
+  await attachSources(generation, kind, items);
+  return {
+    storyline: { audience: result.audience, tone: result.tone, thesis: '', messages: [], generated_at: new Date().toISOString() },
     outline: { [kind.listKey]: items, generated_at: new Date().toISOString() },
   };
 }
@@ -219,6 +281,7 @@ function toSource(row, added = false) {
  * are filled by search on the item's title and bullets.
  */
 export async function attachSources(generation, kind, items, { force = false } = {}) {
+  if (!generation.source_document_ids?.length) return items; // pasted text only, no documents
   const needing = items.filter((it) => force || !kind.noSourceTypes.includes(it[kind.typeKey]));
   if (!needing.length) return items;
 

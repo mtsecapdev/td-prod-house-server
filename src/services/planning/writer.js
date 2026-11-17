@@ -9,9 +9,18 @@ import { getChunksByIdsDb, getSourcePassagesDb } from '../../db/chunksQueries.js
 import { renderWithRepair, DiagramSyntaxError } from '../diagrams.js';
 import { kindOf, styleGuide, briefBlock, storylineBlock } from './kinds.js';
 import { fitContent } from './fit.js';
-import { sourceQuery } from './planner.js';
+import { sourceQuery, pastedText } from './planner.js';
 
 const { generateModel } = config.ollama;
+// Free-form pasted text goes into the shared plan block (identical for every item, so it is cached).
+const MAX_PASTED_IN_PLAN = 12000;
+
+// How to treat the user's own text, by the mode they chose.
+const TEXT_MODES = {
+  generate: 'Use the user\'s text as the starting point. You may expand it with facts from the sources.',
+  condense: 'Condense the user\'s text into the layout. Keep their points and, where possible, their wording. Add nothing that is not in their text.',
+  preserve: 'Keep the user\'s exact wording. Only arrange it into the layout\'s fields: do not add, remove or reword anything.',
+};
 const FIGURE_RE = /[€$£]?\d[\d,.]*\s?(?:%|[MBK]\b|bn\b|million\b|billion\b)?/g;
 
 function systemPrompt(kind, generation) {
@@ -25,9 +34,12 @@ function planBlock(kind, generation) {
   const items = generation.outline[kind.listKey];
   const outlineLines = items.map((it, i) =>
     `${i + 1}. ${it[kind.typeKey]} | ${it.title} | ${(it.bullets || []).filter((b) => b.trim()).join('; ')}`).join('\n');
+  const pasted = pastedText(generation.brief);
+  const freeForm = pasted && !items.some((it) => it.own_text);
   return [
     `Brief:\n${briefBlock(generation)}`,
-    generation.storyline ? `Storyline:\n${storylineBlock(generation.storyline)}` : '',
+    freeForm ? `The user's own text:\n\"\"\"\n${pasted.slice(0, MAX_PASTED_IN_PLAN)}\n\"\"\"` : '',
+    generation.storyline?.messages?.length ? `Storyline:\n${storylineBlock(generation.storyline)}` : '',
     `Full outline (${kind.nounPlural} in order: type | title | what it covers):\n${outlineLines}`,
   ].filter(Boolean).join('\n\n');
 }
@@ -87,6 +99,8 @@ async function writeAs(generation, kind, index, type, { note } = {}) {
       (message ? `, which supports key message ${message.id}: "${message.text}"` : '') + '.',
     `Planned title (improve it if you can): ${item.title}`,
     bullets.length ? `What it should cover:\n${bullets.map((t) => `- ${t}`).join('\n')}` : '',
+    item.own_text ? `The user's own text for this ${kind.noun}:\n\"\"\"\n${item.own_text}\n\"\"\"` : '',
+    generation.brief?.source_text ? TEXT_MODES[generation.brief.text_mode] || TEXT_MODES.generate : '',
     userNote ? `Note from the user (follow it): ${userNote}` : '',
     `Type: ${type}. How to fill it: ${kind.writeGuide[type] || ''}`,
     `Do not repeat points or figures the earlier ${kind.nounPlural} already made unless this one builds on them.`,
