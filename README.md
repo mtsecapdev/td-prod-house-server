@@ -15,6 +15,13 @@ The renderer is built from `renderer/` and keeps one headless Chromium running w
 (default `http://127.0.0.1:5002`). After changing `renderer/` or `scripts/vendor/`, rebuild it with
 `docker compose up -d --build renderer`.
 
+## Templates
+
+`templates/themes.json` holds the built-in visual templates (colours + fonts). It is read by the PPTX/DOCX
+renderers, the diagram renderer (per-request colours) and the client (`GET /generations/templates`).
+Company templates are uploaded as `.pptx` (`POST /generations/templates`): `scripts/extract_brand.py` maps
+the file's theme colours and fonts onto the same tokens, and decks render on top of the file's slide masters.
+
 ## Database
 
 ```bash

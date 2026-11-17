@@ -7,6 +7,8 @@ const generationsRouter = Router();
 generationsRouter.post('/', generationsController.createGeneration);
 generationsRouter.get('/', generationsController.listGenerations);
 generationsRouter.get('/templates', generationsController.getTemplates);
+generationsRouter.post('/templates', uploadToMemory.single('file'), generationsController.uploadTemplate);
+generationsRouter.delete('/templates/:templateId', generationsController.removeTemplate);
 generationsRouter.get('/:id', generationsController.getGeneration);
 generationsRouter.put('/:id/outline', generationsController.updateOutline);
 

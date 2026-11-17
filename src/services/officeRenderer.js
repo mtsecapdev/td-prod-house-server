@@ -37,7 +37,8 @@ async function renderInput(generation) {
     if (!key) return item;
     return { ...item, content: { ...item.content, diagram_path: await ensureDiagramFile(generation, key) } };
   }));
-  return { ...generation.outline, [listKey]: items, theme: getTemplate(generation.brief?.template) };
+  const { pptx_path: templatePath, ...theme } = await getTemplate(generation.brief?.template);
+  return { input: { ...generation.outline, [listKey]: items, theme }, templatePath };
 }
 
 /**
@@ -55,9 +56,12 @@ export async function renderOfficeFile(generation, mode = 'temp') {
   const outputPath = join(outDir, `${stem}.${ext}`);
   const scriptPath = join(__dirname, '..', '..', 'scripts', ext === 'pptx' ? 'render_pptx.py' : 'render_docx.py');
 
-  await writeFile(inputPath, JSON.stringify(await renderInput(generation)), 'utf-8');
+  const { input, templatePath } = await renderInput(generation);
+  await writeFile(inputPath, JSON.stringify(input), 'utf-8');
+  // A company template (.pptx) is the base file for decks, so its masters (logos, backgrounds) carry over.
+  const args = [scriptPath, inputPath, outputPath, ...(ext === 'pptx' && templatePath ? [templatePath] : [])];
   try {
-    await execFileAsync(config.pythonPath, [scriptPath, inputPath, outputPath], { timeout: 60_000 });
+    await execFileAsync(config.pythonPath, args, { timeout: 60_000 });
   } catch (err) {
     throw new Error(`${ext.toUpperCase()} rendering failed: ${err.stderr || err.message}`);
   } finally {

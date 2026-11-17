@@ -5,7 +5,7 @@ import { access, mkdir, rename, rm, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import config from '../config.js';
 import { chatStructured } from './llm.js';
-import { getTemplate } from './templates.js';
+import { getTemplate, TEMPLATE_ID_RE } from './templates.js';
 
 const RENDER_TIMEOUT_MS = 30_000;
 const KEY_RE = /^[a-f0-9]{16}$/;
@@ -46,8 +46,8 @@ export function diagramDir(generationId) {
  * Mermaid code; each template has its own copy, in its own colours.
  */
 export function diagramPath(generationId, key, templateId) {
-  if (!KEY_RE.test(String(key))) return null;
-  return join(diagramDir(generationId), getTemplate(templateId).id, `${key}.png`);
+  if (!KEY_RE.test(String(key)) || !TEMPLATE_ID_RE.test(String(templateId))) return null;
+  return join(diagramDir(generationId), templateId, `${key}.png`);
 }
 
 /**
@@ -55,7 +55,8 @@ export function diagramPath(generationId, key, templateId) {
  * (the template was switched after writing). Null if no slide/section holds that diagram.
  */
 export async function ensureDiagramFile(generation, key) {
-  const file = diagramPath(generation.id, key, generation.brief?.template);
+  const template = await getTemplate(generation.brief?.template);
+  const file = diagramPath(generation.id, key, template.id);
   if (!file) return null;
   try {
     await access(file);
@@ -91,7 +92,7 @@ export async function renderDiagram(generation, rawCode) {
   const code = cleanCode(rawCode);
   if (!code) throw new DiagramSyntaxError('The diagram has no Mermaid code.');
 
-  const template = getTemplate(generation.brief?.template);
+  const template = await getTemplate(generation.brief?.template);
   const key = createHash('sha256').update(`v${RENDER_VERSION}\n${code}`).digest('hex').slice(0, 16);
   const file = diagramPath(generation.id, key, template.id);
   try {

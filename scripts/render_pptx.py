@@ -917,16 +917,33 @@ RENDERERS = {
 }
 
 
+def blank_layout_of(prs):
+    """The layout to draw on: one named Blank, else the one with the fewest placeholders. With a company
+    template this keeps its master (logos, footer art) behind our shapes."""
+    layouts = list(prs.slide_layouts)
+    named = [l for l in layouts if l.name.strip().lower() == 'blank']
+    return named[0] if named else min(layouts, key=lambda l: len(l.placeholders))
+
+
+def remove_existing_slides(prs):
+    """A company template may ship with example slides; the deck starts empty."""
+    id_list = prs.slides._sldIdLst
+    for sld_id in list(id_list):
+        prs.part.drop_rel(sld_id.rId)
+        id_list.remove(sld_id)
+
+
 def render_deck(outline, output_path, template_path=None):
     if template_path and Path(template_path).exists():
         prs = Presentation(template_path)
+        remove_existing_slides(prs)
     else:
         prs = Presentation()
 
     prs.slide_width = SLIDE_WIDTH
     prs.slide_height = SLIDE_HEIGHT
 
-    blank_layout = prs.slide_layouts[6]  # blank layout
+    blank_layout = blank_layout_of(prs)
 
     apply_theme(outline.get('theme'))
     slides_data = outline.get('slides', [])

@@ -26,7 +26,7 @@ import { startJob } from '../services/jobs.js';
 import { editSlide, editSection } from '../services/editChat.js';
 import { craftImagePrompt, generateImageFromPrompt } from '../services/imageGenerator.js';
 import { renderDiagram, ensureDiagramFile, deleteDiagrams, DiagramSyntaxError } from '../services/diagrams.js';
-import { listTemplates } from '../services/templates.js';
+import { listTemplates, createBrandTemplate, deleteBrandTemplate } from '../services/templates.js';
 import { renderOfficeFile, notReadyMessage, officeExt, downloadName } from '../services/officeRenderer.js';
 import { uploadImage as uploadToComfyUI, shutdown as shutdownComfyUI } from '../services/comfyui.js';
 
@@ -48,7 +48,22 @@ async function createGeneration(req, res) {
 }
 
 async function getTemplates(req, res) {
-  res.json(responseFactory.createJsonResponse(listTemplates()));
+  res.json(responseFactory.createJsonResponse(await listTemplates()));
+}
+
+// Upload a company .pptx: its theme colours and fonts become a template, and decks build on its masters.
+async function uploadTemplate(req, res) {
+  if (!req.file) throw new AppError('Choose a .pptx file', 400);
+  if (!/\.pptx$/i.test(req.file.originalname)) throw new AppError('Templates must be PowerPoint .pptx files', 400);
+  const name = String(req.body?.name || req.file.originalname.replace(/\.pptx$/i, '')).trim().slice(0, 60) || 'Company template';
+  const template = await createBrandTemplate(req.file.buffer, name);
+  res.status(201).json(responseFactory.createJsonResponse({ template }));
+}
+
+async function removeTemplate(req, res) {
+  const deleted = await deleteBrandTemplate(req.params.templateId);
+  if (!deleted) throw new AppError('Template not found', 404);
+  res.json(responseFactory.createJsonResponse({ deleted: true }));
 }
 
 async function getGeneration(req, res) {
@@ -492,6 +507,8 @@ export default {
   createGeneration,
   getGeneration,
   getTemplates,
+  uploadTemplate,
+  removeTemplate,
   listGenerations,
   updateOutline,
   updateBrief,
