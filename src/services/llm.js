@@ -29,6 +29,11 @@ export async function requestEmbeddingBatch(inputs) {
 }
 
 const NUM_RECENT_MESSAGES = 4;
+const REWRITE_FORMAT = {
+  type: 'object',
+  properties: { query: { type: 'string' } },
+  required: ['query'],
+};
 
 export async function rewriteQuery(history, originalQuery) {
   if (!history || history.length === 0) return originalQuery;
@@ -48,8 +53,15 @@ export async function rewriteQuery(history, originalQuery) {
     `Query: ${originalQuery}`;
 
   try {
-    // Rewriting is a one-line task; reasoning only adds latency.
-    const rewritten = (await provider.generate(prompt, rewriteModel, { think: false })).trim();
+    // With think:false qwen3 still reasons in plain text (1000+ tokens, 20-50 s) and that ramble became the
+    // search query. A JSON schema forces a single short answer (~0.5 s).
+    const raw = await provider.generate(prompt, rewriteModel, { think: false, format: REWRITE_FORMAT });
+    let rewritten = '';
+    try {
+      rewritten = String(JSON.parse(raw).query ?? '').trim();
+    } catch {
+      // fall back to the user's own words
+    }
     return rewritten || originalQuery;
   } catch (error) {
     throw new AppError(`Query rewrite failed: ${error.message}`, 503, error);
