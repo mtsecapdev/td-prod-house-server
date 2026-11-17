@@ -13,6 +13,9 @@ const config = {
     rewriteModel: required('REWRITE_QUERY_MODEL_NAME'),
     generateModel: required('GENERATE_MODEL_NAME'),
     numCtx: Number(process.env.OLLAMA_NUM_CTX ?? 32768),
+    // Must match the embedding model's output size (bge-m3: 1024, nomic-embed-text: 768).
+    // After changing model/dim, run `npm run reembed`.
+    embeddingDim: Number(process.env.EMBEDDING_DIM ?? 1024),
   },
   docling: {
     endpoint: required('DOCLING_SERVE_ENDPOINT'),

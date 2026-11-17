@@ -11,7 +11,8 @@
     "dev": "node --env-file=.env --watch app.js",
     "seed": "node --env-file=.env ./src/db/seed.js",
     "table": "node --env-file=.env ./src/db/createSchemas.js",
-    "ingest": "node --env-file=.env ./src/scripts/ingest.js"
+    "ingest": "node --env-file=.env ./src/scripts/ingest.js",
+    "reembed": "node --env-file=.env ./src/scripts/reembed.js"
   },
   "dependencies": {
     "@langchain/textsplitters": "^1.0.1",

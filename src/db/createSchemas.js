@@ -1,5 +1,6 @@
 import pool from './pool.js';
 import pgvector from 'pgvector/pg';
+import config from '../config.js';
 
 async function createTables() {
   const client = await pool.connect();
@@ -24,7 +25,7 @@ async function createTables() {
       id INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
       document_id INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
       content TEXT NOT NULL,
-      embedding VECTOR(768),
+      embedding VECTOR(${config.ollama.embeddingDim}),
       page INTEGER,
       heading TEXT,
       level TEXT NOT NULL DEFAULT 'leaf' CHECK (level IN ('leaf', 'section', 'document')),
