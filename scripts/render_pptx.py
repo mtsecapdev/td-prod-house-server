@@ -9,6 +9,7 @@ Input JSON shape (the generation's outline object):
 """
 
 import json
+import struct
 import sys
 from pathlib import Path
 
@@ -133,6 +134,23 @@ def add_slide_number(slide, slide_idx, total):
                 alignment=PP_ALIGN.RIGHT)
 
 
+def png_size(path):
+    """(width, height) in pixels, read from the PNG header."""
+    with open(path, 'rb') as f:
+        head = f.read(24)
+    if head[:8] != b'\x89PNG\r\n\x1a\n':
+        raise ValueError(f'Not a PNG: {path}')
+    return struct.unpack('>II', head[16:24])
+
+
+def add_picture_fit(slide, path, left, top, max_w, max_h):
+    """Place an image as large as fits in the box, keeping its aspect ratio, centred."""
+    w_px, h_px = png_size(path)
+    scale = min(int(max_w) / w_px, int(max_h) / h_px)
+    w, h = int(w_px * scale), int(h_px * scale)
+    slide.shapes.add_picture(path, int(left) + (int(max_w) - w) // 2, int(top) + (int(max_h) - h) // 2, w, h)
+
+
 def _add_notes(slide, content):
     notes = content.get('speaker_notes', '')
     if notes:
@@ -240,9 +258,10 @@ def render_two_column(slide, content, slide_idx=0, total=0):
                 font_name=FONT_HEADING)
     add_rect(slide, Inches(0), Inches(1.48), SLIDE_WIDTH, Inches(0.04), BORDER)
 
-    # Column cards
+    # Column cards (shorter when a verdict line sits underneath)
+    verdict = (content.get('verdict') or '').strip()
     card_top = Inches(1.9)
-    card_h = Inches(5.1)
+    card_h = Inches(4.3) if verdict else Inches(5.1)
     card_w = Inches(5.6)
     gap = Inches(0.5)
     left_x = Inches(0.8)
@@ -275,6 +294,12 @@ def render_two_column(slide, content, slide_idx=0, total=0):
         add_textbox(slide, right_x + Inches(0.6), y, card_w - Inches(1.0), Inches(per_item),
                     f'•  {b}', font_size=13, color=SLATE)
         y += Inches(per_item)
+
+    if verdict:
+        add_rich_textbox(slide, left_x, card_top + card_h + Inches(0.25), card_w * 2 + gap, Inches(0.6), [
+            {'text': 'Verdict:  ', 'size': 15, 'bold': True, 'color': COBALT},
+            {'text': verdict, 'size': 15, 'color': NAVY},
+        ])
 
     add_slide_number(slide, slide_idx, total)
     _add_notes(slide, content)
@@ -762,6 +787,74 @@ def render_comparison_table(slide, content, slide_idx=0, total=0):
     _add_notes(slide, content)
 
 
+def _title_bar(slide, title):
+    add_rect(slide, Inches(0), Inches(0), SLIDE_WIDTH, Inches(1.5), WHITE)
+    add_textbox(slide, Inches(0.8), Inches(0.35), Inches(11.5), Inches(0.9),
+                title, font_size=30, bold=True, color=NAVY, font_name=FONT_HEADING)
+    add_rect(slide, Inches(0), Inches(1.48), SLIDE_WIDTH, Inches(0.04), BORDER)
+
+
+def render_key_stats(slide, content, slide_idx=0, total=0):
+    set_slide_bg(slide, CANVAS)
+    _title_bar(slide, content.get('title', ''))
+
+    stats = content.get('stats', [])[:6]
+    n = len(stats)
+    if n:
+        cols = n if n <= 3 else (2 if n == 4 else 3)
+        rows = (n + cols - 1) // cols
+        margin, gap = Inches(0.8), Inches(0.35)
+        area_top, area_h = Inches(1.95), Inches(5.0)
+        card_w = (int(SLIDE_WIDTH) - 2 * int(margin) - (cols - 1) * int(gap)) // cols
+        card_h = (int(area_h) - (rows - 1) * int(gap)) // rows
+        value_size = 40 if rows == 1 else 32
+
+        for i, stat in enumerate(stats):
+            r, c = divmod(i, cols)
+            # Centre a short last row
+            in_row = cols if r < rows - 1 else n - cols * (rows - 1)
+            row_offset = (cols - in_row) * (card_w + int(gap)) // 2
+            x = int(margin) + row_offset + c * (card_w + int(gap))
+            y = int(area_top) + r * (card_h + int(gap))
+
+            add_rounded_rect(slide, x, y, card_w, card_h, WHITE)
+            add_rect(slide, x, y, card_w, Inches(0.06), COBALT)
+            add_textbox(slide, x + Inches(0.3), y + Inches(0.3), card_w - Inches(0.6), Inches(0.9),
+                        stat.get('value', ''), font_size=value_size, bold=True, color=COBALT,
+                        font_name=FONT_HEADING)
+            add_textbox(slide, x + Inches(0.3), y + Inches(1.2), card_w - Inches(0.6), Inches(0.4),
+                        (stat.get('label', '') or '').upper(), font_size=12, bold=True, color=NAVY)
+            add_textbox(slide, x + Inches(0.3), y + Inches(1.6), card_w - Inches(0.6), card_h - Inches(1.75),
+                        stat.get('detail', ''), font_size=12, color=SLATE)
+
+    add_slide_number(slide, slide_idx, total)
+    _add_notes(slide, content)
+
+
+def render_diagram(slide, content, slide_idx=0, total=0):
+    set_slide_bg(slide, WHITE)
+    _title_bar(slide, content.get('title', ''))
+
+    caption = (content.get('caption') or '').strip()
+    box_top = Inches(1.75)
+    box_h = Inches(4.85) if caption else Inches(5.35)
+    box_left, box_w = Inches(0.8), SLIDE_WIDTH - Inches(1.6)
+
+    path = content.get('diagram_path')
+    if path and Path(path).exists():
+        add_picture_fit(slide, path, box_left, box_top, box_w, box_h)
+    else:
+        add_textbox(slide, box_left, box_top, box_w, box_h, 'Diagram not available',
+                    font_size=16, color=SLATE_LT, alignment=PP_ALIGN.CENTER, anchor='ctr')
+
+    if caption:
+        add_textbox(slide, box_left, box_top + box_h + Inches(0.15), box_w, Inches(0.5),
+                    caption, font_size=14, italic=True, color=SLATE, alignment=PP_ALIGN.CENTER)
+
+    add_slide_number(slide, slide_idx, total)
+    _add_notes(slide, content)
+
+
 # ── Registry ──
 
 RENDERERS = {
@@ -778,6 +871,8 @@ RENDERERS = {
     'process_flow':     render_process_flow,
     'icon_grid':        render_icon_grid,
     'comparison_table': render_comparison_table,
+    'key_stats':        render_key_stats,
+    'diagram':          render_diagram,
 }
 
 

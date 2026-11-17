@@ -1,8 +1,6 @@
-import { execFile, spawn } from 'node:child_process';
-import { writeFile, unlink, mkdir, access } from 'node:fs/promises';
-import { join, dirname } from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { promisify } from 'node:util';
+import { spawn } from 'node:child_process';
+import { access, rename, unlink, mkdir } from 'node:fs/promises';
+import { join } from 'node:path';
 import responseFactory from '../utils/responseFactory.js';
 import config from '../config.js';
 import {
@@ -16,12 +14,9 @@ import { generateOutline, generateAllSlides } from '../services/deckGenerator.js
 import { generateDocOutline, generateAllSections } from '../services/docGenerator.js';
 import { editSlide, editSection } from '../services/editChat.js';
 import { craftImagePrompt, generateImageFromPrompt } from '../services/imageGenerator.js';
-import { generateInfographic } from '../services/infographicGenerator.js';
-import { editInfographic } from '../services/editChat.js';
+import { renderDiagram, diagramPath, deleteDiagrams, DiagramSyntaxError } from '../services/diagrams.js';
+import { renderOfficeFile, notReadyMessage, officeExt, downloadName } from '../services/officeRenderer.js';
 import { uploadImage as uploadToComfyUI, shutdown as shutdownComfyUI } from '../services/comfyui.js';
-
-const execFileAsync = promisify(execFile);
-const __dirname = dirname(fileURLToPath(import.meta.url));
 
 async function createGeneration(req, res) {
   const { type, brief, sourceDocumentIds, model, settings } = req.body;
@@ -40,8 +35,6 @@ async function createGeneration(req, res) {
       .then((outline) => updateGenerationDb(id, { outline: JSON.stringify(outline), status: 'outline_ready' }))
       .catch((err) => updateGenerationDb(id, { status: 'failed', error: err.message }));
   } else if (type === 'image') {
-    await updateGenerationDb(id, { status: 'pending' });
-  } else if (type === 'infographic') {
     await updateGenerationDb(id, { status: 'pending' });
   }
 
@@ -77,11 +70,18 @@ async function generateSlides(req, res) {
 
   try {
     const generation = await getGenerationByIdDb(req.params.id);
+    // Still 'generating' means the last run was cut off (closed tab, server restart): keep the slides it finished.
+    const resume = generation.status === 'generating';
     await updateGenerationDb(generation.id, { status: 'generating' });
 
     send({ phase: 'start', total: generation.outline.slides.length, slides: generation.outline.slides.map((s) => ({ title: s.title, layout: s.layout })) });
 
-    const slides = await generateAllSlides(generation, (progress) => send(progress));
+    const slides = await generateAllSlides(generation, {
+      resume,
+      onProgress: (progress) => send(progress),
+      // Save after every slide so progress survives a dropped connection or restart.
+      onSlideDone: (soFar) => updateGenerationDb(generation.id, { outline: JSON.stringify({ ...generation.outline, slides: soFar }) }),
+    });
 
     const updatedOutline = { ...generation.outline, slides };
     await updateGenerationDb(generation.id, {
@@ -109,11 +109,18 @@ async function generateSections(req, res) {
 
   try {
     const generation = await getGenerationByIdDb(req.params.id);
+    // Still 'generating' means the last run was cut off (closed tab, server restart): keep the sections it finished.
+    const resume = generation.status === 'generating';
     await updateGenerationDb(generation.id, { status: 'generating' });
 
     send({ phase: 'start', total: generation.outline.sections.length, sections: generation.outline.sections.map((s) => ({ title: s.title, section_type: s.section_type })) });
 
-    const sections = await generateAllSections(generation, (progress) => send(progress));
+    const sections = await generateAllSections(generation, {
+      resume,
+      onProgress: (progress) => send(progress),
+      // Save after every section so progress survives a dropped connection or restart.
+      onSectionDone: (soFar) => updateGenerationDb(generation.id, { outline: JSON.stringify({ ...generation.outline, sections: soFar }) }),
+    });
 
     const updatedOutline = { ...generation.outline, sections };
     await updateGenerationDb(generation.id, {
@@ -146,120 +153,84 @@ async function editSectionChat(req, res) {
 
 async function downloadFile(req, res) {
   const generation = await getGenerationByIdDb(req.params.id);
-  const isDeck = generation.type === 'deck';
-  const isDoc = generation.type === 'doc';
+  const notReady = notReadyMessage(generation);
+  if (notReady) return res.status(400).json(responseFactory.createJsonResponse(null, { message: notReady }));
 
-  if (isDeck && !generation.outline?.slides?.length) {
-    return res.status(400).json(responseFactory.createJsonResponse(null, { message: 'No slides generated yet' }));
-  }
-  if (isDoc && !generation.outline?.sections?.length) {
-    return res.status(400).json(responseFactory.createJsonResponse(null, { message: 'No sections generated yet' }));
-  }
-
-  const ext = isDeck ? 'pptx' : 'docx';
-  const outDir = join(config.outputDir, ext);
-  await mkdir(outDir, { recursive: true });
-
-  const inputPath = join(outDir, `${generation.id}_input.json`);
-  const outputPath = join(outDir, `${generation.id}.${ext}`);
-  const scriptName = isDeck ? 'render_pptx.py' : 'render_docx.py';
-  const scriptPath = join(__dirname, '..', '..', 'scripts', scriptName);
-
-  await writeFile(inputPath, JSON.stringify(generation.outline), 'utf-8');
-
+  let outputPath;
   try {
-    await execFileAsync(config.pythonPath, [scriptPath, inputPath, outputPath], { timeout: 30_000 });
+    outputPath = await renderOfficeFile(generation, 'temp');
   } catch (err) {
-    await unlink(inputPath).catch(() => {});
-    return res.status(500).json(responseFactory.createJsonResponse(null, {
-      message: `${ext.toUpperCase()} rendering failed: ${err.stderr || err.message}`,
-    }));
+    return res.status(500).json(responseFactory.createJsonResponse(null, { message: err.message }));
   }
-
-  await unlink(inputPath).catch(() => {});
-
-  const topic = (generation.brief?.topic || generation.type).replace(/[^a-zA-Z0-9 _-]/g, '').slice(0, 60).trim();
-  res.download(outputPath, `${topic}.${ext}`);
+  res.download(outputPath, downloadName(generation, officeExt(generation)), () => {
+    unlink(outputPath).catch(() => {});
+  });
 }
 
-async function openInDeckCraft(req, res) {
+// Renders the file and opens it in a desktop editor (DeckCraft / WordCraft) on the machine running the server.
+async function openInDesktopApp(req, res, appPath, appName) {
   const generation = await getGenerationByIdDb(req.params.id);
-  if (!generation.outline?.slides?.length) {
-    return res.status(400).json(responseFactory.createJsonResponse(null, { message: 'No slides generated yet' }));
-  }
-
-  const outDir = join(config.outputDir, 'pptx');
-  await mkdir(outDir, { recursive: true });
-
-  const inputPath = join(outDir, `${generation.id}_input.json`);
-  const outputPath = join(outDir, `${generation.id}.pptx`);
-  const scriptPath = join(__dirname, '..', '..', 'scripts', 'render_pptx.py');
-
-  await writeFile(inputPath, JSON.stringify(generation.outline), 'utf-8');
+  const notReady = notReadyMessage(generation);
+  if (notReady) return res.status(400).json(responseFactory.createJsonResponse(null, { message: notReady }));
 
   try {
-    await execFileAsync(config.pythonPath, [scriptPath, inputPath, outputPath], { timeout: 30_000 });
-  } catch (err) {
-    await unlink(inputPath).catch(() => {});
-    return res.status(500).json(responseFactory.createJsonResponse(null, {
-      message: `PPTX rendering failed: ${err.stderr || err.message}`,
-    }));
-  }
-
-  await unlink(inputPath).catch(() => {});
-
-  try {
-    await access(config.deckCraftPath);
+    await access(appPath);
   } catch {
-    return res.status(500).json(responseFactory.createJsonResponse(null, {
-      message: `DeckCraft not found at ${config.deckCraftPath}`,
-    }));
+    return res.status(500).json(responseFactory.createJsonResponse(null, { message: `${appName} not found at ${appPath}` }));
   }
 
-  const child = spawn(config.deckCraftPath, [outputPath], { detached: true, stdio: 'ignore' });
-  child.unref();
+  let outputPath;
+  try {
+    const ext = officeExt(generation);
+    const tempPath = await renderOfficeFile(generation, 'temp');
+    // A stable name per generation, so reopening replaces the previous copy instead of piling up files.
+    const dir = join(config.outputDir, ext);
+    await mkdir(dir, { recursive: true });
+    outputPath = join(dir, `${generation.id}.${ext}`);
+    await rename(tempPath, outputPath);
+  } catch (err) {
+    return res.status(500).json(responseFactory.createJsonResponse(null, { message: err.message }));
+  }
 
+  const child = spawn(appPath, [outputPath], { detached: true, stdio: 'ignore' });
+  child.unref();
   res.json(responseFactory.createJsonResponse({ opened: true, path: outputPath }));
 }
 
-async function openInWordCraft(req, res) {
-  const generation = await getGenerationByIdDb(req.params.id);
-  if (!generation.outline?.sections?.length) {
-    return res.status(400).json(responseFactory.createJsonResponse(null, { message: 'No sections generated yet' }));
-  }
+const openInDeckCraft = (req, res) => openInDesktopApp(req, res, config.deckCraftPath, 'DeckCraft');
+const openInWordCraft = (req, res) => openInDesktopApp(req, res, config.wordCraftPath, 'WordCraft');
 
-  const outDir = join(config.outputDir, 'docx');
-  await mkdir(outDir, { recursive: true });
-
-  const inputPath = join(outDir, `${generation.id}_input.json`);
-  const outputPath = join(outDir, `${generation.id}.docx`);
-  const scriptPath = join(__dirname, '..', '..', 'scripts', 'render_docx.py');
-
-  await writeFile(inputPath, JSON.stringify(generation.outline), 'utf-8');
-
+// Renders Mermaid typed by the user (Review "Edit code"). Saving the slide/section is left to the client's
+// normal outline save, which keeps undo working.
+async function renderDiagramCode(req, res) {
+  const { mermaid_code: code } = req.body;
+  await getGenerationByIdDb(req.params.id); // 404s for unknown generations
   try {
-    await execFileAsync(config.pythonPath, [scriptPath, inputPath, outputPath], { timeout: 30_000 });
+    const key = await renderDiagram(req.params.id, code);
+    res.json(responseFactory.createJsonResponse({ diagram_file: key }));
   } catch (err) {
-    await unlink(inputPath).catch(() => {});
-    return res.status(500).json(responseFactory.createJsonResponse(null, {
-      message: `DOCX rendering failed: ${err.stderr || err.message}`,
-    }));
+    if (err instanceof DiagramSyntaxError) {
+      return res.status(422).json(responseFactory.createJsonResponse(null, { message: err.message }));
+    }
+    throw err;
   }
+}
 
-  await unlink(inputPath).catch(() => {});
-
+async function serveDiagram(req, res) {
+  const filePath = diagramPath(req.params.id, req.params.key);
+  if (!filePath) return res.status(400).json(responseFactory.createJsonResponse(null, { message: 'Invalid diagram id' }));
   try {
-    await access(config.wordCraftPath);
+    await access(filePath);
   } catch {
-    return res.status(500).json(responseFactory.createJsonResponse(null, {
-      message: `WordCraft not found at ${config.wordCraftPath}`,
-    }));
+    return res.status(404).json(responseFactory.createJsonResponse(null, { message: 'Diagram not found' }));
   }
-
-  const child = spawn(config.wordCraftPath, [outputPath], { detached: true, stdio: 'ignore' });
-  child.unref();
-
-  res.json(responseFactory.createJsonResponse({ opened: true, path: outputPath }));
+  if (req.query.download) {
+    const name = String(req.query.name || 'diagram').replace(/[^a-zA-Z0-9 _-]/g, '').slice(0, 60).trim() || 'diagram';
+    return res.download(filePath, `${name}.png`);
+  }
+  // Content-addressed: a key's image never changes.
+  res.set('Cache-Control', 'private, max-age=31536000, immutable');
+  res.sendFile(filePath);
 }
 
 async function uploadReferenceImage(req, res) {
@@ -357,62 +328,9 @@ async function serveImage(req, res) {
   res.download(filePath, `${topic}.png`);
 }
 
-async function generateInfographicSSE(req, res) {
-  res.writeHead(200, {
-    'Content-Type': 'text/event-stream',
-    'Cache-Control': 'no-cache',
-    Connection: 'keep-alive',
-  });
-
-  const send = (data) => res.write(`data: ${JSON.stringify(data)}\n\n`);
-
-  try {
-    const generation = await getGenerationByIdDb(req.params.id);
-    await updateGenerationDb(generation.id, { status: 'generating' });
-
-    send({ phase: 'start' });
-
-    const result = await generateInfographic(generation, (progress) => send(progress));
-
-    await updateGenerationDb(generation.id, {
-      outline: JSON.stringify(result),
-      status: 'done',
-    });
-
-    send({ phase: 'done', infographic: result });
-  } catch (err) {
-    await updateGenerationDb(req.params.id, { status: 'failed', error: err.message });
-    send({ phase: 'error', message: err.message });
-  }
-
-  res.end();
-}
-
-async function editInfographicChat(req, res) {
-  const { instruction, history } = req.body;
-  const updatedContent = await editInfographic(req.params.id, instruction, history);
-  res.json(responseFactory.createJsonResponse({ content: updatedContent }));
-}
-
-async function serveInfographic(req, res) {
-  const generation = await getGenerationByIdDb(req.params.id);
-  const filePath = generation.outline?.file_path;
-  if (!filePath) {
-    return res.status(400).json(responseFactory.createJsonResponse(null, { message: 'No infographic generated yet' }));
-  }
-
-  try {
-    await access(filePath);
-  } catch {
-    return res.status(404).json(responseFactory.createJsonResponse(null, { message: 'Infographic file not found' }));
-  }
-
-  const topic = (generation.brief?.topic || 'infographic').replace(/[^a-zA-Z0-9 _-]/g, '').slice(0, 60).trim();
-  res.download(filePath, `${topic}.png`);
-}
-
 async function deleteGeneration(req, res) {
   await deleteGenerationDb(req.params.id);
+  await deleteDiagrams(req.params.id);
   res.json(responseFactory.createJsonResponse({ deleted: true }));
 }
 
@@ -434,8 +352,7 @@ export default {
   releaseGpu,
   generateImageSSE,
   serveImage,
-  generateInfographicSSE,
-  editInfographicChat,
-  serveInfographic,
+  renderDiagramCode,
+  serveDiagram,
   deleteGeneration,
 };

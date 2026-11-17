@@ -20,6 +20,10 @@ const config = {
   docling: {
     endpoint: required('DOCLING_SERVE_ENDPOINT'),
   },
+  renderer: {
+    // Diagram render service (docker compose: renderer). Mermaid in, PNG out.
+    endpoint: process.env.RENDER_SERVICE_ENDPOINT || 'http://127.0.0.1:5002',
+  },
   rag: {
     topK: Number(process.env.K_CHUNKS ?? 10),
   },

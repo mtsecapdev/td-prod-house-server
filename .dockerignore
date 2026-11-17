@@ -1,0 +1,4 @@
+# Only the render service image is built from this repo; send it just what it needs.
+*
+!renderer/
+!scripts/vendor/

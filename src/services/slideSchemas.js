@@ -1,3 +1,5 @@
+import { DIAGRAM_TYPES } from './diagrams.js';
+
 export const titleSlideSchema = {
   type: 'object',
   properties: {
@@ -35,6 +37,7 @@ export const twoColumnSlideSchema = {
     column_a_bullets:  { type: 'array', items: { type: 'string' } },
     column_b_heading:  { type: 'string' },
     column_b_bullets:  { type: 'array', items: { type: 'string' } },
+    verdict:           { type: 'string' }, // optional one-line takeaway under the columns
     speaker_notes:     { type: 'string' },
   },
   required: ['title', 'column_a_heading', 'column_a_bullets', 'column_b_heading', 'column_b_bullets', 'speaker_notes'],
@@ -196,6 +199,40 @@ export const closingSlideSchema = {
   required: ['title', 'takeaways', 'speaker_notes'],
 };
 
+export const keyStatsSlideSchema = {
+  type: 'object',
+  properties: {
+    title: { type: 'string' },
+    stats: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          value:  { type: 'string' },
+          label:  { type: 'string' },
+          detail: { type: 'string' },
+        },
+        required: ['value', 'label', 'detail'],
+      },
+    },
+    speaker_notes: { type: 'string' },
+  },
+  required: ['title', 'stats', 'speaker_notes'],
+};
+
+// diagram_file (the rendered PNG's key) is added by the server after rendering; the model never writes it.
+export const diagramSlideSchema = {
+  type: 'object',
+  properties: {
+    title:         { type: 'string' },
+    diagram_type:  { type: 'string', enum: DIAGRAM_TYPES },
+    mermaid_code:  { type: 'string' },
+    caption:       { type: 'string' },
+    speaker_notes: { type: 'string' },
+  },
+  required: ['title', 'diagram_type', 'mermaid_code', 'caption', 'speaker_notes'],
+};
+
 export const LAYOUT_SCHEMAS = {
   title:            titleSlideSchema,
   bullets:          bulletsSlideSchema,
@@ -209,6 +246,8 @@ export const LAYOUT_SCHEMAS = {
   process_flow:     processFlowSlideSchema,
   icon_grid:        iconGridSlideSchema,
   comparison_table: comparisonTableSlideSchema,
+  key_stats:        keyStatsSlideSchema,
+  diagram:          diagramSlideSchema,
   closing:          closingSlideSchema,
 };
 

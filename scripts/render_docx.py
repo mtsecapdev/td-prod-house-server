@@ -9,6 +9,7 @@ Input JSON shape (the generation's outline object):
 """
 
 import json
+import struct
 import sys
 from pathlib import Path
 
@@ -211,6 +212,56 @@ def render_summary(doc, content):
         add_body_text(doc, content['notes'], size=10, color=SLATE)
 
 
+# Diagram PNGs are rendered at 2x; treat them as 192 dpi so text in the figure prints at a readable size.
+DIAGRAM_DPI = 192
+FIGURE_MAX_W = Cm(16)
+FIGURE_MAX_H = Cm(18)
+
+
+def png_size(path):
+    """(width, height) in pixels, read from the PNG header."""
+    with open(path, 'rb') as f:
+        head = f.read(24)
+    if head[:8] != b'\x89PNG\r\n\x1a\n':
+        raise ValueError(f'Not a PNG: {path}')
+    return struct.unpack('>II', head[16:24])
+
+
+def render_diagram(doc, content, figure_no=1):
+    add_heading_styled(doc, content.get('title', ''), level=2)
+
+    if content.get('introduction'):
+        add_body_text(doc, content['introduction'])
+
+    path = content.get('diagram_path')
+    if path and Path(path).exists():
+        w_px, h_px = png_size(path)
+        natural_w = Inches(w_px / DIAGRAM_DPI)
+        natural_h = Inches(h_px / DIAGRAM_DPI)
+        scale = min(1.0, FIGURE_MAX_W / natural_w, FIGURE_MAX_H / natural_h)
+        p = doc.add_paragraph()
+        p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        p.add_run().add_picture(path, width=int(natural_w * scale))
+        p.paragraph_format.keep_with_next = True  # keep the caption on the same page as the figure
+    else:
+        add_body_text(doc, '[Diagram not available]', color=SLATE)
+
+    caption = (content.get('caption') or '').strip()
+    p = doc.add_paragraph()
+    p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    run_label = p.add_run(f'Figure {figure_no}' + (': ' if caption else ''))
+    style_run(run_label, size=10, bold=True, color=NAVY)
+    if caption:
+        run_cap = p.add_run(caption)
+        style_run(run_cap, size=10, color=SLATE)
+        run_cap.font.italic = True
+    p.paragraph_format.space_after = Pt(10)
+
+    if content.get('notes'):
+        add_spacer(doc, 4)
+        add_body_text(doc, content['notes'], size=10, color=SLATE)
+
+
 RENDERERS = {
     'heading': render_heading,
     'body': render_body,
@@ -234,11 +285,17 @@ def render_doc(outline, output_path, template_path=None):
         section.left_margin = Cm(2.5)
         section.right_margin = Cm(2.5)
 
+    figure_no = 0
     for section_data in outline.get('sections', []):
         section_type = section_data.get('section_type', 'body')
         content = section_data.get('content', {})
 
         if not content:
+            continue
+
+        if section_type == 'diagram':
+            figure_no += 1
+            render_diagram(doc, content, figure_no)
             continue
 
         renderer = RENDERERS.get(section_type, render_body)

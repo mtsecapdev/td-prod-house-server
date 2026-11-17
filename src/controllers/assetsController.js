@@ -1,15 +1,8 @@
-import { execFile } from 'node:child_process';
-import { writeFile, unlink, mkdir, access } from 'node:fs/promises';
-import { join, dirname, basename } from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { promisify } from 'node:util';
+import { access } from 'node:fs/promises';
 import responseFactory from '../utils/responseFactory.js';
-import config from '../config.js';
 import { getGenerationByIdDb } from '../db/generationsQueries.js';
 import { insertAssetDb, getAssetByIdDb, getAllAssetsDb, softDeleteAssetDb } from '../db/assetsQueries.js';
-
-const execFileAsync = promisify(execFile);
-const __dirname = dirname(fileURLToPath(import.meta.url));
+import { renderOfficeFile, notReadyMessage, officeExt, OFFICE_MIME } from '../services/officeRenderer.js';
 
 async function listAssets(req, res) {
   const { q, kind } = req.query;
@@ -25,62 +18,37 @@ async function saveAsset(req, res) {
 
   const generation = await getGenerationByIdDb(generationId);
 
-  if (generation.type === 'image' || generation.type === 'infographic') {
+  if (generation.type === 'image') {
     const filePath = generation.outline?.file_path;
     if (!filePath) {
       return res.status(400).json(responseFactory.createJsonResponse(null, { message: 'No file generated yet' }));
     }
-    const kind = generation.type;
-    const mime = 'image/png';
-    const assetTitle = title || generation.brief?.topic || `Untitled ${kind}`;
+    const assetTitle = title || generation.brief?.topic || 'Untitled image';
     const assetId = await insertAssetDb({
-      generationId: generation.id, kind, filePath, mime, title: assetTitle,
+      generationId: generation.id, kind: 'image', filePath, mime: 'image/png', title: assetTitle,
     });
     return res.status(201).json(responseFactory.createJsonResponse({ id: assetId, title: assetTitle }));
   }
 
-  const isDeck = generation.type === 'deck';
-  const isDoc = generation.type === 'doc';
+  const notReady = notReadyMessage(generation);
+  if (notReady) return res.status(400).json(responseFactory.createJsonResponse(null, { message: notReady }));
 
-  if (isDeck && !generation.outline?.slides?.length) {
-    return res.status(400).json(responseFactory.createJsonResponse(null, { message: 'No slides generated yet' }));
-  }
-  if (isDoc && !generation.outline?.sections?.length) {
-    return res.status(400).json(responseFactory.createJsonResponse(null, { message: 'No sections generated yet' }));
-  }
-
-  const ext = isDeck ? 'pptx' : 'docx';
-  const outDir = join(config.outputDir, ext);
-  await mkdir(outDir, { recursive: true });
-
-  const inputPath = join(outDir, `${generation.id}_input.json`);
-  const outputPath = join(outDir, `${generation.id}.${ext}`);
-  const scriptName = isDeck ? 'render_pptx.py' : 'render_docx.py';
-  const scriptPath = join(__dirname, '..', '..', 'scripts', scriptName);
-
-  await writeFile(inputPath, JSON.stringify(generation.outline), 'utf-8');
-
+  // 'keep': each Library save gets its own file, so later downloads or saves never change it.
+  let outputPath;
   try {
-    await execFileAsync(config.pythonPath, [scriptPath, inputPath, outputPath], { timeout: 30_000 });
+    outputPath = await renderOfficeFile(generation, 'keep');
   } catch (err) {
-    await unlink(inputPath).catch(() => {});
-    return res.status(500).json(responseFactory.createJsonResponse(null, {
-      message: `${ext.toUpperCase()} rendering failed: ${err.stderr || err.message}`,
-    }));
+    return res.status(500).json(responseFactory.createJsonResponse(null, { message: err.message }));
   }
 
-  await unlink(inputPath).catch(() => {});
-
-  const kind = isDeck ? 'deck' : 'doc';
-  const mime = isDeck
-    ? 'application/vnd.openxmlformats-officedocument.presentationml.presentation'
-    : 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+  const ext = officeExt(generation);
+  const kind = generation.type;
   const assetTitle = title || generation.brief?.topic || `Untitled ${kind}`;
   const assetId = await insertAssetDb({
     generationId: generation.id,
     kind,
     filePath: outputPath,
-    mime,
+    mime: OFFICE_MIME[ext],
     title: assetTitle,
   });
 

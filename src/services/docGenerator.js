@@ -2,6 +2,7 @@ import config from '../config.js';
 import { generateStructured, chatStructured, requestEmbedding } from './llm.js';
 import { getSimilarChunksDb } from '../db/chunksQueries.js';
 import { SECTION_SCHEMAS, SECTION_TYPES } from './docSchemas.js';
+import { mermaidGuide, renderWithRepair, DiagramSyntaxError } from './diagrams.js';
 
 const SECTION_COUNTS = { short: [4, 8], standard: [8, 14], comprehensive: [14, 22] };
 
@@ -46,6 +47,8 @@ function getSystemPrompt(sectionType) {
       `${base}\nExtract 4-8 key facts, rules, or principles from the source material. Start with a brief introduction (1-2 sentences framing why these points matter). Each point has a label (2-5 words, like a category name) and a description (1-3 sentences explaining the rule or fact with specifics). End with notes for additional context.`,
     reference_table:
       `${base}\nOrganize the source content into a reference table. Start with a brief introduction (1-2 sentences explaining what this table contains and how to use it). Define column headers (3-6 columns), then provide rows of data. Each row is an array of strings matching the columns. End with notes explaining any abbreviations or special values.`,
+    diagram:
+      `${base}\nIllustrate this section with a Mermaid diagram that a reader can follow on the page, such as a process with decision points, a hand-off between roles, or how parts of a system relate. Write an introduction (1-2 sentences saying what the figure shows and when to use it), the diagram, a caption (one short sentence, used as the figure title), and notes explaining any steps or branches that need more detail. Top-down flowcharts suit a portrait page.\n\n${mermaidGuide({ direction: 'TD' })}`,
     summary:
       `${base}\nWrite a closing summary section. Provide 4-6 recap_points — each a concise sentence restating one key learning from the document. Then write next_steps: a short paragraph (2-3 sentences) on what the reader should do after reading this document. End with notes for any final remarks.`,
   };
@@ -62,6 +65,7 @@ function getUserPrompt(sectionType, section, context) {
     procedure:       `${header}Generate a procedure. Introduction: 1-2 sentences. Steps: 4-8, each with step_number, verb-first action, detail, and caution (empty string if none). Plus notes.`,
     key_points:      `${header}Generate 4-8 key points. Introduction: 1-2 sentences. Each point: a label (2-5 words) and description (1-3 sentences with specifics). Plus notes.`,
     reference_table: `${header}Generate a reference table. Introduction: 1-2 sentences. Columns: 3-6 header strings. Rows: arrays of strings matching column count. Plus notes.`,
+    diagram:         `${header}Generate an introduction (1-2 sentences), a Mermaid diagram (valid syntax, top-down, 4-10 nodes), a caption (one short sentence) and notes.`,
     summary:         `${header}Generate a summary. recap_points: 4-6 concise sentences. next_steps: 2-3 sentences on what to do next. Plus notes.`,
   };
 
@@ -92,6 +96,7 @@ export async function generateDocOutline(generation) {
     `- "procedure": Step-by-step instructions with numbered actions. Use for SOPs, how-to sequences, maintenance steps.\n` +
     `- "key_points": Highlighted facts, rules, or principles. Use for safety rules, regulations, critical requirements.\n` +
     `- "reference_table": Tabular data with columns and rows. Use for specs, comparisons, lookup tables, parameters.\n` +
+    `- "diagram": A figure (flowchart, sequence diagram or mind map) with a short introduction. Use for processes with decision points, hand-offs between roles or systems, or structures that are clearer as a picture. Max 1-3 per document.\n` +
     `- "summary": Closing recap with key takeaways and next steps. ONLY for the last section.\n\n` +
     `Source material:\n${context}\n\n` +
     `Generate an outline. For each section provide:\n` +
@@ -126,12 +131,36 @@ export async function generateDocOutline(generation) {
   return { sections };
 }
 
-export async function generateSectionContent(generation, sectionIndex) {
-  const { outline, source_document_ids: docIds } = generation;
-  const section = outline.sections[sectionIndex];
-  if (!section) throw new Error(`Section ${sectionIndex} not in outline`);
+// A diagram that still fails to render after one repair becomes a procedure, so one bad diagram never
+// stops the document.
+const DIAGRAM_FALLBACK_TYPE = 'procedure';
 
+/**
+ * Generates one section. Returns { section_type, content }; the type differs from the outline only when a
+ * diagram had to fall back.
+ */
+export async function generateSectionContent(generation, sectionIndex) {
+  const section = generation.outline.sections[sectionIndex];
+  if (!section) throw new Error(`Section ${sectionIndex} not in outline`);
   const sectionType = section.section_type || 'body';
+
+  const content = await generateTypeContent(generation, section, sectionType);
+  if (sectionType !== 'diagram') return { section_type: sectionType, content };
+
+  try {
+    return { section_type: sectionType, content: await renderWithRepair(generation.id, content, SECTION_SCHEMAS.diagram) };
+  } catch (err) {
+    if (!(err instanceof DiagramSyntaxError)) throw err;
+    console.warn(`Section ${sectionIndex + 1}: diagram failed to render (${err.message.split('\n')[0]}); using ${DIAGRAM_FALLBACK_TYPE}`);
+    return {
+      section_type: DIAGRAM_FALLBACK_TYPE,
+      content: await generateTypeContent(generation, section, DIAGRAM_FALLBACK_TYPE),
+    };
+  }
+}
+
+async function generateTypeContent(generation, section, sectionType) {
+  const { source_document_ids: docIds } = generation;
   const schema = SECTION_SCHEMAS[sectionType];
   if (!schema) throw new Error(`Unknown section type: ${sectionType}`);
 
@@ -155,20 +184,25 @@ export async function generateSectionContent(generation, sectionIndex) {
   };
 }
 
-export async function generateAllSections(generation, onProgress) {
-  const { outline } = generation;
-  const sections = [];
+/**
+ * Generates every section in order. onSectionDone(sections) runs after each one so the caller can save
+ * progress. With resume, sections that already have content (from an interrupted run) are kept.
+ */
+export async function generateAllSections(generation, { onProgress, onSectionDone, resume = false } = {}) {
+  const sections = generation.outline.sections.map((s) => ({ ...s }));
 
-  for (let i = 0; i < outline.sections.length; i++) {
+  for (let i = 0; i < sections.length; i++) {
+    if (resume && sections[i].content) continue;
     if (onProgress) onProgress({
       section: i + 1,
-      total: outline.sections.length,
+      total: sections.length,
       phase: 'section',
-      title: outline.sections[i].title,
-      section_type: outline.sections[i].section_type,
+      title: sections[i].title,
+      section_type: sections[i].section_type,
     });
-    const content = await generateSectionContent(generation, i);
-    sections.push({ ...outline.sections[i], content });
+    const { section_type, content } = await generateSectionContent(generation, i);
+    sections[i] = { ...sections[i], section_type, content };
+    if (onSectionDone) await onSectionDone(sections);
   }
 
   return sections;

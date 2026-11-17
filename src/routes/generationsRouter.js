@@ -20,9 +20,8 @@ generationsRouter.post('/:id/craft-prompt', generationsController.craftPrompt);
 generationsRouter.put('/:id/prompt', generationsController.updatePrompt);
 generationsRouter.post('/:id/generate-image', generationsController.generateImageSSE);
 generationsRouter.get('/:id/image', generationsController.serveImage);
-generationsRouter.post('/:id/generate-infographic', generationsController.generateInfographicSSE);
-generationsRouter.post('/:id/infographic/chat', generationsController.editInfographicChat);
-generationsRouter.get('/:id/infographic', generationsController.serveInfographic);
+generationsRouter.post('/:id/diagram', generationsController.renderDiagramCode);
+generationsRouter.get('/:id/diagrams/:key', generationsController.serveDiagram);
 generationsRouter.post('/release-gpu', generationsController.releaseGpu);
 generationsRouter.delete('/:id', generationsController.deleteGeneration);
 

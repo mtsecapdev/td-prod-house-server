@@ -3,6 +3,7 @@ import { generateStructured, chatStructured, requestEmbedding } from './llm.js';
 import { getSimilarChunksDb } from '../db/chunksQueries.js';
 import { updateGenerationDb } from '../db/generationsQueries.js';
 import { LAYOUT_SCHEMAS, LAYOUT_TYPES } from './slideSchemas.js';
+import { mermaidGuide, renderWithRepair, DiagramSyntaxError } from './diagrams.js';
 
 const SLIDE_COUNTS = { quick: [3, 5], standard: [6, 10], deep: [12, 18] };
 
@@ -45,7 +46,7 @@ function getSystemPrompt(layout) {
     bullets:
       `${base}\nWrite 3-5 punchy bullet points. Each bullet has a SHORT heading (2-5 words, like a label) and a one-sentence detail that gives the specific insight, fact, or action. Avoid generic advice — every detail should reference concrete information from the source. Write speaker notes that add context, examples, or talking points the presenter needs.`,
     two_column:
-      `${base}\nOrganize the content into two distinct columns that create a meaningful comparison, contrast, or categorization. Each column needs a clear heading and 2-4 bullets. The contrast should be immediately obvious — don't just split a list in half. Write speaker notes explaining the significance of the comparison.`,
+      `${base}\nOrganize the content into two distinct columns that create a meaningful comparison, contrast, or categorization. Each column needs a clear heading and 2-4 bullets. The contrast should be immediately obvious — don't just split a list in half. If the comparison leads to a clear conclusion, add a verdict: one sentence stating it (leave verdict empty otherwise). Write speaker notes explaining the significance of the comparison.`,
     stat_focus:
       `${base}\nIdentify the single most striking statistic or metric from the source material — one that would make the audience pause. The stat_value should be a number with its unit (e.g. "73%", "2.4x", "< 30 min"). The stat_label is 2-5 words naming what the stat measures. The context sentence explains why this number matters. Write speaker notes with additional data points and talking points.`,
     quote_highlight:
@@ -64,6 +65,10 @@ function getSystemPrompt(layout) {
       `${base}\nBreak the content into 3-6 sequential process steps. Each step has a short label (2-4 words, starts with a verb) and a detail sentence explaining what happens at that step. Steps must flow logically — the output of one feeds into the next. This is for PROCESSES and WORKFLOWS, not arbitrary lists. Write speaker notes covering decision points, exceptions, or tips per step.`,
     icon_grid:
       `${base}\nOrganize the content into 4-6 concept cards arranged in a grid. Each card has an icon keyword (a single word like "shield", "clock", "target", "users" — representing the concept visually), a short label (2-4 words), and a one-sentence description. Cards should be parallel in structure and roughly equal in weight. Write speaker notes that tie the concepts together.`,
+    key_stats:
+      `${base}\nPick 3-6 of the most important numbers from the source material that together tell one story. Each stat has a value (number with unit, e.g. "842.6M EUR", "11.4%", "1,150"), a label (2-4 words naming what it measures) and a detail (one sentence on why it matters or what drove it). Use only numbers that appear in the source. Write speaker notes that connect the numbers.`,
+    diagram:
+      `${base}\nDraw the slide's content as a Mermaid diagram that a presenter can talk through. It is shown on a wide 16:9 slide, so prefer left-to-right flowcharts with at most 8 nodes. Write a caption: one sentence telling the audience what the diagram shows. Write speaker notes that walk through the diagram step by step.\n\n${mermaidGuide({ direction: 'LR' })}`,
     comparison_table:
       `${base}\nOrganize the content into a structured comparison table. Define 2-4 column headers and 3-6 rows of data. Each cell should be concise (a few words or a short phrase). The table should reveal a pattern, comparison, or decision matrix — not just dump data. Write speaker notes explaining how to read the table and what conclusions to draw.`,
   };
@@ -147,6 +152,25 @@ const FEW_SHOT = {
     speaker_notes: 'Each pillar has a named executive sponsor and a dedicated P&L. Defence is the most mature — already at $4.2B. Commercial Aerospace is the growth story. Digital Solutions is the newest pillar, created in 2023. Global Expansion is opportunistic — the 3 target markets were chosen because they have large defence budgets AND growing aviation sectors. Ask: which pillar has the highest margin? Answer: Digital Solutions at 42%, because it is largely software and analytics.',
   }, null, 2),
 
+  key_stats: JSON.stringify({
+    title: 'FY2024 in Four Numbers',
+    stats: [
+      { value: '427', label: 'Aircraft serviced', detail: 'Up 31% on FY2023, driven by the new Pensacola widebody hangar.' },
+      { value: '32 days', label: 'Average turnaround', detail: '13 days faster than the 45-day industry average.' },
+      { value: '94%', label: 'First-time fix rate', detail: 'Highest across the network, led by the Singapore hub.' },
+      { value: '$180M', label: 'Hangar investment', detail: 'Pays back in 3.2 years at current utilisation.' },
+    ],
+    speaker_notes: 'These four numbers tell one story: we added capacity and used it well. Start with throughput, then show that speed and quality held up as volume grew. Close on the investment to show the growth was paid for. Ask: which of these would a customer care about most? Usually turnaround, because every day in the hangar is a day the aircraft is not earning.',
+  }, null, 2),
+
+  diagram: JSON.stringify({
+    title: 'How an Engine Moves Through Intake',
+    diagram_type: 'flowchart',
+    mermaid_code: 'flowchart LR\n  A[Engine arrives] --> B[Verify work order]\n  B --> C[Borescope inspection]\n  C --> D{Damage found?}\n  D -- No --> E[Standard repair scope]\n  D -- Yes --> F["Log FOD (A/B/C rating)"]\n  F --> G[Re-quote customer]\n  G --> E\n  E --> H[Disassembly bay]',
+    caption: 'Every engine follows this path before disassembly; damage findings add a re-quote step.',
+    speaker_notes: 'Walk left to right. The decision point is the borescope result: about 80% of hidden damage is caught here. When damage is found, the FOD is rated A, B or C and the customer is re-quoted before work starts, which avoids the average $120K overrun from unquoted repairs. Ask: who signs off before the engine moves to disassembly? Both the receiving technician and QA.',
+  }, null, 2),
+
   comparison_table: JSON.stringify({
     title: 'Engine MRO Turnaround: Our Sites vs Industry',
     columns: ['Metric', 'Singapore', 'Pensacola', 'Chengdu', 'Industry Avg'],
@@ -192,6 +216,8 @@ function getUserPrompt(layout, slide, context) {
     timeline:        `${header}${example}Generate 3-6 events in chronological order. Each event: a date/time marker, a short label (2-5 words), and an optional detail sentence. Plus speaker notes on the timeline's significance.`,
     process_flow:    `${header}${example}Generate 3-6 sequential process steps. Each step: a verb-led label (2-4 words) and a detail sentence. Steps must flow logically. Plus speaker notes with tips and exceptions.`,
     icon_grid:       `${header}${example}Generate 4-6 concept cards. Each card: an icon keyword (one word like "shield", "clock", "target"), a label (2-4 words), and a one-sentence description. Plus speaker notes tying the concepts together.`,
+    key_stats:       `${header}${example}Generate 3-6 stats. Each: value (number with unit, from the source), label (2-4 words), detail (one sentence). Plus speaker notes connecting them.`,
+    diagram:         `${header}${example}Generate a Mermaid diagram of this slide's content (valid syntax, left-to-right, max 8 nodes), a one-sentence caption, and speaker notes walking through it.`,
     comparison_table:`${header}${example}Generate a comparison table: 2-4 column headers and 3-6 rows. Each cell: a concise phrase. The table should reveal a pattern or comparison. Plus speaker notes explaining how to read it.`,
   };
 
@@ -229,6 +255,8 @@ export async function generateOutline(generation) {
     `- "process_flow": Sequential workflow or process with 3-6 steps where each step feeds into the next. ONLY for genuine processes — not arbitrary lists.\n` +
     `- "icon_grid": 4-6 concept cards in a grid, each with an icon, label, and description. Use when presenting parallel concepts, categories, or capabilities of equal weight.\n` +
     `- "comparison_table": Structured table with columns and rows. ONLY when the content has structured data, specs, or a decision matrix that benefits from tabular presentation.\n` +
+    `- "key_stats": 3-6 numbers shown side by side. ONLY when the source has several related figures (results, KPIs, scale). Use "stat_focus" instead when one number matters most.\n` +
+    `- "diagram": A flowchart, sequence diagram or mind map. Use when the content is a process with decisions or branches, an interaction between people or systems, or a structure (org, system parts) that reads better as a picture than as text. Max 1-2 per deck.\n` +
     `- "closing": Final slide. Wraps up with 3-5 key takeaways and an optional call to action. ONLY for the last slide.\n\n` +
     `Source material:\n${context}\n\n` +
     `Generate an outline. For each slide provide:\n` +
@@ -239,7 +267,7 @@ export async function generateOutline(generation) {
     `- Slide 1 MUST be "title". The last slide MUST be "closing". No other slide should use "title" or "closing".\n` +
     `- Build a logical narrative: open with context/why it matters → teach the core content → close with takeaways.\n` +
     `- Choose layouts because the CONTENT demands them, not for variety. A deck of 3 bullets slides and a checklist is fine if that's what the material calls for. A forced stat_focus with a made-up number is not.\n` +
-    `- "bullets" is the default. Only use a specialty layout (stat_focus, quote_highlight, two_column, checklist, timeline, process_flow, icon_grid, comparison_table, big_idea, section_divider) when the source material clearly supports it.\n` +
+    `- "bullets" is the default. Only use a specialty layout (stat_focus, key_stats, quote_highlight, two_column, checklist, timeline, process_flow, icon_grid, comparison_table, diagram, big_idea, section_divider) when the source material clearly supports it.\n` +
     `- Each slide should cover one distinct idea — never cram multiple topics into one slide.\n` +
     `- Use only information from the source material. Never invent statistics or quotes.\n` +
     `- Stay within the slide count range.`;
@@ -261,12 +289,36 @@ export async function generateOutline(generation) {
   return { slides };
 }
 
-export async function generateSlideContent(generation, slideIndex) {
-  const { outline, source_document_ids: docIds } = generation;
-  const slide = outline.slides[slideIndex];
-  if (!slide) throw new Error(`Slide ${slideIndex} not in outline`);
+// A diagram that still fails to render after one repair becomes a process flow, so one bad diagram never
+// stops the deck.
+const DIAGRAM_FALLBACK_LAYOUT = 'process_flow';
 
+/**
+ * Generates one slide. Returns { layout, content }; layout differs from the outline only when a diagram
+ * had to fall back.
+ */
+export async function generateSlideContent(generation, slideIndex) {
+  const slide = generation.outline.slides[slideIndex];
+  if (!slide) throw new Error(`Slide ${slideIndex} not in outline`);
   const layout = slide.layout || 'bullets';
+
+  const content = await generateLayoutContent(generation, slide, layout);
+  if (layout !== 'diagram') return { layout, content };
+
+  try {
+    return { layout, content: await renderWithRepair(generation.id, content, LAYOUT_SCHEMAS.diagram) };
+  } catch (err) {
+    if (!(err instanceof DiagramSyntaxError)) throw err;
+    console.warn(`Slide ${slideIndex + 1}: diagram failed to render (${err.message.split('\n')[0]}); using ${DIAGRAM_FALLBACK_LAYOUT}`);
+    return {
+      layout: DIAGRAM_FALLBACK_LAYOUT,
+      content: await generateLayoutContent(generation, slide, DIAGRAM_FALLBACK_LAYOUT),
+    };
+  }
+}
+
+async function generateLayoutContent(generation, slide, layout) {
+  const { source_document_ids: docIds } = generation;
   const schema = LAYOUT_SCHEMAS[layout];
   if (!schema) throw new Error(`Unknown layout: ${layout}`);
 
@@ -290,14 +342,19 @@ export async function generateSlideContent(generation, slideIndex) {
   };
 }
 
-export async function generateAllSlides(generation, onProgress) {
-  const { outline } = generation;
-  const slides = [];
+/**
+ * Generates every slide in order. onSlideDone(slides) runs after each one so the caller can save progress.
+ * With resume, slides that already have content (from an interrupted run) are kept.
+ */
+export async function generateAllSlides(generation, { onProgress, onSlideDone, resume = false } = {}) {
+  const slides = generation.outline.slides.map((s) => ({ ...s }));
 
-  for (let i = 0; i < outline.slides.length; i++) {
-    if (onProgress) onProgress({ slide: i + 1, total: outline.slides.length, phase: 'slide', title: outline.slides[i].title, layout: outline.slides[i].layout });
-    const content = await generateSlideContent(generation, i);
-    slides.push({ ...outline.slides[i], content });
+  for (let i = 0; i < slides.length; i++) {
+    if (resume && slides[i].content) continue;
+    if (onProgress) onProgress({ slide: i + 1, total: slides.length, phase: 'slide', title: slides[i].title, layout: slides[i].layout });
+    const { layout, content } = await generateSlideContent(generation, i);
+    slides[i] = { ...slides[i], layout, content };
+    if (onSlideDone) await onSlideDone(slides);
   }
 
   return slides;

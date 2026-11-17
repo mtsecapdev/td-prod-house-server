@@ -4,8 +4,7 @@ import { getSimilarChunksDb } from '../db/chunksQueries.js';
 import { getGenerationByIdDb, updateGenerationDb } from '../db/generationsQueries.js';
 import { LAYOUT_SCHEMAS } from './slideSchemas.js';
 import { SECTION_SCHEMAS } from './docSchemas.js';
-import { INFOGRAPHIC_SCHEMAS } from './infographicSchemas.js';
-import { renderInfographic } from './infographicGenerator.js';
+import { mermaidGuide, renderWithRepair, DiagramSyntaxError } from './diagrams.js';
 
 export async function editSlide(generationId, slideIndex, instruction, history = []) {
   const generation = await getGenerationByIdDb(generationId);
@@ -35,7 +34,7 @@ export async function editSlide(generationId, slideIndex, instruction, history =
   const layoutGuide = {
     title: 'Fields: "title" (slide title), "subtitle" (subtitle text).',
     bullets: 'Fields: "title" (slide title), "bullets" (array of {heading, detail}), "speaker_notes". To remove a bullet, omit it from the array. To add one, add a new {heading, detail} entry.',
-    two_column: 'Fields: "title" (slide title), "column_a_heading", "column_a_bullets" (array of strings), "column_b_heading", "column_b_bullets" (array of strings), "speaker_notes". To remove a column, set its heading to "" and its bullets to []. To remove specific bullets, omit them from the array.',
+    two_column: 'Fields: "title" (slide title), "column_a_heading", "column_a_bullets" (array of strings), "column_b_heading", "column_b_bullets" (array of strings), "verdict" (optional one-sentence conclusion, "" for none), "speaker_notes". To remove a column, set its heading to "" and its bullets to []. To remove specific bullets, omit them from the array.',
     stat_focus: 'Fields: "title" (slide title), "stat_value" (the number/metric), "stat_label" (what it measures), "context" (why it matters), "speaker_notes".',
     quote_highlight: 'Fields: "title" (slide title), "quote_text" (the quote), "attribution" (who said it), "commentary" (why it matters), "speaker_notes".',
     checklist: 'Fields: "title" (slide title), "items" (array of {step, detail}), "speaker_notes". To remove a step, omit it from the array. To add one, add a new {step, detail} entry.',
@@ -46,6 +45,8 @@ export async function editSlide(generationId, slideIndex, instruction, history =
     process_flow: 'Fields: "title" (slide title), "steps" (array of {label, detail}), "speaker_notes". To remove a step, omit it. To add one, add a new {label, detail} entry in sequence.',
     icon_grid: 'Fields: "title" (slide title), "items" (array of {icon, label, description}), "speaker_notes". icon is a single keyword. To remove an item, omit it. To add one, add a new entry.',
     comparison_table: 'Fields: "title" (slide title), "columns" (array of header strings), "rows" (array of arrays matching column count), "speaker_notes". To add a row, add an array. To add a column, add to columns and extend each row.',
+    key_stats: 'Fields: "title" (slide title), "stats" (array of {value, label, detail}), "speaker_notes". To remove a stat, omit it. To add one, add a new entry using a number from the source.',
+    diagram: `Fields: "title" (slide title), "diagram_type" (flowchart, sequence or mindmap), "mermaid_code", "caption" (one sentence), "speaker_notes". To change the diagram, edit mermaid_code.\n${mermaidGuide({ direction: 'LR' })}`,
   };
 
   const messages = [
@@ -69,7 +70,8 @@ export async function editSlide(generationId, slideIndex, instruction, history =
     { role: 'user', content: instruction },
   ];
 
-  const updatedContent = await chatStructured(messages, config.ollama.generateModel, schema, { think: true });
+  let updatedContent = await chatStructured(messages, config.ollama.generateModel, schema, { think: true });
+  if (layout === 'diagram') updatedContent = await renderEditedDiagram(generationId, updatedContent, schema);
 
   const updatedSlides = [...outline.slides];
   updatedSlides[slideIndex] = {
@@ -101,6 +103,7 @@ const sectionGuide = {
   key_points: 'Fields: "title", "introduction", "points" (array of {label, description}), "notes". To remove a point, omit it from the array.',
   reference_table: 'Fields: "title", "introduction", "columns" (array of header strings), "rows" (array of arrays matching column count), "notes". To add a row, add an array. To add a column, add to columns and extend each row.',
   summary: 'Fields: "title", "recap_points" (array of strings), "next_steps", "notes". To remove a point, omit it from the array.',
+  diagram: `Fields: "title", "introduction", "diagram_type" (flowchart, sequence or mindmap), "mermaid_code", "caption" (short figure title), "notes". To change the figure, edit mermaid_code.\n${mermaidGuide({ direction: 'TD' })}`,
 };
 
 export async function editSection(generationId, sectionIndex, instruction, history = []) {
@@ -148,7 +151,8 @@ export async function editSection(generationId, sectionIndex, instruction, histo
     { role: 'user', content: instruction },
   ];
 
-  const updatedContent = await chatStructured(messages, config.ollama.generateModel, schema, { think: true });
+  let updatedContent = await chatStructured(messages, config.ollama.generateModel, schema, { think: true });
+  if (sType === 'diagram') updatedContent = await renderEditedDiagram(generationId, updatedContent, schema);
 
   const updatedSections = [...outline.sections];
   updatedSections[sectionIndex] = {
@@ -173,85 +177,15 @@ export async function editSection(generationId, sectionIndex, instruction, histo
   return updatedContent;
 }
 
-const infographicGuide = {
-  diagram:
-    'Fields: "diagram_type" (flowchart, sequence, or mindmap), "title", "mermaid_code" (valid Mermaid.js syntax). ' +
-    'When editing mermaid_code, ensure the output is syntactically valid Mermaid. ' +
-    'Do NOT change diagram_type unless the user specifically asks.',
-  process:
-    'Fields: "title", "subtitle", "steps" (array of {number, label, description}). ' +
-    'To remove a step, omit it. To add one, add a new entry with the correct number. Renumber if needed.',
-  comparison:
-    'Fields: "title", "subtitle", "column_a" ({heading, points[]}), "column_b" ({heading, points[]}), "verdict". ' +
-    'To remove a point, omit it from the array. To add one, append a string.',
-  key_stats:
-    'Fields: "title", "subtitle", "stats" (array of {value, label, detail}). ' +
-    'To remove a stat, omit it. To add one, add a new {value, label, detail} entry.',
-  timeline:
-    'Fields: "title", "subtitle", "events" (array of {date, label, description}). ' +
-    'To remove an event, omit it. To add one, add a new entry in chronological position.',
-};
-
-export async function editInfographic(generationId, instruction, history = []) {
-  const generation = await getGenerationByIdDb(generationId);
-  const { outline, source_document_ids: docIds } = generation;
-
-  const format = outline?.format;
-  const content = outline?.content;
-  if (!content) throw new Error('No infographic content to edit');
-
-  const schema = INFOGRAPHIC_SCHEMAS[format];
-  if (!schema) throw new Error(`Unknown infographic format: ${format}`);
-
-  const instructionEmbedding = await requestEmbedding(instruction);
-  const chunks = await getSimilarChunksDb(instructionEmbedding, 3, docIds);
-
-  const context = chunks
-    .map((c, i) => `[${i + 1}] (page ${c.page ?? '?'}): ${c.content}`)
-    .join('\n\n');
-
-  const currentContent = JSON.stringify(content, null, 2);
-
-  const editLog = (generation.edit_history || [])
-    .filter((e) => e.type === 'infographic' && e.before)
-    .map((e) => `User said: "${e.instruction}"\nContent before that edit:\n${JSON.stringify(e.before, null, 2)}`)
-    .join('\n\n---\n\n');
-
-  const messages = [
-    {
-      role: 'system',
-      content:
-        `You are editing a ${format} infographic based on a user instruction.\n` +
-        `${infographicGuide[format] || ''}\n\n` +
-        `IMPORTANT: You must return the COMPLETE updated JSON with ALL fields — not a diff or partial update.\n` +
-        `Apply exactly what the user asks. If they say "remove" something, actually remove it.\n` +
-        `If they say "change" something, change it and keep everything else the same.\n` +
-        `If the instruction references source material, use the provided excerpts.\n\n` +
-        `Current content:\n${currentContent}\n\n` +
-        (editLog ? `Edit history:\n${editLog}\n\n` : '') +
-        `Available source material:\n${context}`,
-    },
-    ...history.map((h) => ({ role: h.role, content: h.content })),
-    { role: 'user', content: instruction },
-  ];
-
-  const updatedContent = await chatStructured(messages, config.ollama.generateModel, schema, { think: true });
-
-  const filePath = await renderInfographic(generationId, format, updatedContent);
-
-  const editEntry = {
-    type: 'infographic',
-    instruction,
-    before: content,
-    timestamp: new Date().toISOString(),
-  };
-
-  const editHistory = [...(generation.edit_history || []), editEntry];
-
-  await updateGenerationDb(generationId, {
-    outline: JSON.stringify({ format, content: updatedContent, file_path: filePath }),
-    edit_history: editHistory,
-  });
-
-  return updatedContent;
+// Edited diagrams are re-rendered before saving. If the code still doesn't parse after one repair, the edit is
+// rejected and the previous version stays, so a slide or section never points at a missing image.
+async function renderEditedDiagram(generationId, content, schema) {
+  try {
+    return await renderWithRepair(generationId, content, schema);
+  } catch (err) {
+    if (err instanceof DiagramSyntaxError) {
+      throw new Error(`That change produced a diagram that doesn't render, so nothing was changed. Mermaid said: ${err.message.split('\n')[0]}`);
+    }
+    throw err;
+  }
 }
