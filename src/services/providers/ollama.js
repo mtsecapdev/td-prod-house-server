@@ -1,6 +1,6 @@
 import config from '../../config.js';
 
-const { baseUrl } = config.ollama;
+const { baseUrl, numCtx } = config.ollama;
 
 async function ollamaFetch(path, body, timeoutMs = 600_000) {
   const res = await fetch(new URL(path, baseUrl), {
@@ -23,20 +23,17 @@ export async function embedBatch(inputs, model) {
 }
 
 export async function generate(prompt, model, { format, think } = {}) {
-  const body = { model, prompt, stream: false };
+  // Same num_ctx on every call: Ollama reloads the model whenever it changes.
+  const body = { model, prompt, stream: false, options: { num_ctx: numCtx } };
   if (format) body.format = format;
-  if (think === true) body.options = { ...body.options, num_ctx: 32768 };
-  else if (think === false) body.options = { ...body.options, num_ctx: 8192 };
   if (think !== undefined) body.think = think;
   const data = await ollamaFetch('/api/generate', body);
   return data.response;
 }
 
 export async function chat(messages, model, { format, think } = {}) {
-  const body = { model, messages, stream: false };
+  const body = { model, messages, stream: false, options: { num_ctx: numCtx } };
   if (format) body.format = format;
-  if (think === true) body.options = { ...body.options, num_ctx: 32768 };
-  else if (think === false) body.options = { ...body.options, num_ctx: 8192 };
   if (think !== undefined) body.think = think;
   const data = await ollamaFetch('/api/chat', body);
   return data.message;

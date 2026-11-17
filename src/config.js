@@ -12,6 +12,7 @@ const config = {
     embeddingModel: required('EMBEDDING_MODEL_NAME'),
     rewriteModel: required('REWRITE_QUERY_MODEL_NAME'),
     generateModel: required('GENERATE_MODEL_NAME'),
+    numCtx: Number(process.env.OLLAMA_NUM_CTX ?? 32768),
   },
   docling: {
     endpoint: required('DOCLING_SERVE_ENDPOINT'),

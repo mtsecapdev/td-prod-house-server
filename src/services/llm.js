@@ -42,30 +42,33 @@ export async function rewriteQuery(history, originalQuery) {
     `Given this conversation history:\n${recent}\n\n` +
     `Rewrite the following query to be fully self-contained and specific, ` +
     `suitable for a semantic document search. ` +
+    `Resolve references like "this" or "it" using the history, and keep everything the user is asking for ` +
+    `(for example a page, date or source). Keep it phrased as a question if it is one. ` +
     `Return only the rewritten query, no explanation.\n\n` +
     `Query: ${originalQuery}`;
 
   try {
-    return await provider.generate(prompt, rewriteModel);
+    // Rewriting is a one-line task; reasoning only adds latency.
+    const rewritten = (await provider.generate(prompt, rewriteModel, { think: false })).trim();
+    return rewritten || originalQuery;
   } catch (error) {
     throw new AppError(`Query rewrite failed: ${error.message}`, 503, error);
   }
 }
 
-const CHUNK_MAX_CHARS = 1200;
-
 export async function generateAnswer(query, history, chunks) {
   let listOfChunks = '';
   let totalScore = 0;
 
-  chunks.forEach((chunk, i) => {
-    const trimmed = chunk.content.length > CHUNK_MAX_CHARS
-      ? chunk.content.slice(0, CHUNK_MAX_CHARS) + '...'
-      : chunk.content;
-    const levelTag = chunk.level === 'document' ? 'DOC SUMMARY' : chunk.level === 'section' ? 'SECTION SUMMARY' : null;
-    const meta = [levelTag, chunk.heading, chunk.page != null ? `Page ${chunk.page}` : null]
-      .filter(Boolean).join(' | ');
-    listOfChunks += `Chunk ${i + 1}${meta ? ` [${meta}]` : ''}: ${trimmed}\n`;
+  // Label excerpts by where they come from (page, section), not by position: positions change every
+  // turn and mean nothing to the user, so the model would otherwise cite "Chunk 2".
+  // Excerpts are passed in full. textChunker already caps them (~2000 chars); cutting them here
+  // silently hid the second half of most chunks, including the rows of long tables.
+  chunks.forEach((chunk) => {
+    const levelTag = chunk.level === 'document' ? 'document summary' : chunk.level === 'section' ? 'section summary' : null;
+    const meta = [chunk.page != null ? `p. ${chunk.page}` : null, chunk.heading, levelTag]
+      .filter(Boolean).join(' · ');
+    listOfChunks += `[${meta || 'excerpt'}]\n${chunk.content}\n\n`;
     totalScore += chunk.similarity;
   });
 
@@ -80,6 +83,10 @@ export async function generateAnswer(query, history, chunks) {
     `- Do not refuse to answer or say "the document doesn't cover this" when the user is clearly asking for YOUR thoughts. They want a discussion, not a search engine.\n` +
     `- When the user asks to be taught something or to explain a topic, give a thorough answer using all relevant excerpts. Do not hold back content.\n` +
     `- For direct questions, be concise but substantive.\n` +
+    `- Each excerpt is labelled with its page and section, e.g. [p. 4 · 2.4 Group at a glance]. ` +
+    `When you state a fact from the documents, cite its page in parentheses, e.g. (p. 4). ` +
+    `When the user asks where something is stated, list the pages and section names. ` +
+    `Never mention excerpts, chunks or their labels; the user cannot see them.\n` +
     `- Use plain text only. Do not use markdown formatting (no **, *, #, or bullet symbols like -).\n\n` +
     `Document excerpts:\n` +
     listOfChunks;

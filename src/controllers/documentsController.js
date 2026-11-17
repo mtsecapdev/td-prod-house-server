@@ -121,8 +121,9 @@ async function queryDocumentsPost(req, res) {
     const finalChunks = expanded.slice(0, config.rag.topK + 5);
 
     send({ phase: 'generating' });
+    // The rewrite is only for retrieval. Answer what the user actually asked; history supplies the context.
     const { llmResponse, avgConfidenceScore } = await generateAnswer(
-      rewrittenQuery,
+      originalQuery,
       history,
       finalChunks,
     );
