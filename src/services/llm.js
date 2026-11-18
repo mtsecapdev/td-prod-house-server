@@ -91,7 +91,10 @@ export async function generateAnswer(query, history, chunks, figures = []) {
 
   const systemPrompt =
     `You are a knowledgeable assistant helping users understand and discuss documents.\n` +
-    `You are in a multi-turn conversation. You may reference previous exchanges where relevant.\n\n` +
+    `You are in a multi-turn conversation. You may reference previous exchanges where relevant.\n` +
+    `Your earlier replies may have been based on fewer or different excerpts (documents get re-uploaded and ` +
+    `searches differ). When the excerpts below contain the answer, use them, even if an earlier reply said ` +
+    `the documents did not cover it; say briefly that you now have more detail.\n\n` +
     `How to answer:\n` +
     `- For factual questions about the documents, answer from the provided excerpts.\n` +
     `- When the user asks "what do you think", asks for your opinion, or wants analysis/comparison/context beyond what the documents cover — give your own informed answer using your general knowledge. Briefly note what the document says first, then share your own perspective.\n` +
