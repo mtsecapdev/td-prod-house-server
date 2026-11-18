@@ -1,4 +1,7 @@
 import pool from './pool.js';
+import { generationName } from './generationsQueries.js';
+
+const FIGURE_COLUMNS = 'f.id, f.document_id, f.key, f.page, f.caption, f.labels, f.width, f.height, f.hidden';
 
 export async function insertFigureDb(documentId, { key, page, caption, labels, filePath, width, height }) {
   await pool.query(
@@ -9,19 +12,90 @@ export async function insertFigureDb(documentId, { key, page, caption, labels, f
   );
 }
 
-/** Figures by (document, key) pairs, e.g. those referenced by retrieved passages. */
+/** Figures by (document, key) pairs, e.g. those referenced by retrieved passages. Hidden ones excluded. */
 export async function getFiguresByKeysDb(pairs) {
   if (!pairs.length) return [];
   const res = await pool.query(
-    `SELECT f.id, f.document_id, f.key, f.page, f.caption, f.labels, f.width, f.height
+    `SELECT ${FIGURE_COLUMNS}
      FROM figures f
-     JOIN unnest($1::int[], $2::text[]) AS want(document_id, key) USING (document_id, key)`,
+     JOIN unnest($1::int[], $2::text[]) AS want(document_id, key) USING (document_id, key)
+     WHERE NOT f.hidden`,
     [pairs.map((p) => p.documentId), pairs.map((p) => p.key)],
   );
   return res.rows;
 }
 
 export async function getFigureByIdDb(id) {
-  const res = await pool.query('SELECT id, document_id, file_path, caption FROM figures WHERE id = $1', [id]);
+  const res = await pool.query(`SELECT ${FIGURE_COLUMNS}, f.file_path FROM figures f WHERE f.id = $1`, [id]);
   return res.rows[0] || null;
+}
+
+export async function getFiguresByIdsDb(ids) {
+  if (!ids.length) return [];
+  const res = await pool.query(`SELECT ${FIGURE_COLUMNS}, f.file_path FROM figures f WHERE f.id = ANY($1)`, [ids]);
+  return res.rows;
+}
+
+/**
+ * Figures for the Assets page and pickers, newest documents first. q matches the caption or the text inside
+ * the figure; documentIds limits to those documents.
+ */
+export async function listFiguresDb({ q, documentIds, includeHidden = false } = {}) {
+  const where = [];
+  const params = [];
+  if (!includeHidden) where.push('NOT f.hidden');
+  if (documentIds?.length) {
+    params.push(documentIds);
+    where.push(`f.document_id = ANY($${params.length})`);
+  }
+  if (q?.trim()) {
+    params.push(`%${q.trim()}%`);
+    where.push(`(f.caption ILIKE $${params.length} OR f.labels ILIKE $${params.length})`);
+  }
+  const res = await pool.query(
+    `SELECT ${FIGURE_COLUMNS}, d.name AS document_name
+     FROM figures f JOIN documents d ON d.id = f.document_id
+     ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
+     ORDER BY d.uploaded_at DESC, f.page NULLS LAST, f.id`,
+    params,
+  );
+  return res.rows;
+}
+
+export async function setFigureHiddenDb(id, hidden) {
+  await pool.query('UPDATE figures SET hidden = $2 WHERE id = $1', [id, hidden]);
+}
+
+export async function deleteFigureDb(id) {
+  const res = await pool.query('DELETE FROM figures WHERE id = $1 RETURNING file_path', [id]);
+  return res.rows[0] || null;
+}
+
+/**
+ * Where figures are used: every slide/section whose plan or content names one of these figure ids.
+ * Reads the outlines directly, so it is always current; at large scale this becomes a usage table kept on save.
+ */
+export async function figureUsageDb(figureIds) {
+  if (!figureIds.length) return [];
+  const res = await pool.query(
+    `SELECT g.id, g.type, g.outline, g.brief
+     FROM generations g
+     WHERE g.outline IS NOT NULL
+       AND jsonb_path_exists(g.outline, '$.*[*] ? (@.figure_id == $ids[*] || @.content.figure_id == $ids[*])',
+                             jsonb_build_object('ids', to_jsonb($1::int[])))`,
+    [figureIds],
+  );
+  const wanted = new Set(figureIds.map(Number));
+  const uses = [];
+  for (const g of res.rows) {
+    const items = g.outline.slides || g.outline.sections || [];
+    const name = generationName(g);
+    items.forEach((it, index) => {
+      // Only items still laid out as a figure: one changed to another layout keeps a stale figure_id.
+      if ((it.layout ?? it.section_type) !== 'figure') return;
+      const fid = Number(it.content?.figure_id ?? it.figure_id);
+      if (wanted.has(fid)) uses.push({ figure_id: fid, generation_id: g.id, type: g.type, name, index });
+    });
+  }
+  return uses;
 }

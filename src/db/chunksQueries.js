@@ -135,3 +135,14 @@ export async function getChunksByIdsDb(ids) {
   const byId = new Map(res.rows.map((r) => [r.id, r]));
   return ids.map((id) => byId.get(Number(id))).filter(Boolean); // keep the caller's order
 }
+
+/** The passages that contain a figure (by its marker), in reading order. */
+export async function getChunksWithFigureDb(documentId, key) {
+  const res = await pool.query(
+    `SELECT id, document_id, content, page, heading FROM chunks
+     WHERE document_id = $1 AND level = 'leaf' AND position($2 in content) > 0
+     ORDER BY id`,
+    [documentId, `<!-- figure:${key} -->`],
+  );
+  return res.rows;
+}

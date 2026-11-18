@@ -25,6 +25,8 @@ const DECK = {
   defaultCount: 8,
   // Items that frame the deck rather than carry evidence: no sources searched for them.
   noSourceTypes: ['title', 'closing', 'section_divider'],
+  // Assigned by the app (figure insertion, planning suggestions), never by the layout chooser or remix.
+  appOnlyTypes: ['figure'],
 
   // Shown to the outline model. Describes what each layout is FOR, so it can match content to layout;
   // none is framed as an exception to bullets.
@@ -43,6 +45,7 @@ const DECK = {
     icon_grid: 'Three to six parallel concepts or categories of equal weight.',
     comparison_table: 'Several items compared on the same attributes.',
     diagram: 'A process with decisions or branches, a hand-off between roles or systems, or a structure such as an org or system.',
+    figure: 'A figure taken from the source documents (assigned by the app).',
     closing: 'Final slide: takeaways and what to do next. Last slide only.',
   },
 
@@ -80,6 +83,7 @@ const DECK = {
     icon_grid: '3-6 items. icon: one keyword (shield, clock, users). label: 2-4 words. description: one sentence.',
     comparison_table: '2-5 columns and 2-7 rows. Cells are short phrases. The table should reveal a pattern.',
     diagram: `caption: one sentence telling the audience what the diagram shows. The slide is wide (16:9): prefer left-to-right flowcharts with at most 8 nodes.\n${mermaidGuide({ direction: 'LR' })}`,
+    figure: 'The slide shows a figure from the documents (its caption and the text printed in it are given). title: what the audience should see in it (max 10 words). caption: one sentence on what to take from it. speaker_notes: walk through the figure using its text.',
   },
 
   formats: {
@@ -114,6 +118,7 @@ const DOC = {
   countRange: [3, 20],
   defaultCount: 8,
   noSourceTypes: ['heading', 'summary'],
+  appOnlyTypes: ['figure'],
 
   typeGuide: {
     heading: 'Title page: document title, purpose and a short executive summary. First section only.',
@@ -122,6 +127,7 @@ const DOC = {
     key_points: 'Rules, requirements or facts the reader must remember.',
     reference_table: 'Data to look up: specifications, comparisons, parameters, contacts.',
     diagram: 'A figure: a process with decisions, a hand-off between roles or systems, or a structure.',
+    figure: 'A figure taken from the source documents (assigned by the app).',
     summary: 'Recap and next steps. Last section only.',
   },
 
@@ -140,6 +146,7 @@ const DOC = {
     key_points: 'introduction: 1-2 sentences. 3-8 points: label (2-5 words), description (1-3 sentences with specifics). notes: optional context.',
     reference_table: 'introduction: what the table holds and how to use it. 2-6 columns; rows of short cells matching the columns. notes: abbreviations or special values.',
     diagram: `introduction: what the figure shows and when to use it (1-2 sentences). caption: a short figure title. notes: explanation of steps or branches that need it. Top-down flowcharts suit a portrait page.\n${mermaidGuide({ direction: 'TD' })}`,
+    figure: 'The section shows a figure from the documents (its caption and the text printed in it are given). introduction: what the figure shows and why it matters (1-2 sentences). caption: a short figure title. notes: explain the figure using its text.',
     summary: 'recap_points: one per key message of the document, each one sentence. next_steps: 2-3 sentences on what the reader should do next. notes: optional.',
   },
 

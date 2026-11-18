@@ -10,6 +10,7 @@ import { renderWithRepair, DiagramSyntaxError } from '../diagrams.js';
 import { kindOf, styleGuide, briefBlock, storylineBlock } from './kinds.js';
 import { fitContent } from './fit.js';
 import { stripFigureMarkers } from '../figures.js';
+import { getFigureByIdDb } from '../../db/figuresQueries.js';
 import { sourceQuery, pastedText } from './planner.js';
 
 const { generateModel } = config.ollama;
@@ -83,7 +84,7 @@ async function sourcesFor(generation, kind, item) {
   };
 }
 
-async function writeAs(generation, kind, index, type, { note } = {}) {
+async function writeAs(generation, kind, index, type, { note, figure } = {}) {
   const items = generation.outline[kind.listKey];
   const item = items[index];
   const { rows, sources } = await sourcesFor(generation, kind, item);
@@ -98,6 +99,8 @@ async function writeAs(generation, kind, index, type, { note } = {}) {
     `Write ${kind.noun} ${index + 1} of ${items.length}.`,
     `Planned title (improve it if you can): ${item.title}`,
     bullets.length ? `What it should cover:\n${bullets.map((t) => `- ${t}`).join('\n')}` : '',
+    figure ? `The figure this ${kind.noun} shows: ${figure.caption || 'untitled figure'} (p. ${figure.page ?? '?'}).` +
+      (figure.labels ? `\nText printed in the figure, in reading order: ${figure.labels}` : '') : '',
     item.own_text ? `The user's own text for this ${kind.noun}:\n\"\"\"\n${item.own_text}\n\"\"\"` : '',
     generation.brief?.source_text ? TEXT_MODES[generation.brief.text_mode] || TEXT_MODES.generate : '',
     userNote ? `Note from the user (follow it): ${userNote}` : '',
@@ -120,6 +123,7 @@ async function writeAs(generation, kind, index, type, { note } = {}) {
   const result = await chatStructured(messages, generateModel, schema, { think: true });
   const content = await fitContent(kind.limits[type], schema, {
     ...result,
+    ...(figure ? { figure_id: figure.id } : {}),
     source_chunk_ids: rows.map((r) => r.id),
     used_pages: [...new Set(rows.map((r) => r.page).filter((p) => p != null))].sort((a, b) => a - b),
   });
@@ -135,6 +139,14 @@ export async function writeItem(generation, index, { note, type: typeOverride } 
   const item = generation.outline[kind.listKey][index];
   if (!item) throw new Error(`${kind.noun} ${index + 1} is not in the outline`);
   const type = kind.types.includes(typeOverride) ? typeOverride : (item[kind.typeKey] || kind.defaultType);
+
+  if (type === 'figure') {
+    const figure = item.figure_id ? await getFigureByIdDb(item.figure_id) : null;
+    if (figure) return { type, ...(await writeAs(generation, kind, index, type, { note, figure })) };
+    // The figure was deleted: write the slide as points instead.
+    const fallback = await writeAs(generation, kind, index, kind.defaultType, { note });
+    return { type: kind.defaultType, ...fallback };
+  }
 
   const { content, sources } = await writeAs(generation, kind, index, type, { note });
   if (type !== 'diagram') return { type, content, sources };

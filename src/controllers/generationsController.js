@@ -20,7 +20,7 @@ import {
 import { kindOf } from '../services/planning/kinds.js';
 import { planOutline, attachSources, searchSources, suggestTypes } from '../services/planning/planner.js';
 import { writeAll } from '../services/planning/writer.js';
-import { rewriteItem, insertItem } from '../services/planning/itemOps.js';
+import { rewriteItem, insertItem, placeFigure } from '../services/planning/itemOps.js';
 import { planAgent, applyAgent, undoAgent } from '../services/planning/agent.js';
 import { startJob } from '../services/jobs.js';
 import { editSlide, editSection } from '../services/editChat.js';
@@ -277,6 +277,22 @@ async function addItem(req, res) {
   res.status(201).json(responseFactory.createJsonResponse(result));
 }
 
+// Puts a document figure into the deck/document: { figureId, index, mode: 'replace' | 'after' }.
+async function addFigure(req, res) {
+  const generation = await getPlannable(req.params.id);
+  if (isJobLive(generation.job)) return busy(res, generation);
+  const figureId = Number(req.body?.figureId);
+  if (!figureId) throw new AppError('Choose a figure', 400);
+  const kind = kindOf(generation);
+  const items = generation.outline?.[kind.listKey] || [];
+  // Without a position (e.g. "Use in..." from Assets), the figure goes before the closing slide/summary.
+  const last = items.length - 1;
+  const defaultAfter = items[last]?.[kind.typeKey] === kind.lastType ? last - 1 : last;
+  const index = Math.min(Math.max(Number(req.body?.index ?? defaultAfter), 0), Math.max(last, 0));
+  const mode = req.body?.mode === 'replace' ? 'replace' : 'after';
+  res.status(201).json(responseFactory.createJsonResponse(await placeFigure(generation.id, figureId, index, mode)));
+}
+
 // ── Deck-wide agent ──
 
 // Proposes the steps for a deck-wide request. Nothing changes until /agent/apply.
@@ -519,6 +535,7 @@ export default {
   regenerateItem,
   suggestLayouts,
   addItem,
+  addFigure,
   agentPlan,
   agentApply,
   agentUndo,

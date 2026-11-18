@@ -25,6 +25,7 @@ generationsRouter.post('/:id/sections/:index/regenerate', generationsController.
 generationsRouter.get('/:id/slides/:index/layouts', generationsController.suggestLayouts);
 generationsRouter.get('/:id/sections/:index/layouts', generationsController.suggestLayouts);
 generationsRouter.post('/:id/slides', generationsController.addItem);
+generationsRouter.post('/:id/figures', generationsController.addFigure);
 generationsRouter.post('/:id/agent/plan', generationsController.agentPlan);
 generationsRouter.post('/:id/agent/apply', generationsController.agentApply);
 generationsRouter.post('/:id/agent/undo', generationsController.agentUndo);

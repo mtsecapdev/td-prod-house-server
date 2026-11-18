@@ -262,7 +262,7 @@ def render_diagram(doc, content, figure_no=1):
         p.add_run().add_picture(path, width=int(natural_w * scale))
         p.paragraph_format.keep_with_next = True  # keep the caption on the same page as the figure
     else:
-        add_body_text(doc, '[Diagram not available]', color=SLATE)
+        add_body_text(doc, '[Figure removed]' if content.get('figure_id') else '[Diagram not available]', color=SLATE)
 
     caption = (content.get('caption') or '').strip()
     p = doc.add_paragraph()
@@ -312,7 +312,7 @@ def render_doc(outline, output_path, template_path=None):
         if not content:
             continue
 
-        if section_type == 'diagram':
+        if section_type in ('diagram', 'figure'):
             figure_no += 1
             render_diagram(doc, content, figure_no)
             continue

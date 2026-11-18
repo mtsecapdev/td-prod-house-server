@@ -117,6 +117,18 @@ export const diagramSectionSchema = {
   required: ['title', 'introduction', 'diagram_type', 'mermaid_code', 'caption', 'notes'],
 };
 
+// A figure from the source documents (figure_id is set by the app, never by the model).
+export const figureSectionSchema = {
+  type: 'object',
+  properties: {
+    title:        { type: 'string' },
+    introduction: { type: 'string' },
+    caption:      { type: 'string' },
+    notes:        { type: 'string' },
+  },
+  required: ['title', 'introduction', 'caption', 'notes'],
+};
+
 export const SECTION_SCHEMAS = {
   heading:         headingSectionSchema,
   body:            bodySectionSchema,
@@ -124,6 +136,7 @@ export const SECTION_SCHEMAS = {
   key_points:      keyPointsSectionSchema,
   reference_table: referenceTableSectionSchema,
   diagram:         diagramSectionSchema,
+  figure:          figureSectionSchema,
   summary:         summarySectionSchema,
 };
 

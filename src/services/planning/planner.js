@@ -12,7 +12,8 @@ import { generateStructured, requestEmbedding, requestEmbeddingBatch } from '../
 import { getDocumentMapDb, getSourcePassagesDb } from '../../db/chunksQueries.js';
 import { kindOf, briefBlock, storylineBlock, itemCount } from './kinds.js';
 import { chooseLayouts, finishLayouts } from './layouts.js';
-import { stripFigureMarkers } from '../figures.js';
+import { stripFigureMarkers, figureNumber } from '../figures.js';
+import { listFiguresDb } from '../../db/figuresQueries.js';
 
 const { generateModel } = config.ollama;
 const PREVIEW_CHARS = 220;
@@ -127,6 +128,7 @@ export async function planOutline(generation) {
     content: null,
   }));
   items = finishLayouts(kind, generation.brief, await chooseLayouts(generation, kind, items));
+  if (generation.source_document_ids?.length) items = await suggestFigures(kind, items, generation.source_document_ids);
   // Items the plan gave no passages (and that need evidence) get sources by search.
   await attachSources(generation, kind, items.filter((it) => !it.sources.length));
 
@@ -134,6 +136,94 @@ export async function planOutline(generation) {
     storyline: { audience: plan.audience, tone: plan.tone, thesis: plan.thesis, generated_at: new Date().toISOString() },
     outline: { [kind.listKey]: items, generated_at: new Date().toISOString() },
   };
+}
+
+// ── Figures from the documents ──
+
+const MAX_SUGGESTED_FIGURES = 2;
+const STOPWORDS = new Set('with from that this their which about into over under between overall other these those there where when what'.split(' '));
+
+function keywords(text) {
+  return new Set((String(text).toLowerCase().match(/[a-z][a-z0-9&-]{3,}/g) || []).filter((w) => !STOPWORDS.has(w)));
+}
+
+// Layouts that carry content a figure can't replace: numbers, quotes, a single statement, bookends.
+const KEEP_TYPES = new Set(['key_stats', 'stat_focus', 'quote_highlight', 'big_idea', 'section_divider', 'key_points']);
+const FIGURE_PAGE_DISTANCE = 3;
+
+const FIGURE_CANDIDATES_PER_ITEM = 3;
+const MIN_CANDIDATE_OVERLAP = 0.25;
+
+/**
+ * Turns slides into Figure slides when a figure in their documents shows what they are about.
+ * 1. Candidates by cheap matching: figures the slide names ("Figure 2.0-1"), or whose caption shares key words
+ *    with the slide and that sit within a few pages of its sources. (A figure's marker is in one passage only,
+ *    so requiring it in the slide's own sources missed figures on the next page.)
+ * 2. One quick model call decides, per slide, which candidate shows its subject, or none. Word matching alone
+ *    missed abbreviations ("SE Engine" vs "Systems Engineering Engine") and matched recap slides that merely
+ *    repeat a caption's words.
+ * At most two per deck; each figure once; number, quote and statement slides are left alone.
+ */
+async function suggestFigures(kind, items, documentIds) {
+  const figures = await listFiguresDb({ documentIds });
+  if (!figures.length) return items;
+
+  const candidates = new Map(); // item index -> figures
+  items.forEach((it, i) => {
+    if (i === 0 || i === items.length - 1 || KEEP_TYPES.has(it[kind.typeKey])) return;
+    const text = `${it.title} ${(it.bullets || []).join(' ')}`;
+    const words = keywords(text);
+    const pages = (it.sources || []).map((s) => s.page).filter((p) => p != null);
+    const scored = figures.map((f) => {
+      const n = figureNumber(f.caption);
+      const named = n && new RegExp(`\\bfig(?:ure)?\\.?\\s*${n.replace(/[.-]/g, '[.-]')}\\b`, 'i').test(text);
+      const near = f.page != null && pages.some((p) => Math.abs(p - f.page) <= FIGURE_PAGE_DISTANCE);
+      const captionWords = keywords(`${f.caption.replace(/^fig(ure)?\.?\s*[A-Z]?\d+(?:[.-]\d+)*[a-z]?\s*/i, '')} ${f.labels.slice(0, 300)}`);
+      const overlap = captionWords.size ? [...captionWords].filter((w) => words.has(w)).length / captionWords.size : 0;
+      return { f, score: named ? 1 : near ? overlap + 0.2 : 0 };
+    }).filter((x) => x.score >= MIN_CANDIDATE_OVERLAP).sort((x, y) => y.score - x.score).slice(0, FIGURE_CANDIDATES_PER_ITEM);
+    if (scored.length) candidates.set(i, scored.map((x) => x.f));
+  });
+  if (!candidates.size) return items;
+
+  const prompt =
+    `For each ${kind.noun} below, decide whether one of its candidate figures (from the source documents) shows ` +
+    `what the ${kind.noun} is about, so the ${kind.noun} should present that figure.\n\n` +
+    [...candidates.entries()].map(([i, figs]) =>
+      `[S${i + 1}] ${items[i].title}\n${(items[i].bullets || []).map((b) => `  - ${b}`).join('\n')}\n` +
+      `  Candidates:\n${figs.map((f) => `   [${f.id}] ${f.caption}. Text in it: ${f.labels.slice(0, 240)}`).join('\n')}`,
+    ).join('\n\n') +
+    `\n\nAnswer for each ${kind.noun} by its label (S2, S3...) with the id of the figure that shows its subject, or 0 for none. Choose a ` +
+    `figure only when it is clearly about the same thing as the whole ${kind.noun}, not just related. Recaps, ` +
+    `takeaways and next steps get 0.`;
+  const schema = {
+    type: 'object',
+    properties: {
+      choices: {
+        type: 'array',
+        items: {
+          type: 'object',
+          // Labels, not numbers: asked for numbers, the model counted its own answers from 0.
+          properties: { slide: { type: 'string', enum: [...candidates.keys()].map((i) => `S${i + 1}`) }, figure_id: { type: 'integer' } },
+          required: ['slide', 'figure_id'],
+        },
+      },
+    },
+    required: ['choices'],
+  };
+  const result = await generateStructured(prompt, generateModel, schema, { think: false });
+
+  const usedFigures = new Set();
+  let used = 0;
+  for (const { slide, figure_id: figureId } of result.choices || []) {
+    const i = Number(String(slide).slice(1)) - 1;
+    const figure = candidates.get(i)?.find((f) => f.id === figureId);
+    if (!figure || usedFigures.has(figure.id) || used >= MAX_SUGGESTED_FIGURES) continue;
+    items[i] = { ...items[i], [kind.typeKey]: 'figure', figure_id: figure.id, type_reason: `Shows ${figure.caption}` };
+    usedFigures.add(figure.id);
+    used++;
+  }
+  return items;
 }
 
 // The user split their text into slides with "---": one item per part, in their order, each carrying its
@@ -259,7 +349,8 @@ export async function suggestTypes(generation, index) {
   const item = generation.outline?.[kind.listKey]?.[index];
   if (!item) throw new Error(`${kind.noun} ${index + 1} not found`);
   const current = item[kind.typeKey];
-  const candidates = kind.types.filter((t) => t !== current && t !== kind.firstType && t !== kind.lastType);
+  const candidates = kind.types.filter((t) => t !== current && t !== kind.firstType && t !== kind.lastType
+    && !kind.appOnlyTypes.includes(t));
   const { source_chunk_ids: _ids, used_pages: _pages, diagram_file: _d, speaker_notes: _n, ...content } = item.content || {};
 
   const prompt =

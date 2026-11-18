@@ -885,7 +885,7 @@ def render_diagram(slide, content, slide_idx=0, total=0):
     if path and Path(path).exists():
         add_picture_fit(slide, path, box_left, box_top, box_w, box_h)
     else:
-        add_textbox(slide, box_left, box_top, box_w, box_h, 'Diagram not available',
+        add_textbox(slide, box_left, box_top, box_w, box_h, 'Figure removed' if content.get('figure_id') else 'Diagram not available',
                     font_size=16, color=SLATE_LT, alignment=PP_ALIGN.CENTER, anchor='ctr')
 
     if caption:
@@ -914,6 +914,7 @@ RENDERERS = {
     'comparison_table': render_comparison_table,
     'key_stats':        render_key_stats,
     'diagram':          render_diagram,
+    'figure':           render_diagram,   # a figure from the documents: same placement, original image
 }
 
 

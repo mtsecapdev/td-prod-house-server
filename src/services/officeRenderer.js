@@ -9,6 +9,7 @@ import config from '../config.js';
 import { ensureDiagramFile } from './diagrams.js';
 import { getTemplate } from './templates.js';
 import { generationName } from '../db/generationsQueries.js';
+import { getFiguresByIdsDb } from '../db/figuresQueries.js';
 
 const execFileAsync = promisify(execFile);
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -33,7 +34,14 @@ export function notReadyMessage(generation) {
 // diagrams in that template (rendered now if the template changed after writing).
 async function renderInput(generation) {
   const listKey = generation.type === 'deck' ? 'slides' : 'sections';
-  const items = await Promise.all((generation.outline[listKey] || []).map(async (item) => {
+  const all = generation.outline[listKey] || [];
+  // Figures from the documents are placed like diagrams; a deleted one renders as "Figure removed".
+  const figureIds = all.map((it) => Number(it.content?.figure_id)).filter(Boolean);
+  const figurePaths = new Map((await getFiguresByIdsDb(figureIds)).map((f) => [f.id, f.file_path]));
+  const items = await Promise.all(all.map(async (item) => {
+    if (item.content?.figure_id) {
+      return { ...item, content: { ...item.content, diagram_path: figurePaths.get(Number(item.content.figure_id)) || null } };
+    }
     const key = item.content?.diagram_file;
     if (!key) return item;
     return { ...item, content: { ...item.content, diagram_path: await ensureDiagramFile(generation, key) } };

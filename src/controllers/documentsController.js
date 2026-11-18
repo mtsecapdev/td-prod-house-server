@@ -17,7 +17,7 @@ import { getAllDocumentsDb, getDocumentByIdDb, insertDocumentDb, updateDocumentS
 import { getSimilarChunksDb, getNeighborChunksDb, insertChunkDb } from '../db/chunksQueries.js';
 import { generateSummaryChunks } from '../services/summarizer.js';
 import { saveFigures, deleteFigureFiles, figuresInChunks, figuresMentioned, stripFigureMarkers } from '../services/figures.js';
-import { getFigureByIdDb } from '../db/figuresQueries.js';
+import { figureUsageDb, listFiguresDb } from '../db/figuresQueries.js';
 
 async function ensureDir(dir) {
   await fs.mkdir(dir, { recursive: true });
@@ -242,20 +242,29 @@ const uploadDocumentsStream = [
   },
 ];
 
-// A figure image from an ingested document (shown under chat answers that refer to it).
-async function serveFigure(req, res) {
-  const figure = await getFigureByIdDb(Number(req.params.figureId));
-  if (!figure) throw new AppError('Figure not found', 404);
-  res.set('Cache-Control', 'private, max-age=86400');
-  res.sendFile(figure.file_path);
-}
-
 async function listDocuments(req, res) {
   const docs = await getAllDocumentsDb();
   res.json(responseFactory.createJsonResponse({ docs }));
 }
 
+// Where this document's figures are used in decks and documents (checked before deleting it).
+async function figureUsageOfDocument(documentId) {
+  const figures = await listFiguresDb({ documentIds: [Number(documentId)], includeHidden: true });
+  return figureUsageDb(figures.map((f) => f.id));
+}
+
+async function documentUsage(req, res) {
+  res.json(responseFactory.createJsonResponse({ usage: await figureUsageOfDocument(req.params.id) }));
+}
+
+// A document whose figures are used elsewhere needs ?force=1 to delete; those slides then show "Figure removed".
 async function deleteOneDocument(req, res) {
+  const usage = await figureUsageOfDocument(req.params.id);
+  if (usage.length && req.query.force !== '1') {
+    return res.status(409).json(responseFactory.createJsonResponse({ usage }, {
+      message: `Figures from this document are used in ${usage.length} place${usage.length === 1 ? '' : 's'}`,
+    }));
+  }
   const deletedDocument = await deleteDocumentDb(req.params.id); // figure rows go with it (ON DELETE CASCADE)
   await deleteFigureFiles(req.params.id);
   res.json(responseFactory.createJsonResponse({ deletedDocument }));
@@ -267,6 +276,6 @@ export default {
   uploadDocumentsStream,
   downloadDocument,
   queryDocumentsPost,
-  serveFigure,
+  documentUsage,
   deleteOneDocument,
 };

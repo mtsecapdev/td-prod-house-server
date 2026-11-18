@@ -233,6 +233,17 @@ export const diagramSlideSchema = {
   required: ['title', 'diagram_type', 'mermaid_code', 'caption', 'speaker_notes'],
 };
 
+// A figure from the source documents (figure_id is set by the app, never by the model).
+export const figureSlideSchema = {
+  type: 'object',
+  properties: {
+    title:         { type: 'string' },
+    caption:       { type: 'string' },
+    speaker_notes: { type: 'string' },
+  },
+  required: ['title', 'caption', 'speaker_notes'],
+};
+
 export const LAYOUT_SCHEMAS = {
   title:            titleSlideSchema,
   bullets:          bulletsSlideSchema,
@@ -248,6 +259,7 @@ export const LAYOUT_SCHEMAS = {
   comparison_table: comparisonTableSlideSchema,
   key_stats:        keyStatsSlideSchema,
   diagram:          diagramSlideSchema,
+  figure:           figureSlideSchema,
   closing:          closingSlideSchema,
 };
 

@@ -5,6 +5,10 @@ import { editSlide, editSection } from '../editChat.js';
 import { kindOf } from './kinds.js';
 import { planOneItem } from './planner.js';
 import { writeItem } from './writer.js';
+import { randomBytes } from 'node:crypto';
+import { getFigureByIdDb } from '../../db/figuresQueries.js';
+import { getChunksWithFigureDb } from '../../db/chunksQueries.js';
+import { stripFigureMarkers } from '../figures.js';
 
 function indexKey(kind) {
   return kind.name === 'deck' ? 'slide_index' : 'section_index';
@@ -81,4 +85,43 @@ export async function moveItem(generationId, index, toIndex) {
   if (!item) return;
   items.splice(Math.min(Math.max(toIndex, 0), items.length), 0, item);
   await updateGenerationDb(generationId, { outline: JSON.stringify({ ...generation.outline, [kind.listKey]: items }) });
+}
+
+/**
+ * Puts a figure from the documents into the deck/document as a Figure item, written from the passages around
+ * it. mode 'replace' swaps the item at `index`; 'after' inserts after it. Returns the new item's index.
+ */
+export async function placeFigure(generationId, figureId, index, mode = 'after') {
+  const generation = await getGenerationByIdDb(generationId);
+  const kind = kindOf(generation);
+  const figure = await getFigureByIdDb(figureId);
+  if (!figure) throw new Error('That figure no longer exists');
+
+  const passages = await getChunksWithFigureDb(figure.document_id, figure.key);
+  const item = {
+    id: kind.idPrefix + randomBytes(4).toString('hex'),
+    title: figure.caption.replace(/^fig(ure)?\.?\s*[A-Z]?\d+(?:[.-]\d+)*[a-z]?\s*/i, '') || 'Figure',
+    bullets: [],
+    [kind.typeKey]: 'figure',
+    type_reason: 'Figure from the document',
+    figure_id: figure.id,
+    sources: passages.map((p) => ({
+      chunk_id: p.id, page: p.page, heading: p.heading,
+      preview: stripFigureMarkers(p.content).replace(/\s+/g, ' ').trim().slice(0, 220), added: true,
+    })),
+    content: null,
+  };
+
+  const items = [...(generation.outline?.[kind.listKey] || [])];
+  const at = mode === 'replace' ? index : Math.min(index + 1, items.length);
+  if (mode === 'replace') items[at] = item; else items.splice(at, 0, item);
+  const planned = { ...generation, outline: { ...generation.outline, [kind.listKey]: items } };
+  const written = await writeItem(planned, at);
+
+  const latest = await getGenerationByIdDb(generationId);
+  const latestItems = [...(latest.outline?.[kind.listKey] || [])];
+  const saved = { ...item, [kind.typeKey]: written.type, content: written.content };
+  if (mode === 'replace') latestItems[at] = saved; else latestItems.splice(at, 0, saved);
+  await updateGenerationDb(generationId, { outline: JSON.stringify({ ...latest.outline, [kind.listKey]: latestItems }) });
+  return { index: at, item: saved };
 }
