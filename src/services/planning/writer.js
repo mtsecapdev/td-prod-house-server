@@ -39,7 +39,7 @@ function planBlock(kind, generation) {
   return [
     `Brief:\n${briefBlock(generation)}`,
     freeForm ? `The user's own text:\n\"\"\"\n${pasted.slice(0, MAX_PASTED_IN_PLAN)}\n\"\"\"` : '',
-    generation.storyline?.messages?.length ? `Storyline:\n${storylineBlock(generation.storyline)}` : '',
+    storylineBlock(generation.storyline),
     `Full outline (${kind.nounPlural} in order: type | title | what it covers):\n${outlineLines}`,
   ].filter(Boolean).join('\n\n');
 }
@@ -86,7 +86,6 @@ async function writeAs(generation, kind, index, type, { note } = {}) {
   const items = generation.outline[kind.listKey];
   const item = items[index];
   const { rows, sources } = await sourcesFor(generation, kind, item);
-  const message = generation.storyline?.messages?.find((m) => m.id === item.message_id);
   const userNote = note ?? item.note;
   const bullets = (item.bullets || []).map((b) => b.trim()).filter(Boolean);
 
@@ -95,8 +94,7 @@ async function writeAs(generation, kind, index, type, { note } = {}) {
     : `(No sources for this ${kind.noun}: build it from the plan and the ${kind.nounPlural} already written.)`;
 
   const itemBlock = [
-    `Write ${kind.noun} ${index + 1} of ${items.length}` +
-      (message ? `, which supports key message ${message.id}: "${message.text}"` : '') + '.',
+    `Write ${kind.noun} ${index + 1} of ${items.length}.`,
     `Planned title (improve it if you can): ${item.title}`,
     bullets.length ? `What it should cover:\n${bullets.map((t) => `- ${t}`).join('\n')}` : '',
     item.own_text ? `The user's own text for this ${kind.noun}:\n\"\"\"\n${item.own_text}\n\"\"\"` : '',

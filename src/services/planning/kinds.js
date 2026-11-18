@@ -36,7 +36,7 @@ const DECK = {
     key_stats: 'Several related figures shown together: results, KPIs, scale.',
     quote_highlight: 'A verbatim quote, rule or principle that appears in the sources.',
     checklist: 'An ordered procedure the audience will carry out.',
-    section_divider: 'Opens a new part of a longer deck (8+ slides).',
+    section_divider: 'Opens a new part of a long deck (10+ slides only).',
     big_idea: 'One statement the audience must remember. At most one or two per deck.',
     timeline: 'Dated events or phases in order.',
     process_flow: 'A linear process where each step feeds the next.',
@@ -185,9 +185,7 @@ export function briefBlock(generation) {
   ].filter(Boolean).join('\n');
 }
 
+/** The plan's thesis: the one sentence the audience should leave with. */
 export function storylineBlock(storyline) {
-  if (!storyline?.messages?.length) return '';
-  const lines = [`Thesis: ${storyline.thesis}`, 'Key messages, in order:'];
-  storyline.messages.forEach((m, i) => lines.push(`${i + 1}. [${m.id}] ${m.text}`));
-  return lines.join('\n');
+  return storyline?.thesis ? `Thesis: ${storyline.thesis}` : '';
 }
