@@ -7,9 +7,9 @@ import { SECTION_SCHEMAS } from './docSchemas.js';
 import { mermaidGuide, renderWithRepair, DiagramSyntaxError } from './diagrams.js';
 import { DECK_LIMITS, DOC_LIMITS, fitContent } from './planning/fit.js';
 
-// Set by the app, not the model: which document figure an item shows and how the user sized/cropped its image.
-// Hidden from the model and carried over unchanged, so a chat edit never drops the figure or its adjustments.
-const APP_FIELDS = ['figure_id', 'image'];
+// Set by the app, not the model: the pictures placed on an item (with captions, position and crop) and a
+// diagram's size/crop. Hidden from the model and carried over unchanged, so a chat edit never drops them.
+const APP_FIELDS = ['pictures', 'image'];
 const appFields = (content) => Object.fromEntries(APP_FIELDS.filter((f) => content?.[f] !== undefined).map((f) => [f, content[f]]));
 const forModel = (content) => Object.fromEntries(Object.entries(content || {}).filter(([f]) => !APP_FIELDS.includes(f)));
 
@@ -56,7 +56,7 @@ export async function editSlide(generationId, slideIndex, instruction, history =
     comparison_table: 'Fields: "title" (slide title), "columns" (array of header strings), "rows" (array of arrays matching column count), "speaker_notes". To add a row, add an array. To add a column, add to columns and extend each row.',
     key_stats: 'Fields: "title" (slide title), "stats" (array of {value, label, detail}), "speaker_notes". To remove a stat, omit it. To add one, add a new entry using a number from the source.',
     diagram: `Fields: "title" (slide title), "diagram_type" (flowchart, sequence or mindmap), "mermaid_code", "caption" (one sentence), "speaker_notes". To change the diagram, edit mermaid_code.\n${mermaidGuide({ direction: 'LR' })}`,
-    figure: 'Fields: "title" (slide title), "caption" (one sentence about the figure), "speaker_notes". The figure image itself cannot be edited here; the user changes it with "Change figure".',
+    figure: 'Fields: "title" (slide title), "caption" (leave it ""), "speaker_notes". The picture and its caption are edited on the slide, not here.',
   };
 
   const messages = [
@@ -82,6 +82,7 @@ export async function editSlide(generationId, slideIndex, instruction, history =
 
   let updatedContent = await chatStructured(messages, config.ollama.generateModel, schema, { think: true });
   updatedContent = await fitContent(DECK_LIMITS[layout], schema, updatedContent);
+  if (layout === 'figure') delete updatedContent.caption; // the picture's caption lives with the picture
   if (layout === 'diagram') updatedContent = await renderEditedDiagram(generation, updatedContent, schema);
 
   const updatedSlides = [...outline.slides];
@@ -114,7 +115,7 @@ const sectionGuide = {
   key_points: 'Fields: "title", "introduction", "points" (array of {label, description}), "notes". To remove a point, omit it from the array.',
   reference_table: 'Fields: "title", "introduction", "columns" (array of header strings), "rows" (array of arrays matching column count), "notes". To add a row, add an array. To add a column, add to columns and extend each row.',
   summary: 'Fields: "title", "recap_points" (array of strings), "next_steps", "notes". To remove a point, omit it from the array.',
-  figure: 'Fields: "title", "introduction", "caption" (short figure title), "notes". The figure image itself cannot be edited here; the user changes it with "Change figure".',
+  figure: 'Fields: "title", "introduction", "caption" (leave it ""), "notes". The picture and its caption are edited on the page, not here.',
   diagram: `Fields: "title", "introduction", "diagram_type" (flowchart, sequence or mindmap), "mermaid_code", "caption" (short figure title), "notes". To change the figure, edit mermaid_code.\n${mermaidGuide({ direction: 'TD' })}`,
 };
 
@@ -167,6 +168,7 @@ export async function editSection(generationId, sectionIndex, instruction, histo
 
   let updatedContent = await chatStructured(messages, config.ollama.generateModel, schema, { think: true });
   updatedContent = await fitContent(DOC_LIMITS[sType], schema, updatedContent);
+  if (sType === 'figure') delete updatedContent.caption; // the picture's caption lives with the picture
   if (sType === 'diagram') updatedContent = await renderEditedDiagram(generation, updatedContent, schema);
 
   const updatedSections = [...outline.sections];

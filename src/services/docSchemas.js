@@ -117,13 +117,14 @@ export const diagramSectionSchema = {
   required: ['title', 'introduction', 'diagram_type', 'mermaid_code', 'caption', 'notes'],
 };
 
-// A figure from the source documents (figure_id is set by the app, never by the model).
+// A section built around a figure from the source documents; the picture and its caption live in
+// content.pictures (set by the app), like pictures added to any other section.
 export const figureSectionSchema = {
   type: 'object',
   properties: {
     title:        { type: 'string' },
     introduction: { type: 'string' },
-    caption:      { type: 'string' },
+    caption:      { type: 'string' }, // used only when the document gives the figure no caption
     notes:        { type: 'string' },
   },
   required: ['title', 'introduction', 'caption', 'notes'],

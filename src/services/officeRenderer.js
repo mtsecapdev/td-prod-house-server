@@ -35,16 +35,17 @@ export function notReadyMessage(generation) {
 async function renderInput(generation) {
   const listKey = generation.type === 'deck' ? 'slides' : 'sections';
   const all = generation.outline[listKey] || [];
-  // Figures from the documents are placed like diagrams; a deleted one renders as "Figure removed".
-  const figureIds = all.map((it) => Number(it.content?.figure_id)).filter(Boolean);
-  const figurePaths = new Map((await getFiguresByIdsDb(figureIds)).map((f) => [f.id, f.file_path]));
+  // Pictures placed from the documents get their files' paths; a deleted figure renders as "Figure removed".
+  const figureIds = all.flatMap((it) => (it.content?.pictures || []).map((p) => Number(p.figure_id))).filter(Boolean);
+  const figurePaths = new Map((await getFiguresByIdsDb([...new Set(figureIds)])).map((f) => [f.id, f.file_path]));
   const items = await Promise.all(all.map(async (item) => {
-    if (item.content?.figure_id) {
-      return { ...item, content: { ...item.content, diagram_path: figurePaths.get(Number(item.content.figure_id)) || null } };
+    let content = item.content;
+    if (!content) return item;
+    if (content.pictures?.length) {
+      content = { ...content, pictures: content.pictures.map((p) => ({ ...p, path: figurePaths.get(Number(p.figure_id)) || null })) };
     }
-    const key = item.content?.diagram_file;
-    if (!key) return item;
-    return { ...item, content: { ...item.content, diagram_path: await ensureDiagramFile(generation, key) } };
+    if (content.diagram_file) content = { ...content, diagram_path: await ensureDiagramFile(generation, content.diagram_file) };
+    return { ...item, content };
   }));
   const { pptx_path: templatePath, ...theme } = await getTemplate(generation.brief?.template);
   return { input: { ...generation.outline, [listKey]: items, theme }, templatePath };

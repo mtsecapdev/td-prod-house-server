@@ -88,10 +88,10 @@ export async function moveItem(generationId, index, toIndex) {
 }
 
 /**
- * Puts a figure from the documents into the deck/document as a Figure item, written from the passages around
- * it. mode 'replace' swaps the item at `index`; 'after' inserts after it. Returns the new item's index.
+ * Puts a figure from the documents into the deck/document as a new Figure item after `index`, written from the
+ * passages around it. (Pictures on existing items are placed by the editor itself.) Returns the new item's index.
  */
-export async function placeFigure(generationId, figureId, index, mode = 'after') {
+export async function placeFigure(generationId, figureId, index) {
   const generation = await getGenerationByIdDb(generationId);
   const kind = kindOf(generation);
   const figure = await getFigureByIdDb(figureId);
@@ -113,15 +113,15 @@ export async function placeFigure(generationId, figureId, index, mode = 'after')
   };
 
   const items = [...(generation.outline?.[kind.listKey] || [])];
-  const at = mode === 'replace' ? index : Math.min(index + 1, items.length);
-  if (mode === 'replace') items[at] = item; else items.splice(at, 0, item);
+  const at = Math.min(index + 1, items.length);
+  items.splice(at, 0, item);
   const planned = { ...generation, outline: { ...generation.outline, [kind.listKey]: items } };
   const written = await writeItem(planned, at);
 
   const latest = await getGenerationByIdDb(generationId);
   const latestItems = [...(latest.outline?.[kind.listKey] || [])];
   const saved = { ...item, [kind.typeKey]: written.type, content: written.content };
-  if (mode === 'replace') latestItems[at] = saved; else latestItems.splice(at, 0, saved);
+  latestItems.splice(at, 0, saved);
   await updateGenerationDb(generationId, { outline: JSON.stringify({ ...latest.outline, [kind.listKey]: latestItems }) });
   return { index: at, item: saved };
 }

@@ -83,7 +83,7 @@ const DECK = {
     icon_grid: '3-6 items. icon: one keyword (shield, clock, users). label: 2-4 words. description: one sentence.',
     comparison_table: '2-5 columns and 2-7 rows. Cells are short phrases. The table should reveal a pattern.',
     diagram: `caption: one sentence telling the audience what the diagram shows. The slide is wide (16:9): prefer left-to-right flowcharts with at most 8 nodes.\n${mermaidGuide({ direction: 'LR' })}`,
-    figure: 'The slide shows a figure from the documents (its caption and the text printed in it are given). title: what the audience should see in it (max 10 words). caption: one sentence on what to take from it. speaker_notes: walk through the figure using its text.',
+    figure: 'The slide shows a figure from the documents (its caption and the text printed in it are given; the caption from the document is shown under it). title: what the audience should see in it (max 10 words). caption: only for a figure the document gave no caption: a few plain words saying what the picture shows (e.g. "Cover of the handbook"); never a figure number or a name the sources do not give it. speaker_notes: walk through the figure using its text.',
   },
 
   formats: {
@@ -146,7 +146,7 @@ const DOC = {
     key_points: 'introduction: 1-2 sentences. 3-8 points: label (2-5 words), description (1-3 sentences with specifics). notes: optional context.',
     reference_table: 'introduction: what the table holds and how to use it. 2-6 columns; rows of short cells matching the columns. notes: abbreviations or special values.',
     diagram: `introduction: what the figure shows and when to use it (1-2 sentences). caption: a short figure title. notes: explanation of steps or branches that need it. Top-down flowcharts suit a portrait page.\n${mermaidGuide({ direction: 'TD' })}`,
-    figure: 'The section shows a figure from the documents (its caption and the text printed in it are given). introduction: what the figure shows and why it matters (1-2 sentences). caption: a short figure title. notes: explain the figure using its text.',
+    figure: 'The section shows a figure from the documents (its caption and the text printed in it are given; the caption from the document is shown under it). introduction: what the figure shows and why it matters (1-2 sentences). caption: only for a figure the document gave no caption: a few plain words saying what the picture shows (e.g. "Cover of the handbook"); never a figure number or a name the sources do not give it. notes: explain the figure using its text.',
     summary: 'recap_points: one per key message of the document, each one sentence. next_steps: 2-3 sentences on what the reader should do next. notes: optional.',
   },
 

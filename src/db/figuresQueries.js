@@ -81,7 +81,7 @@ export async function figureUsageDb(figureIds) {
     `SELECT g.id, g.type, g.outline, g.brief
      FROM generations g
      WHERE g.outline IS NOT NULL
-       AND jsonb_path_exists(g.outline, '$.*[*] ? (@.figure_id == $ids[*] || @.content.figure_id == $ids[*])',
+       AND jsonb_path_exists(g.outline, '$.*[*] ? (@.figure_id == $ids[*] || @.content.pictures[*].figure_id == $ids[*])',
                              jsonb_build_object('ids', to_jsonb($1::int[])))`,
     [figureIds],
   );
@@ -91,10 +91,13 @@ export async function figureUsageDb(figureIds) {
     const items = g.outline.slides || g.outline.sections || [];
     const name = generationName(g);
     items.forEach((it, index) => {
-      // Only items still laid out as a figure: one changed to another layout keeps a stale figure_id.
-      if ((it.layout ?? it.section_type) !== 'figure') return;
-      const fid = Number(it.content?.figure_id ?? it.figure_id);
-      if (wanted.has(fid)) uses.push({ figure_id: fid, generation_id: g.id, type: g.type, name, index });
+      // Written items: the pictures placed on them. Unwritten Figure items: the figure they are planned around.
+      const ids = it.content
+        ? (it.content.pictures || []).map((p) => Number(p.figure_id))
+        : (it.layout ?? it.section_type) === 'figure' ? [Number(it.figure_id)] : [];
+      for (const fid of new Set(ids)) {
+        if (wanted.has(fid)) uses.push({ figure_id: fid, generation_id: g.id, type: g.type, name, index });
+      }
     });
   }
   return uses;

@@ -289,8 +289,7 @@ async function addFigure(req, res) {
   const last = items.length - 1;
   const defaultAfter = items[last]?.[kind.typeKey] === kind.lastType ? last - 1 : last;
   const index = Math.min(Math.max(Number(req.body?.index ?? defaultAfter), 0), Math.max(last, 0));
-  const mode = req.body?.mode === 'replace' ? 'replace' : 'after';
-  res.status(201).json(responseFactory.createJsonResponse(await placeFigure(generation.id, figureId, index, mode)));
+  res.status(201).json(responseFactory.createJsonResponse(await placeFigure(generation.id, figureId, index)));
 }
 
 // ── Deck-wide agent ──

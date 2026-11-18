@@ -209,11 +209,11 @@ def add_picture_at(slide, path, x, y, w, crop=(0, 0, 0, 0)):
     _cropped(slide.shapes.add_picture(path, int(SLIDE_WIDTH * x), int(SLIDE_HEIGHT * y), width, height), crop)
 
 
-def image_settings(content):
+def image_settings(a):
     """The user's picture settings from the editor, clamped so a bad save can never hide the picture.
     Slides: x, y, w as fractions of the slide (None = fit the default area). Documents: w as a fraction of the
     text column, and align. Both: crop fractions (l, t, r, b) per edge."""
-    a = content.get('image') or {}
+    a = a or {}
 
     def num(key, lo, hi):
         try:
@@ -930,13 +930,13 @@ def render_diagram(slide, content, slide_idx=0, total=0):
 
     path = content.get('diagram_path')
     if path and Path(path).exists():
-        img = image_settings(content)
+        img = image_settings(content.get('image'))
         if None not in (img['x'], img['y'], img['w']):
             add_picture_at(slide, path, img['x'], img['y'], img['w'], img['crop'])
         else:
             add_picture_fit(slide, path, box_left, box_top, box_w, box_h, img['crop'])
     else:
-        add_textbox(slide, box_left, box_top, box_w, box_h, 'Figure removed' if content.get('figure_id') else 'Diagram not available',
+        add_textbox(slide, box_left, box_top, box_w, box_h, 'Diagram not available',
                     font_size=16, color=SLATE_LT, alignment=PP_ALIGN.CENTER, anchor='ctr')
 
     if caption:
@@ -945,6 +945,53 @@ def render_diagram(slide, content, slide_idx=0, total=0):
 
     add_slide_number(slide, slide_idx, total)
     _add_notes(slide, content)
+
+
+def render_figure(slide, content, slide_idx=0, total=0):
+    """A slide built around a figure: the title; the picture itself is drawn by render_pictures."""
+    set_slide_bg(slide, WHITE)
+    _title_bar(slide, content.get('title', ''))
+    add_slide_number(slide, slide_idx, total)
+    _add_notes(slide, content)
+
+
+# Where a picture goes before the user moves it (fractions of the slide: x, y, w, h). The editor uses the same.
+FIGURE_BOX = (0.06, 0.2333, 0.88, 0.5867)   # a Figure slide: the space under the title, leaving room for the caption
+SIDE_BOX = (0.55, 0.25, 0.39, 0.55)         # a picture added to any other slide
+CAPTION_GAP, CAPTION_H, CAPTION_PT = Inches(0.06), Inches(0.45), 12
+
+
+def render_pictures(slide, content, layout):
+    """Pictures placed on the slide, each with its caption under it, where the user put them in the editor."""
+    for n, pic in enumerate(content.get('pictures') or []):
+        img = image_settings(pic)
+        l, t, r, b = img['crop']
+        path = pic.get('path')
+        exists = bool(path) and Path(path).exists()
+        if exists:
+            w_px, h_px = png_size(path)
+            aspect = (h_px * (1 - t - b)) / (w_px * (1 - l - r))
+        else:
+            aspect = 0.6
+        if None not in (img['x'], img['y'], img['w']):
+            left, top, width = int(SLIDE_WIDTH * img['x']), int(SLIDE_HEIGHT * img['y']), int(SLIDE_WIDTH * img['w'])
+            height = int(width * aspect)
+        else:
+            bx, by, bw, bh = FIGURE_BOX if layout == 'figure' and n == 0 else SIDE_BOX
+            box_w, box_h = SLIDE_WIDTH * bw, SLIDE_HEIGHT * bh
+            width = int(min(box_w, box_h / aspect))
+            height = int(width * aspect)
+            left = int(SLIDE_WIDTH * bx + (box_w - width) / 2)
+            top = int(SLIDE_HEIGHT * by + (box_h - height) / 2)
+        if exists:
+            _cropped(slide.shapes.add_picture(path, left, top, width, height), img['crop'])
+        else:
+            add_textbox(slide, left, top, width, height, 'Figure removed', font_size=16, color=SLATE_LT,
+                        alignment=PP_ALIGN.CENTER, anchor='ctr')
+        caption = (pic.get('caption') or '').strip()
+        if caption:
+            add_textbox(slide, left, top + height + CAPTION_GAP, width, CAPTION_H, caption,
+                        font_size=CAPTION_PT, italic=True, color=SLATE, alignment=PP_ALIGN.CENTER)
 
 
 # ── Registry ──
@@ -965,7 +1012,7 @@ RENDERERS = {
     'comparison_table': render_comparison_table,
     'key_stats':        render_key_stats,
     'diagram':          render_diagram,
-    'figure':           render_diagram,   # a figure from the documents: same placement, original image
+    'figure':           render_figure,
 }
 
 
@@ -1011,6 +1058,7 @@ def render_deck(outline, output_path, template_path=None):
         slide = prs.slides.add_slide(blank_layout)
         renderer = RENDERERS.get(layout, render_bullets)
         renderer(slide, content, slide_idx=i + 1, total=total)
+        render_pictures(slide, content, layout)
 
     prs.save(output_path)
     return output_path

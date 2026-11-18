@@ -23,7 +23,7 @@ export const DECK_LIMITS = {
   icon_grid: { title: 70, 'items[].label': 30, 'items[].description': 110 },
   comparison_table: { title: 70, 'columns[]': 28, 'rows[][]': 60 },
   diagram: { title: 70, caption: 140 },
-  figure: { title: 70, caption: 140 },
+  figure: { title: 70, caption: 120 },
 };
 
 // Documents flow across pages, so only headings and table cells are bounded.

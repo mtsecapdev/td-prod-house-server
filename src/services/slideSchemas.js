@@ -233,12 +233,13 @@ export const diagramSlideSchema = {
   required: ['title', 'diagram_type', 'mermaid_code', 'caption', 'speaker_notes'],
 };
 
-// A figure from the source documents (figure_id is set by the app, never by the model).
+// A slide built around a figure from the source documents. The picture and its caption live in
+// content.pictures (set by the app, never by the model), like pictures added to any other slide.
 export const figureSlideSchema = {
   type: 'object',
   properties: {
     title:         { type: 'string' },
-    caption:       { type: 'string' },
+    caption:       { type: 'string' }, // used only when the document gives the figure no caption
     speaker_notes: { type: 'string' },
   },
   required: ['title', 'caption', 'speaker_notes'],

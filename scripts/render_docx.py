@@ -9,6 +9,7 @@ Input JSON shape (the generation's outline object):
 """
 
 import json
+import re
 import struct
 import sys
 import tempfile
@@ -246,11 +247,11 @@ def png_size(path):
     return struct.unpack('>II', head[16:24])
 
 
-def image_settings(content):
+def image_settings(a):
     """The user's picture settings from the editor, clamped so a bad save can never hide the picture.
     Slides: x, y, w as fractions of the slide (None = fit the default area). Documents: w as a fraction of the
     text column, and align. Both: crop fractions (l, t, r, b) per edge."""
-    a = content.get('image') or {}
+    a = a or {}
 
     def num(key, lo, hi):
         try:
@@ -297,7 +298,7 @@ def render_diagram(doc, content, figure_no=1):
 
     path = content.get('diagram_path')
     if path and Path(path).exists():
-        img = image_settings(content)
+        img = image_settings(content.get('image'))
         crop = img['crop']
         if any(crop):
             path = cropped_copy(path, crop)
@@ -316,7 +317,7 @@ def render_diagram(doc, content, figure_no=1):
             Path(path).unlink(missing_ok=True)
         p.paragraph_format.keep_with_next = True  # keep the caption on the same page as the figure
     else:
-        add_body_text(doc, '[Figure removed]' if content.get('figure_id') else '[Diagram not available]', color=SLATE)
+        add_body_text(doc, '[Diagram not available]', color=SLATE)
 
     caption = (content.get('caption') or '').strip()
     p = doc.add_paragraph()
@@ -332,6 +333,49 @@ def render_diagram(doc, content, figure_no=1):
     if content.get('notes'):
         add_spacer(doc, 4)
         add_body_text(doc, content['notes'], size=10, color=SLATE)
+
+
+def render_picture(doc, pic, figure_no):
+    """A picture placed from the documents, sized/aligned/cropped as in the editor, with its numbered caption."""
+    img = image_settings(pic)
+    path = pic.get('path')
+    if path and Path(path).exists():
+        crop = img['crop']
+        if any(crop):
+            path = cropped_copy(path, crop)
+        w_px, h_px = png_size(path)
+        natural_w, natural_h = Inches(w_px / DIAGRAM_DPI), Inches(h_px / DIAGRAM_DPI)
+        if img['w'] is not None:
+            width = min(FIGURE_MAX_W * min(img['w'], 1.0), FIGURE_MAX_H * natural_w / natural_h)
+        else:
+            width = natural_w * min(1.0, FIGURE_MAX_W / natural_w, FIGURE_MAX_H / natural_h)
+        p = doc.add_paragraph()
+        p.alignment = {'left': WD_ALIGN_PARAGRAPH.LEFT, 'right': WD_ALIGN_PARAGRAPH.RIGHT}.get(img['align'], WD_ALIGN_PARAGRAPH.CENTER)
+        p.add_run().add_picture(path, width=int(width))
+        p.paragraph_format.keep_with_next = True  # keep the caption on the same page as the figure
+        if any(crop):
+            Path(path).unlink(missing_ok=True)
+    else:
+        add_body_text(doc, '[Figure removed]', color=SLATE)
+
+    # The document numbers its own figures, so the source's number ("Figure 2.2-1 ...") is dropped here.
+    caption = re.sub(r'^fig(?:ure)?\.?\s*[A-Z]?\d+(?:[.\-]\d+)*[a-z]?[:.]?\s*', '', (pic.get('caption') or '').strip(), flags=re.I)
+    p = doc.add_paragraph()
+    p.alignment = {'left': WD_ALIGN_PARAGRAPH.LEFT, 'right': WD_ALIGN_PARAGRAPH.RIGHT}.get(img['align'], WD_ALIGN_PARAGRAPH.CENTER)
+    run_label = p.add_run(f'Figure {figure_no}' + (': ' if caption else ''))
+    style_run(run_label, size=10, bold=True, color=NAVY)
+    if caption:
+        run_cap = p.add_run(caption)
+        style_run(run_cap, size=10, color=SLATE)
+        run_cap.font.italic = True
+    p.paragraph_format.space_after = Pt(10)
+
+
+def render_figure_section(doc, content):
+    """A section built around a figure: title and introduction; its pictures follow, then the notes."""
+    add_heading_styled(doc, content.get('title', ''), level=2)
+    if content.get('introduction'):
+        add_body_text(doc, content['introduction'])
 
 
 RENDERERS = {
@@ -366,13 +410,21 @@ def render_doc(outline, output_path, template_path=None):
         if not content:
             continue
 
-        if section_type in ('diagram', 'figure'):
+        if section_type == 'diagram':
             figure_no += 1
             render_diagram(doc, content, figure_no)
-            continue
+        elif section_type == 'figure':
+            render_figure_section(doc, content)
+        else:
+            RENDERERS.get(section_type, render_body)(doc, content)
 
-        renderer = RENDERERS.get(section_type, render_body)
-        renderer(doc, content)
+        # Pictures placed on the section, numbered with the other figures.
+        for pic in content.get('pictures') or []:
+            figure_no += 1
+            render_picture(doc, pic, figure_no)
+        if section_type == 'figure' and content.get('notes'):
+            add_spacer(doc, 4)
+            add_body_text(doc, content['notes'], size=10, color=SLATE)
 
     doc.save(output_path)
     return output_path

@@ -9,7 +9,7 @@ import { getChunksByIdsDb, getSourcePassagesDb } from '../../db/chunksQueries.js
 import { renderWithRepair, DiagramSyntaxError } from '../diagrams.js';
 import { kindOf, styleGuide, briefBlock, storylineBlock } from './kinds.js';
 import { fitContent } from './fit.js';
-import { stripFigureMarkers } from '../figures.js';
+import { stripFigureMarkers, pictureOf } from '../figures.js';
 import { getFigureByIdDb } from '../../db/figuresQueries.js';
 import { sourceQuery, pastedText } from './planner.js';
 
@@ -100,7 +100,8 @@ async function writeAs(generation, kind, index, type, { note, figure } = {}) {
     `Planned title (improve it if you can): ${item.title}`,
     bullets.length ? `What it should cover:\n${bullets.map((t) => `- ${t}`).join('\n')}` : '',
     figure ? `The figure this ${kind.noun} shows: ${figure.caption || 'untitled figure'} (p. ${figure.page ?? '?'}).` +
-      (figure.labels ? `\nText printed in the figure, in reading order: ${figure.labels}` : '') : '',
+      (figure.labels ? `\nText printed in the figure, in reading order: ${figure.labels}` : '') +
+      (figure.caption ? '' : '\nThe document gives this figure no caption: write `caption` from the text printed in it only, not from the sources.') : '',
     item.own_text ? `The user's own text for this ${kind.noun}:\n\"\"\"\n${item.own_text}\n\"\"\"` : '',
     generation.brief?.source_text ? TEXT_MODES[generation.brief.text_mode] || TEXT_MODES.generate : '',
     userNote ? `Note from the user (follow it): ${userNote}` : '',
@@ -123,7 +124,6 @@ async function writeAs(generation, kind, index, type, { note, figure } = {}) {
   const result = await chatStructured(messages, generateModel, schema, { think: true });
   const content = await fitContent(kind.limits[type], schema, {
     ...result,
-    ...(figure ? { figure_id: figure.id } : {}),
     source_chunk_ids: rows.map((r) => r.id),
     used_pages: [...new Set(rows.map((r) => r.page).filter((p) => p != null))].sort((a, b) => a - b),
   });
@@ -134,7 +134,22 @@ async function writeAs(generation, kind, index, type, { note, figure } = {}) {
  * Writes one item. Returns { type, content, sources }; type differs from the plan only when a diagram could not
  * be rendered and fell back.
  */
-export async function writeItem(generation, index, { note, type: typeOverride } = {}) {
+export async function writeItem(generation, index, options = {}) {
+  const item = generation.outline[kindOf(generation).listKey][index];
+  const written = await writeContent(generation, index, options);
+  // Pictures the user placed stay through rewrites and layout changes; a figure item shows its figure first.
+  const pictures = [...(item?.content?.pictures || [])];
+  const { figure, ...rest } = written;
+  if (figure) {
+    // The writer's caption is only a stand-in for figures the document left uncaptioned.
+    const { caption, ...content } = rest.content;
+    rest.content = content;
+    if (!pictures.some((p) => Number(p.figure_id) === figure.id)) pictures.unshift(pictureOf(figure, caption));
+  }
+  return pictures.length ? { ...rest, content: { ...rest.content, pictures } } : rest;
+}
+
+async function writeContent(generation, index, { note, type: typeOverride } = {}) {
   const kind = kindOf(generation);
   const item = generation.outline[kind.listKey][index];
   if (!item) throw new Error(`${kind.noun} ${index + 1} is not in the outline`);
@@ -142,12 +157,7 @@ export async function writeItem(generation, index, { note, type: typeOverride } 
 
   if (type === 'figure') {
     const figure = item.figure_id ? await getFigureByIdDb(item.figure_id) : null;
-    if (figure) {
-      const written = await writeAs(generation, kind, index, type, { note, figure });
-      // Rewriting around the same figure keeps the user's size/crop; a different figure starts fresh.
-      const image = item.content?.figure_id === figure.id ? item.content.image : undefined;
-      return { type, ...written, content: { ...written.content, ...(image ? { image } : {}) } };
-    }
+    if (figure) return { type, figure, ...(await writeAs(generation, kind, index, type, { note, figure })) };
     // The figure was deleted: write the slide as points instead.
     const fallback = await writeAs(generation, kind, index, kind.defaultType, { note });
     return { type: kind.defaultType, ...fallback };

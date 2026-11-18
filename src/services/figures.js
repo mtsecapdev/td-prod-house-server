@@ -27,6 +27,19 @@ export async function deleteFigureFiles(documentId) {
   await rm(figureDir(documentId), { recursive: true, force: true });
 }
 
+/** A figure's caption as shown under it on a slide/page: the document's own caption ("FIGURE 2.1-1 ..." → "Figure 2.1-1 ..."). */
+export function figureCaption(caption) {
+  return String(caption || '').replace(/^FIGURE\b/, 'Figure').replace(/\s+/g, ' ').trim();
+}
+
+/**
+ * A picture on a slide/section: a document figure with its caption (the document's own, else `fallback`, e.g. one
+ * the writer made for an uncaptioned figure). Position/size/crop are added by the editor.
+ */
+export function pictureOf(figure, fallback = '') {
+  return { figure_id: figure.id, caption: figureCaption(figure.caption) || String(fallback || '').trim() };
+}
+
 /** Passage text without figure markers (for the model and for display). */
 export function stripFigureMarkers(text) {
   return String(text || '').replace(MARKER_RE, '');
