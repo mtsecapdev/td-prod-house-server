@@ -8,6 +8,7 @@ import { promisify } from 'node:util';
 import config from '../config.js';
 import { ensureDiagramFile } from './diagrams.js';
 import { getTemplate } from './templates.js';
+import { generationName } from '../db/generationsQueries.js';
 
 const execFileAsync = promisify(execFile);
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -71,6 +72,6 @@ export async function renderOfficeFile(generation, mode = 'temp') {
 }
 
 export function downloadName(generation, ext) {
-  const topic = (generation.brief?.topic || generation.type).replace(/[^a-zA-Z0-9 _-]/g, '').slice(0, 60).trim();
-  return `${topic || generation.type}.${ext}`;
+  const name = generationName(generation).replace(/[^a-zA-Z0-9 _&-]/g, '').slice(0, 60).trim();
+  return `${name || generation.type}.${ext}`;
 }

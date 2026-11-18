@@ -1,14 +1,14 @@
 // Keeps written text inside what each layout can hold (the "smart layout" rule: content adapts to the
 // layout, never spills out of it). Item counts are capped in the JSON schemas (maxItems, enforced by
-// Ollama's grammar); character lengths are checked here after writing, and over-long fields get one
-// "shorten these" pass. Anything still over is cut at a word boundary as a last resort.
+// Ollama's grammar); character lengths are checked here after writing, and over-long fields are rewritten
+// shorter. Text is never truncated.
 import config from '../../config.js';
 import { chatStructured } from '../llm.js';
 
 // Max characters per field, by layout. Paths: "title", "bullets[].detail", "columns[]", "rows[][]".
 // Sized for the slide renderer's boxes at their default font sizes.
 export const DECK_LIMITS = {
-  title: { title: 60, subtitle: 140 },
+  title: { title: 60, subtitle: 180 },
   bullets: { title: 70, 'bullets[].heading': 40, 'bullets[].detail': 150 },
   two_column: { title: 70, column_a_heading: 40, column_b_heading: 40, 'column_a_bullets[]': 110, 'column_b_bullets[]': 110, verdict: 140 },
   stat_focus: { title: 70, stat_value: 14, stat_label: 40, context: 180 },
@@ -66,46 +66,47 @@ export function overflows(limits, content) {
   return found;
 }
 
-function cutAtWord(text, max) {
-  if (text.length <= max) return text;
-  const cut = text.slice(0, max - 1);
-  const space = cut.lastIndexOf(' ');
-  return `${(space > max * 0.6 ? cut.slice(0, space) : cut).replace(/[\s,;:.-]+$/, '')}…`;
+async function shortenPass(schema, content, over) {
+  const { source_chunk_ids: _ids, used_pages: _pages, diagram_file: _d, ...forModel } = content;
+  const shortened = await chatStructured([
+    {
+      role: 'system',
+      content:
+        'You shorten text so it fits a slide layout. Return the same JSON. Rewrite only the fields listed, each ' +
+        'as a complete phrase or sentence of at most its character limit, keeping the facts and figures. Never ' +
+        'end with "..." or a cut-off word. Leave every other field exactly as it is.',
+    },
+    {
+      role: 'user',
+      content: `JSON:\n${JSON.stringify(forModel, null, 2)}\n\nToo long:\n` +
+        over.map((o) => `- ${o.field}: ${o.length} characters; at most ${o.max} (about ${Math.floor(o.max / 6.5)} words)`).join('\n'),
+    },
+  ], config.ollama.generateModel, schema, { think: false });
+  return { ...content, ...shortened };
 }
 
 /**
- * Returns content that fits the layout: unchanged when it already fits; otherwise after one model pass that
- * shortens only the over-long fields, then a word-boundary cut for anything still over.
+ * Returns content that fits the layout: unchanged when it already fits; otherwise rewritten (up to two
+ * passes) so the over-long fields are complete but shorter. Text is never cut off: anything still slightly
+ * over is left as written, and the PPTX renderer steps the font down for that box.
  */
 export async function fitContent(limits, schema, content) {
   if (!limits) return content;
-  const over = overflows(limits, content);
-  if (!over.length) return content;
-
-  const { source_chunk_ids: ids, used_pages: pages, diagram_file: diagram, ...forModel } = content;
   let fitted = content;
-  try {
-    const shortened = await chatStructured([
-      {
-        role: 'system',
-        content:
-          'You shorten text so it fits a slide layout. Return the same JSON. Rewrite only the fields listed, ' +
-          'each to at most its character limit, keeping the facts and figures; leave every other field exactly as it is.',
-      },
-      {
-        role: 'user',
-        content: `JSON:\n${JSON.stringify(forModel, null, 2)}\n\nToo long:\n` +
-          over.map((o) => `- ${o.field}: ${o.length} characters, limit ${o.max}`).join('\n'),
-      },
-    ], config.ollama.generateModel, schema, { think: false });
-    fitted = { ...content, ...shortened };
-  } catch (err) {
-    console.warn(`Shortening pass failed (${err.message}); cutting instead`);
+  for (let pass = 0; pass < 2; pass++) {
+    const over = overflows(limits, fitted);
+    if (!over.length) break;
+    try {
+      fitted = await shortenPass(schema, fitted, over);
+    } catch (err) {
+      console.warn(`Shortening pass failed (${err.message}); keeping the text as written`);
+      break;
+    }
   }
-
-  fitted = structuredClone(fitted);
-  for (const [path, max] of Object.entries(limits)) {
-    walk(fitted, path, (value, set) => { if (value.length > max) set(cutAtWord(value, max)); });
-  }
-  return { ...fitted, source_chunk_ids: ids, used_pages: pages, ...(diagram ? { diagram_file: diagram } : {}) };
+  return {
+    ...fitted,
+    source_chunk_ids: content.source_chunk_ids,
+    used_pages: content.used_pages,
+    ...(content.diagram_file ? { diagram_file: content.diagram_file } : {}),
+  };
 }

@@ -257,10 +257,10 @@ async function regenerateItem(req, res) {
   res.json(responseFactory.createJsonResponse({ item }));
 }
 
-// Remix: the best other layouts for one slide/section, with reasons. ?visual=1 limits to visual layouts.
+// Remix: the best other layouts for one slide/section, with reasons.
 async function suggestLayouts(req, res) {
   const generation = await getPlannable(req.params.id);
-  const suggestions = await suggestTypes(generation, Number(req.params.index), { visualOnly: req.query.visual === '1' });
+  const suggestions = await suggestTypes(generation, Number(req.params.index));
   res.json(responseFactory.createJsonResponse({ suggestions }));
 }
 

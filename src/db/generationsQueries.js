@@ -37,7 +37,9 @@ export async function updateGenerationDb(id, fields) {
 
 export async function getAllGenerationsDb() {
   const res = await pool.query(
-    'SELECT id, type, status, brief, job, created_at, updated_at FROM generations ORDER BY created_at DESC',
+    `SELECT id, type, status, brief, job, created_at, updated_at,
+       coalesce(outline->'slides'->0->'content'->>'title', outline->'sections'->0->'content'->>'title') AS first_title
+     FROM generations ORDER BY created_at DESC`,
   );
   return res.rows;
 }
@@ -91,13 +93,27 @@ export function isJobLive(job) {
   return job?.state === 'running' && Date.now() - new Date(job.heartbeat_at).getTime() < JOB_STALE_MS;
 }
 
-/** What clients see: a running job whose heartbeat stopped is reported as failed, so the UI offers a retry. */
+/**
+ * The deck's or document's name: the title its first slide/section was written with. The brief's topic is
+ * the user's request ("Financial report for the board, include diagrams"), not a name; it is only the
+ * fallback until the title slide exists.
+ */
+export function generationName(generation) {
+  const first = generation.outline?.slides?.[0] || generation.outline?.sections?.[0];
+  const title = first?.content?.title || generation.first_title;
+  if (title) return title;
+  const topic = (generation.brief?.topic || '').split('\n')[0].trim();
+  return topic.length > 80 ? `${topic.slice(0, 77).replace(/\s+\S*$/, '')}…` : topic || 'Untitled';
+}
+
+/** What clients see: the name, and a running job whose heartbeat stopped reported as failed (so the UI offers a retry). */
 export function presentGeneration(generation) {
-  const { job } = generation;
+  const { job, first_title: _t, ...rest } = generation;
+  const presented = { ...rest, job, name: generationName(generation) };
   if (job?.state === 'running' && !isJobLive(job)) {
-    return { ...generation, job: { ...job, state: 'failed', error: 'Interrupted (the server restarted). Try again.' } };
+    presented.job = { ...job, state: 'failed', error: 'Interrupted (the server restarted). Try again.' };
   }
-  return generation;
+  return presented;
 }
 
 /** Keeps a job's heartbeat fresh while `work` runs. */

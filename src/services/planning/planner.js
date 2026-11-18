@@ -112,7 +112,8 @@ function itemRules(kind) {
     `- bullets: 2-5 short lines saying what it will cover, as the user would jot them in an outline.\n` +
     `- type: the type whose purpose matches its content (a sequence of steps, a comparison, several related figures, ` +
     `a process with decisions, dated events...). "${kind.defaultType}" only when nothing more specific fits. Vary the ` +
-    `types across the ${kind.product}: no type more than twice in a row, and a specialised type at most twice overall.\n` +
+    `types across the ${kind.product}: no type more than twice in a row, and a specialised type at most twice overall ` +
+    `unless the user asked for more.\n` +
     `- type_reason: a few words on why that type fits.\n` +
     `- message_id: the key message it serves, or "" for the first and last.\n` +
     NO_FIGURES
@@ -158,13 +159,17 @@ export async function planOutline(generation) {
     `- Exactly ${count} ${kind.nounPlural}. The first is "${kind.firstType}" and the last is "${kind.lastType}"; no other uses those types.\n` +
     (count < 8 && kind.types.includes('section_divider') ? `- No "section_divider": the deck is too short for parts.\n` : '') +
     `- Follow the order of the key messages; every message gets at least one ${kind.noun}.\n` +
-    `- Each ${kind.noun} covers different ground.`;
+    `- Each ${kind.noun} covers different ground.` +
+    (requestedTypes(kind, generation.brief).length
+      ? `\n- The user asked for these layouts; include each at least once where it fits best: ` +
+        `${requestedTypes(kind, generation.brief).map((t) => `"${t}"`).join(', ')}.`
+      : '');
 
   const schema = { type: 'object', properties: { items: { type: 'array', items: itemSchema(kind) } }, required: ['items'] };
   const result = await generateStructured(prompt, generateModel, schema, { think: true });
 
   let items = (result.items || []).filter((raw) => raw.title).slice(0, kind.countRange[1]).map((raw) => toItem(kind, raw));
-  items = cleanTypes(kind, items);
+  items = ensureRequestedTypes(kind, generation.brief, cleanTypes(kind, items));
   await attachSources(generation, kind, items);
 
   return {
@@ -224,6 +229,42 @@ function toItem(kind, raw) {
     sources: [],
     content: null,
   };
+}
+
+// Layouts the user asked for by name in their request or instructions. They are requirements: the outline
+// prompt says so, and ensureRequestedTypes() checks the result.
+const REQUEST_PATTERNS = {
+  diagram: /\b(diagrams?|mermaid|flow ?charts?|flow diagrams?|process maps?|org charts?|mind ?maps?)\b/i,
+  timeline: /\btimelines?\b/i,
+  comparison_table: /\b(comparison tables?|tables?)\b/i,
+  reference_table: /\btables?\b/i,
+  key_stats: /\b(key (stats|figures|numbers)|kpis?|statistics|metrics)\b/i,
+  process_flow: /\bprocess flows?\b/i,
+  procedure: /\b(procedures?|step[- ]by[- ]step)\b/i,
+};
+
+function requestedTypes(kind, brief = {}) {
+  const text = `${brief.topic || ''}\n${brief.instructions || ''}`;
+  return kind.types.filter((t) => REQUEST_PATTERNS[t]?.test(text));
+}
+
+/**
+ * Makes sure every layout the user asked for appears at least once: a missing one replaces the middle item that
+ * is still on the default layout (or, failing that, any middle item not already holding a requested layout).
+ */
+function ensureRequestedTypes(kind, brief, items) {
+  const wanted = requestedTypes(kind, brief);
+  for (const type of wanted) {
+    if (items.some((it) => it[kind.typeKey] === type)) continue;
+    const middle = items.slice(1, -1);
+    const target = middle.find((it) => it[kind.typeKey] === kind.defaultType)
+      || middle.find((it) => !wanted.includes(it[kind.typeKey]));
+    if (target) {
+      target[kind.typeKey] = type;
+      target.type_reason = 'You asked for this layout';
+    }
+  }
+  return items;
 }
 
 // The first and last types are fixed (title/closing, heading/summary), and section dividers only make sense in
@@ -307,23 +348,13 @@ export async function searchSources(generation, q, limit = 8) {
 
 // ── Layout suggestions (remix) ──
 
-// Layouts that show content as a picture or structure rather than text.
-const VISUAL_TYPES = {
-  deck: ['diagram', 'key_stats', 'stat_focus', 'process_flow', 'timeline', 'comparison_table', 'icon_grid', 'two_column'],
-  doc: ['diagram', 'reference_table', 'procedure', 'key_points'],
-};
-
-/**
- * The layouts (other than the current one) that would present this item best, each with a reason.
- * With visualOnly, only layouts that turn text into a picture or structure ("Make visual").
- */
-export async function suggestTypes(generation, index, { visualOnly = false } = {}) {
+/** The layouts (other than the current one) that would present this item best, each with a reason. */
+export async function suggestTypes(generation, index) {
   const kind = kindOf(generation);
   const item = generation.outline?.[kind.listKey]?.[index];
   if (!item) throw new Error(`${kind.noun} ${index + 1} not found`);
   const current = item[kind.typeKey];
-  const candidates = (visualOnly ? VISUAL_TYPES[kind.name] : kind.types)
-    .filter((t) => t !== current && t !== kind.firstType && t !== kind.lastType);
+  const candidates = kind.types.filter((t) => t !== current && t !== kind.firstType && t !== kind.lastType);
   const { source_chunk_ids: _ids, used_pages: _pages, diagram_file: _d, speaker_notes: _n, ...content } = item.content || {};
 
   const prompt =

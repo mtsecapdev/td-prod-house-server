@@ -1,6 +1,6 @@
 import { access } from 'node:fs/promises';
 import responseFactory from '../utils/responseFactory.js';
-import { getGenerationByIdDb } from '../db/generationsQueries.js';
+import { getGenerationByIdDb, generationName } from '../db/generationsQueries.js';
 import { insertAssetDb, getAssetByIdDb, getAllAssetsDb, softDeleteAssetDb } from '../db/assetsQueries.js';
 import { renderOfficeFile, notReadyMessage, officeExt, OFFICE_MIME } from '../services/officeRenderer.js';
 
@@ -43,7 +43,7 @@ async function saveAsset(req, res) {
 
   const ext = officeExt(generation);
   const kind = generation.type;
-  const assetTitle = title || generation.brief?.topic || `Untitled ${kind}`;
+  const assetTitle = title || generationName(generation);
   const assetId = await insertAssetDb({
     generationId: generation.id,
     kind,
