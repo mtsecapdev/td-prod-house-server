@@ -46,6 +46,23 @@ const DECK = {
     closing: 'Final slide: takeaways and what to do next. Last slide only.',
   },
 
+  // What a slide's content can be, and the layout each maps to (see layouts.js). The model classifies content;
+  // code picks the layout and checks the evidence.
+  shapes: {
+    points: { layout: 'bullets', what: 'a set of points, reasons or facts (the usual case, even when they contain figures)' },
+    headline_numbers: { layout: 'key_stats', what: 'mostly figures: 3+ points that each state a headline number (results, KPIs, shares)' },
+    single_number: { layout: 'stat_focus', what: 'one headline figure that the whole slide is about' },
+    actions: { layout: 'checklist', what: 'actions the audience should take, each starting with a verb' },
+    sequence: { layout: 'process_flow', what: 'stages of a process, each leading to the next' },
+    dated_events: { layout: 'timeline', what: 'events or milestones tied to dates' },
+    comparison: { layout: 'comparison_table', what: 'the same measures given for several items or years (segments, sites, years)' },
+    contrast: { layout: 'two_column', what: 'two sides set against each other: before/after, option A/B' },
+    process_with_decisions: { layout: 'diagram', what: 'a process with decisions, branches or hand-offs between people or systems' },
+    quotation: { layout: 'quote_highlight', what: 'a statement quoted from a named person or a document' },
+    statement: { layout: 'big_idea', what: 'one message to remember, little else' },
+    parallel_concepts: { layout: 'icon_grid', what: '3-6 parallel categories or pillars of equal weight' },
+  },
+
   // How to fill each layout. Ranges, not fixed counts: the content decides.
   writeGuide: {
     title: 'title: max 8 words naming the subject. subtitle: one sentence on what the audience will be able to do afterwards.',
@@ -106,6 +123,14 @@ const DOC = {
     reference_table: 'Data to look up: specifications, comparisons, parameters, contacts.',
     diagram: 'A figure: a process with decisions, a hand-off between roles or systems, or a structure.',
     summary: 'Recap and next steps. Last section only.',
+  },
+
+  shapes: {
+    points: { layout: 'body', what: 'explanation: ideas, reasons or context (the usual case)' },
+    actions: { layout: 'procedure', what: 'steps the reader carries out, in order' },
+    rules: { layout: 'key_points', what: 'rules, requirements or facts the reader must remember' },
+    data: { layout: 'reference_table', what: 'data to look up, or items compared on the same attributes' },
+    process_with_decisions: { layout: 'diagram', what: 'a process with decisions, branches or hand-offs between people or systems' },
   },
 
   writeGuide: {

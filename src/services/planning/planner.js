@@ -11,6 +11,7 @@ import config from '../../config.js';
 import { generateStructured, requestEmbedding, requestEmbeddingBatch } from '../llm.js';
 import { getDocumentMapDb, getSourcePassagesDb } from '../../db/chunksQueries.js';
 import { kindOf, briefBlock, storylineBlock, itemCount } from './kinds.js';
+import { chooseLayouts, finishLayouts } from './layouts.js';
 
 const { generateModel } = config.ollama;
 const PREVIEW_CHARS = 220;
@@ -30,16 +31,8 @@ export function pastedText(brief) {
   return (brief?.source_text || '').trim().slice(0, MAX_PASTED_CHARS);
 }
 
-function cap(kind) {
-  return kind.noun[0].toUpperCase() + kind.noun.slice(1);
-}
-
 function passageBlock(rows) {
   return rows.map((r) => `[${r.id}] p.${r.page ?? '?'}${r.heading ? ` · ${r.heading}` : ''}\n${r.content.trim()}`).join('\n\n');
-}
-
-function typeGuideBlock(kind) {
-  return kind.types.map((t) => `- "${t}": ${kind.typeGuide[t]}`).join('\n');
 }
 
 // What to plan from: the passages most relevant to the request (plus the documents' section list, so the
@@ -110,115 +103,6 @@ async function planContent(generation, kind, material, count) {
   return generateStructured(prompt, generateModel, contentSchema(count), { think: true });
 }
 
-// ── 2. Layouts ──
-
-// Layouts the user asked for by name in their request or instructions. They are requirements: the layout
-// prompt says so, and ensureRequestedTypes() checks the result.
-const REQUEST_PATTERNS = {
-  diagram: /\b(diagrams?|mermaid|flow ?charts?|flow diagrams?|process maps?|org charts?|mind ?maps?)\b/i,
-  timeline: /\btimelines?\b/i,
-  comparison_table: /\b(comparison tables?|tables?)\b/i,
-  reference_table: /\btables?\b/i,
-  key_stats: /\b(key (stats|figures|numbers)|kpis?|statistics|metrics)\b/i,
-  process_flow: /\bprocess flows?\b/i,
-  procedure: /\b(procedures?|step[- ]by[- ]step)\b/i,
-};
-
-function requestedTypes(kind, brief = {}) {
-  const text = `${brief.topic || ''}\n${brief.instructions || ''}`;
-  return kind.types.filter((t) => REQUEST_PATTERNS[t]?.test(text));
-}
-
-async function chooseLayouts(generation, kind, items) {
-  const wanted = requestedTypes(kind, generation.brief);
-  const prompt =
-    `Choose the layout for each ${kind.noun} of a ${kind.product}, from what its content is.\n\n` +
-    `${cap(kind)}s:\n` +
-    items.map((it, i) => `${i + 1}. ${it.title}\n${it.bullets.map((b) => `   - ${b}`).join('\n')}`).join('\n') +
-    `\n\nLayouts and what each is for:\n${typeGuideBlock(kind)}\n\n` +
-    `Rules:\n` +
-    `- ${cap(kind)} 1 is "${kind.firstType}" and the last is "${kind.lastType}"; no other uses those.\n` +
-    `- Match the content's shape. Most ${kind.nounPlural} are a set of points, even when the points contain ` +
-    `figures: use "${kind.defaultType}" for those. Use a specialised layout only when the content clearly has its ` +
-    `shape: 3+ headline numbers and little else -> key_stats; one number that is the whole point -> stat_focus; ` +
-    `steps in order -> a process or checklist; dated events -> timeline; items compared on the same attributes -> ` +
-    `a table; a process with decisions or hand-offs -> diagram.\n` +
-    `- Use each specialised layout at most twice.\n` +
-    (wanted.length ? `- The user asked for: ${wanted.map((t) => `"${t}"`).join(', ')}. Use each at least once where it fits best.\n` : '') +
-    `- reason: a few words a user would understand, e.g. "Four figures side by side".`;
-  const schema = {
-    type: 'object',
-    properties: {
-      layouts: {
-        type: 'array',
-        minItems: items.length,
-        maxItems: items.length,
-        items: {
-          type: 'object',
-          properties: { type: { type: 'string', enum: kind.types }, reason: { type: 'string' } },
-          required: ['type', 'reason'],
-        },
-      },
-    },
-    required: ['layouts'],
-  };
-  const result = await generateStructured(prompt, generateModel, schema, { think: false });
-  return items.map((it, i) => {
-    const choice = result.layouts?.[i];
-    return {
-      ...it,
-      [kind.typeKey]: kind.types.includes(choice?.type) ? choice.type : kind.defaultType,
-      type_reason: choice?.reason || '',
-    };
-  });
-}
-
-/**
- * No specialised layout more than twice (unless the user asked for it): extra uses fall back to the default.
- * Without this, a plan where every slide has figures came back as six key-stats slides in a row.
- */
-function capRepeats(kind, brief, items) {
-  const wanted = new Set(requestedTypes(kind, brief));
-  const seen = {};
-  return items.map((it) => {
-    const t = it[kind.typeKey];
-    if (t === kind.defaultType || t === kind.firstType || t === kind.lastType || wanted.has(t)) return it;
-    seen[t] = (seen[t] || 0) + 1;
-    return seen[t] > 2 ? { ...it, [kind.typeKey]: kind.defaultType, type_reason: 'A set of points' } : it;
-  });
-}
-
-/** Makes sure every layout the user asked for appears at least once (replacing a middle default-layout item). */
-function ensureRequestedTypes(kind, brief, items) {
-  const wanted = requestedTypes(kind, brief);
-  for (const type of wanted) {
-    if (items.some((it) => it[kind.typeKey] === type)) continue;
-    const middle = items.slice(1, -1);
-    const target = middle.find((it) => it[kind.typeKey] === kind.defaultType)
-      || middle.find((it) => !wanted.includes(it[kind.typeKey]));
-    if (target) {
-      target[kind.typeKey] = type;
-      target.type_reason = 'You asked for this layout';
-    }
-  }
-  return items;
-}
-
-// The first and last types are fixed (title/closing, heading/summary), and section dividers only make sense in
-// long decks (10+ slides): in shorter ones they replace a content slide with a heading. The model occasionally drifts on both.
-function cleanTypes(kind, items) {
-  return items.map((it, i) => {
-    const t = it[kind.typeKey];
-    const last = i === items.length - 1 && items.length > 1;
-    if (i === 0) return { ...it, [kind.typeKey]: kind.firstType };
-    if (last) return { ...it, [kind.typeKey]: kind.lastType };
-    if (t === kind.firstType || t === kind.lastType || (t === 'section_divider' && items.length < 10)) {
-      return { ...it, [kind.typeKey]: kind.defaultType };
-    }
-    return it;
-  });
-}
-
 // ── The whole plan ──
 
 /** Builds the outline: content from the material, then layouts, then sources per item. */
@@ -241,8 +125,7 @@ export async function planOutline(generation) {
       .slice(0, kind.sourcesPerItem + 2).map((id) => toSource(byId.get(id))),
     content: null,
   }));
-  items = await chooseLayouts(generation, kind, items);
-  items = ensureRequestedTypes(kind, generation.brief, capRepeats(kind, generation.brief, cleanTypes(kind, items)));
+  items = finishLayouts(kind, generation.brief, await chooseLayouts(generation, kind, items));
   // Items the plan gave no passages (and that need evidence) get sources by search.
   await attachSources(generation, kind, items.filter((it) => !it.sources.length));
 

@@ -14,7 +14,8 @@
     "ingest": "node --env-file=.env ./src/scripts/ingest.js",
     "reembed": "node --env-file=.env ./src/scripts/reembed.js",
     "rerender-diagrams": "node --env-file=.env ./src/scripts/rerenderDiagrams.js",
-    "migrate": "node --env-file=.env ./src/db/migrate.js"
+    "migrate": "node --env-file=.env ./src/db/migrate.js",
+    "eval:layouts": "node --env-file=.env ./evals/layouts.js"
   },
   "dependencies": {
     "@langchain/textsplitters": "^1.0.1",
