@@ -61,7 +61,11 @@ function extractHeading(text) {
   return match ? match[2].trim() : null;
 }
 
-export function enrichTextForEmbedding(text, { page, heading } = {}) {
+// Figure markers ("<!-- figure:KEY -->") link passages to saved figures; they carry no meaning for search.
+const FIGURE_MARKER_RE = /<!-- figure:[a-f0-9]{16} -->\n?/g;
+
+export function enrichTextForEmbedding(rawText, { page, heading } = {}) {
+  const text = String(rawText).replace(FIGURE_MARKER_RE, '');
   const parts = [];
   if (heading) parts.push(heading);
   if (page != null) parts.push(`Page ${page}`);

@@ -1,4 +1,5 @@
 import fs from 'node:fs/promises';
+import crypto from 'node:crypto';
 import path from 'node:path';
 import os from 'node:os';
 import { execFile } from 'node:child_process';
@@ -11,6 +12,12 @@ const PAGES_PER_CHUNK = 25;
 // Docling inserts this between pages; we strip it and keep page start offsets instead.
 const PAGE_BREAK = '<!-- page-break -->';
 const SPLIT_SCRIPT = path.join(import.meta.dirname, '../../scripts/split_pdf.py');
+// Embedded images in docling's markdown mark where each figure sits.
+const EMBEDDED_IMAGE_RE = /!\[[^\]]*\]\(data:image\/[a-z]+;base64,[A-Za-z0-9+/=]+\)/g;
+// A figure is kept when it has a caption or readable text inside (a diagram). Uncaptioned images with little
+// text are decoration: logos, icons, chapter banners.
+const MIN_FIGURE_LABELS = 3;
+const MAX_FIGURE_TEXT = 1500;
 
 export async function extractMarkdownFromFile(filePath, filename, onProgress) {
   if (path.extname(filename).toLowerCase() === '.pdf') {
@@ -42,13 +49,14 @@ async function extractLargePdf(filePath, filename, totalPages, onProgress) {
 
     let allMarkdown = '';
     const allPageStarts = [];
+    const allFigures = [];
     let pageOffset = 0;
 
     for (let i = 0; i < chunks.length; i++) {
       if (onProgress) onProgress({ phase: 'converting', current: i + 1, total: chunks.length, message: `Converting section ${i + 1} of ${chunks.length}...` });
       const chunkPath = path.join(tmpDir, chunks[i]);
       const chunkBuffer = await fs.readFile(chunkPath);
-      const { markdown, pageStarts } = await extractMarkdownFromBuffer(chunkBuffer, chunks[i]);
+      const { markdown, pageStarts, figures } = await extractMarkdownFromBuffer(chunkBuffer, chunks[i]);
 
       if (allMarkdown) allMarkdown += '\n\n';
       const base = allMarkdown.length;
@@ -57,10 +65,11 @@ async function extractLargePdf(filePath, filename, totalPages, onProgress) {
       for (const p of pageStarts) {
         allPageStarts.push({ page: p.page + pageOffset, offset: p.offset + base });
       }
+      for (const f of figures) allFigures.push({ ...f, page: f.page != null ? f.page + pageOffset : null });
       pageOffset += PAGES_PER_CHUNK;
     }
 
-    return { markdown: allMarkdown, pageCount: totalPages, pageStarts: allPageStarts };
+    return { markdown: allMarkdown, pageCount: totalPages, pageStarts: allPageStarts, figures: allFigures };
   } finally {
     await fs.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
   }
@@ -77,9 +86,12 @@ export async function extractMarkdownFromBuffer(buffer, filename) {
   const blob = new Blob([buffer]);
   form.append('files', blob, filename);
   form.append('to_formats', 'md');
-  // JSON output is used for the page count.
+  // JSON output gives the page count and each figure's caption, inner text and image.
   form.append('to_formats', 'json');
   form.append('md_page_break_placeholder', PAGE_BREAK);
+  // Figure images inline (JSON and markdown); in the markdown they also mark where each figure sits.
+  form.append('image_export_mode', 'embedded');
+  form.append('images_scale', '2');
 
   try {
     const res = await fetch(config.docling.endpoint, {
@@ -94,10 +106,11 @@ export async function extractMarkdownFromBuffer(buffer, filename) {
     }
 
     const data = await res.json();
-    const { markdown, pageStarts } = splitPages(data.document.md_content);
+    const figures = extractFigures(data.document?.json_content);
+    const { markdown, pageStarts } = splitPages(placeFigures(data.document.md_content, figures));
     const pageCount = extractPageCount(data);
 
-    return { markdown, pageCount, pageStarts };
+    return { markdown, pageCount, pageStarts, figures: figures.filter((f) => f.keep).map(({ keep: _k, ...f }) => f) };
   } catch (err) {
     throw new AppError(
       `Docling service error. Original error message: ${err.message}`,
@@ -105,6 +118,52 @@ export async function extractMarkdownFromBuffer(buffer, filename) {
       err,
     );
   }
+}
+
+/**
+ * Each picture docling found, in document order: caption, the text printed inside it (labels of a diagram,
+ * which docling leaves out of the markdown), page, and the PNG.
+ */
+function extractFigures(doc) {
+  if (!doc?.pictures?.length) return [];
+  const texts = new Map((doc.texts || []).map((t) => [t.self_ref, t.text]));
+  return doc.pictures.map((pic) => {
+    const caption = (pic.captions || []).map((c) => texts.get(c.$ref)).filter(Boolean).join(' ').trim();
+    const labels = (pic.children || [])
+      .map((c) => texts.get(c.$ref))
+      .filter((t) => t && t.trim() && t.trim() !== caption)
+      .map((t) => t.replace(/^[•▪◦·-]\s*/, '').trim());
+    const uri = pic.image?.uri || '';
+    const png = uri.startsWith('data:image/') ? Buffer.from(uri.split(',', 2)[1], 'base64') : null;
+    const width = Math.round(pic.image?.size?.width || 0);
+    const height = Math.round(pic.image?.size?.height || 0);
+    const keep = Boolean(png) && (Boolean(caption) || labels.length >= MIN_FIGURE_LABELS);
+    return {
+      key: png ? crypto.createHash('sha256').update(png).digest('hex').slice(0, 16) : null,
+      page: pic.prov?.[0]?.page_no ?? null,
+      caption,
+      labels: labels.join('; ').slice(0, MAX_FIGURE_TEXT),
+      png,
+      width,
+      height,
+      keep,
+    };
+  });
+}
+
+/**
+ * Replaces each embedded image in docling's markdown with the figure's text, so the caption and the words
+ * inside a diagram become searchable and quotable. A comment marker links the passage to the stored image.
+ * The n-th image in the markdown is the n-th picture in the JSON.
+ */
+function placeFigures(markdown, figures) {
+  let n = 0;
+  return markdown.replace(EMBEDDED_IMAGE_RE, () => {
+    const f = figures[n++];
+    if (!f?.keep) return '';
+    const title = !f.caption ? 'Figure' : /^fig(ure)?\b/i.test(f.caption) ? f.caption : `Figure: ${f.caption}`;
+    return `<!-- figure:${f.key} -->\n${title}${f.labels ? `\nText in the figure: ${f.labels}` : ''}\n`;
+  });
 }
 
 function extractPageCount(data) {

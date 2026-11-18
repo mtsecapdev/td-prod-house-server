@@ -5,6 +5,7 @@ import pool from '../db/pool.js';
 import pgvector from 'pgvector/pg';
 import config from '../config.js';
 import { extractMarkdownFromFile } from '../services/fileProcessor.js';
+import { saveFigures } from '../services/figures.js';
 import { splitMarkdown, enrichTextForEmbedding } from '../services/textChunker.js';
 import { requestEmbeddingBatch } from '../services/llm.js';
 import {
@@ -58,7 +59,8 @@ async function ingestFile(filePath) {
   console.log(`  Processing: ${filename} (doc ${docId})`);
 
   try {
-    const { markdown, pageCount, pageStarts } = await extractMarkdownFromFile(filePath, filename);
+    const { markdown, pageCount, pageStarts, figures } = await extractMarkdownFromFile(filePath, filename);
+    await saveFigures(docId, figures);
     const chunks = await splitMarkdown(markdown, pageStarts);
     const embeddings = await requestEmbeddingBatch(chunks.map((c) => enrichTextForEmbedding(c.text, c)));
 

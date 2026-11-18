@@ -9,6 +9,7 @@ import { getChunksByIdsDb, getSourcePassagesDb } from '../../db/chunksQueries.js
 import { renderWithRepair, DiagramSyntaxError } from '../diagrams.js';
 import { kindOf, styleGuide, briefBlock, storylineBlock } from './kinds.js';
 import { fitContent } from './fit.js';
+import { stripFigureMarkers } from '../figures.js';
 import { sourceQuery, pastedText } from './planner.js';
 
 const { generateModel } = config.ollama;
@@ -90,7 +91,7 @@ async function writeAs(generation, kind, index, type, { note } = {}) {
   const bullets = (item.bullets || []).map((b) => b.trim()).filter(Boolean);
 
   const sourceText = rows.length
-    ? rows.map((r) => `[p. ${r.page ?? '?'}${r.heading ? ` · ${r.heading}` : ''}]\n${r.content}`).join('\n\n')
+    ? rows.map((r) => `[p. ${r.page ?? '?'}${r.heading ? ` · ${r.heading}` : ''}]\n${stripFigureMarkers(r.content)}`).join('\n\n')
     : `(No sources for this ${kind.noun}: build it from the plan and the ${kind.nounPlural} already written.)`;
 
   const itemBlock = [

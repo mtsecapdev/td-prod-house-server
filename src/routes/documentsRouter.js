@@ -13,6 +13,7 @@ documentsRouter.post(
   documentsController.uploadDocumentsStream,
 );
 documentsRouter.post('/query', documentsController.queryDocumentsPost);
+documentsRouter.get('/figures/:figureId', documentsController.serveFigure);
 documentsRouter.get('/:id/file', documentsController.downloadDocument);
 documentsRouter.delete('/:id', documentsController.deleteOneDocument);
 

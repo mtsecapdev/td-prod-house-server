@@ -12,6 +12,7 @@ import { generateStructured, requestEmbedding, requestEmbeddingBatch } from '../
 import { getDocumentMapDb, getSourcePassagesDb } from '../../db/chunksQueries.js';
 import { kindOf, briefBlock, storylineBlock, itemCount } from './kinds.js';
 import { chooseLayouts, finishLayouts } from './layouts.js';
+import { stripFigureMarkers } from '../figures.js';
 
 const { generateModel } = config.ollama;
 const PREVIEW_CHARS = 220;
@@ -32,7 +33,7 @@ export function pastedText(brief) {
 }
 
 function passageBlock(rows) {
-  return rows.map((r) => `[${r.id}] p.${r.page ?? '?'}${r.heading ? ` · ${r.heading}` : ''}\n${r.content.trim()}`).join('\n\n');
+  return rows.map((r) => `[${r.id}] p.${r.page ?? '?'}${r.heading ? ` · ${r.heading}` : ''}\n${stripFigureMarkers(r.content).trim()}`).join('\n\n');
 }
 
 // What to plan from: the passages most relevant to the request (plus the documents' section list, so the
@@ -216,7 +217,7 @@ function toSource(row, added = false) {
     chunk_id: row.id,
     page: row.page,
     heading: row.heading,
-    preview: row.content.replace(/\s+/g, ' ').trim().slice(0, PREVIEW_CHARS),
+    preview: stripFigureMarkers(row.content).replace(/\s+/g, ' ').trim().slice(0, PREVIEW_CHARS),
     added, // true when the user added it; kept when sources are found again
   };
 }

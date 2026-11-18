@@ -71,7 +71,7 @@ export async function rewriteQuery(history, originalQuery) {
 const NOT_IN_DOCS_MARKER = '[NOT IN DOCUMENTS]';
 const NOT_IN_DOCS_RE = /\[\s*NOT[ _]IN[ _]DOCUMENTS\s*\]/gi;
 
-export async function generateAnswer(query, history, chunks) {
+export async function generateAnswer(query, history, chunks, figures = []) {
   let listOfChunks = '';
   let totalScore = 0;
 
@@ -103,6 +103,17 @@ export async function generateAnswer(query, history, chunks) {
     `When the user asks where something is stated, list the pages and section names. ` +
     `Never mention excerpts, chunks or their labels; the user cannot see them.\n` +
     `- Use plain text only: no markdown (no **, *, # or - bullets). For a list, write numbered lines (1. 2. 3.).\n` +
+    (figures.length
+      ? `- Figures in these excerpts. You cannot see them, only their caption and the text printed in them, ` +
+        `listed in reading order (so labels that belong together are usually next to each other). When asked about ` +
+        `a figure, describe what its text shows: the groups and the items in each. The user can see the figure ` +
+        `and you cannot: when they say what kind of figure it is (a Venn diagram, a flowchart...), take that as ` +
+        `correct and use it (in a Venn diagram, the labels between two groups are the overlap). Never say a figure ` +
+        `is not what the user calls it. Name the figure by its caption, e.g. "Figure 2.0-1"; the user will see the ` +
+        `figure itself under your answer.\n` +
+        figures.map((f) => `  * ${f.caption || 'Untitled figure'} (p. ${f.page ?? '?'})` +
+          (f.labels ? `. Text in it: ${f.labels}` : '')).join('\n') + '\n'
+      : '') +
     `- Last step, always: decide whether the excerpts contain the answer. If they do not (the question is about ` +
     `something the documents don't mention, or is unrelated to them, such as general trivia, and you answer from ` +
     `general knowledge or say it isn't covered), end your reply with ${NOT_IN_DOCS_MARKER} on its own line. ` +

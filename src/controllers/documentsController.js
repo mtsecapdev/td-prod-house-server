@@ -16,6 +16,8 @@ import {
 import { getAllDocumentsDb, getDocumentByIdDb, insertDocumentDb, updateDocumentStatusDb, deleteDocumentDb, documentExistsDb } from '../db/documentsQueries.js';
 import { getSimilarChunksDb, getNeighborChunksDb, insertChunkDb } from '../db/chunksQueries.js';
 import { generateSummaryChunks } from '../services/summarizer.js';
+import { saveFigures, deleteFigureFiles, figuresInChunks, figuresMentioned, stripFigureMarkers } from '../services/figures.js';
+import { getFigureByIdDb } from '../db/figuresQueries.js';
 
 async function ensureDir(dir) {
   await fs.mkdir(dir, { recursive: true });
@@ -41,7 +43,8 @@ const uploadDocumentsPost = [
     }));
 
     try {
-      const { markdown, pageCount, pageStarts } = await extractMarkdownFromFile(filePath, originalname);
+      const { markdown, pageCount, pageStarts, figures } = await extractMarkdownFromFile(filePath, originalname);
+      await saveFigures(docId, figures);
       const chunks = await splitMarkdown(markdown, pageStarts);
       const embeddings = await requestEmbeddingBatch(chunks.map((c) => enrichTextForEmbedding(c.text, c)));
 
@@ -121,16 +124,23 @@ async function queryDocumentsPost(req, res) {
     const finalChunks = expanded.slice(0, config.rag.topK + 5);
 
     send({ phase: 'generating' });
+    const available = await figuresInChunks(finalChunks);
     // The rewrite is only for retrieval. Answer what the user actually asked; history supplies the context.
     const { llmResponse, avgConfidenceScore, grounded } = await generateAnswer(
       originalQuery,
       history,
-      finalChunks,
+      finalChunks.map((c) => ({ ...c, content: stripFigureMarkers(c.content) })),
+      available,
     );
+    // Figures shown under the answer: only those it refers to.
+    const figures = figuresMentioned(available, llmResponse.content).map((f) => ({
+      id: f.id, caption: f.caption, page: f.page, width: f.width, height: f.height, document_id: f.document_id,
+    }));
 
     const chunksByDoc = {};
     for (const docId of docIdsToReference) {
-      chunksByDoc[docId] = finalChunks.filter((c) => c.document_id === docId);
+      chunksByDoc[docId] = finalChunks.filter((c) => c.document_id === docId)
+        .map((c) => ({ ...c, content: stripFigureMarkers(c.content) }));
     }
 
     send({
@@ -145,6 +155,7 @@ async function queryDocumentsPost(req, res) {
       chunks: chunksByDoc,
       avgConfidenceScore,
       grounded,
+      figures,
     });
   } catch (err) {
     send({ phase: 'error', message: err.message });
@@ -183,11 +194,14 @@ const uploadDocumentsStream = [
     const aborted = async () => !(await documentExistsDb(docId));
 
     try {
-      const { markdown, pageCount, pageStarts } = await extractMarkdownFromFile(filePath, originalname, (progress) => {
+      const { markdown, pageCount, pageStarts, figures } = await extractMarkdownFromFile(filePath, originalname, (progress) => {
         send(progress);
       });
 
       if (await aborted()) { send({ phase: 'error', message: 'Document was deleted' }); res.end(); return; }
+
+      if (figures.length) send({ phase: 'chunking', message: `Saving ${figures.length} figures...` });
+      await saveFigures(docId, figures);
 
       send({ phase: 'chunking', message: 'Splitting into text chunks...' });
       const chunks = await splitMarkdown(markdown, pageStarts);
@@ -228,13 +242,22 @@ const uploadDocumentsStream = [
   },
 ];
 
+// A figure image from an ingested document (shown under chat answers that refer to it).
+async function serveFigure(req, res) {
+  const figure = await getFigureByIdDb(Number(req.params.figureId));
+  if (!figure) throw new AppError('Figure not found', 404);
+  res.set('Cache-Control', 'private, max-age=86400');
+  res.sendFile(figure.file_path);
+}
+
 async function listDocuments(req, res) {
   const docs = await getAllDocumentsDb();
   res.json(responseFactory.createJsonResponse({ docs }));
 }
 
 async function deleteOneDocument(req, res) {
-  const deletedDocument = await deleteDocumentDb(req.params.id);
+  const deletedDocument = await deleteDocumentDb(req.params.id); // figure rows go with it (ON DELETE CASCADE)
+  await deleteFigureFiles(req.params.id);
   res.json(responseFactory.createJsonResponse({ deletedDocument }));
 }
 
@@ -244,5 +267,6 @@ export default {
   uploadDocumentsStream,
   downloadDocument,
   queryDocumentsPost,
+  serveFigure,
   deleteOneDocument,
 };
