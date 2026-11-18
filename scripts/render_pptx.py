@@ -184,41 +184,59 @@ def png_size(path):
     return struct.unpack('>II', head[16:24])
 
 
-def add_picture_fit(slide, path, left, top, max_w, max_h, scale=1.0, align='center', crop=(0, 0, 0, 0)):
-    """Place an image as large as fits in the box (times scale), keeping its aspect ratio, vertically centred and
-    aligned left/centre/right. crop (l, t, r, b fractions) uses PowerPoint's own cropping, so it stays adjustable."""
+def _cropped(pic, crop):
+    if any(crop):
+        pic.crop_left, pic.crop_top, pic.crop_right, pic.crop_bottom = crop
+
+
+def add_picture_fit(slide, path, left, top, max_w, max_h, crop=(0, 0, 0, 0)):
+    """Place an image as large as fits in the box, keeping its aspect ratio, centred. crop (l, t, r, b
+    fractions) uses PowerPoint's own cropping, so it stays adjustable in PowerPoint."""
     l, t, r, b = crop
     w_px, h_px = png_size(path)
     vis_w, vis_h = w_px * (1 - l - r), h_px * (1 - t - b)
-    fit = min(int(max_w) * scale / vis_w, int(max_h) * scale / vis_h)
+    fit = min(int(max_w) / vis_w, int(max_h) / vis_h)
     w, h = int(vis_w * fit), int(vis_h * fit)
-    x = {'left': int(left), 'right': int(left) + int(max_w) - w}.get(align, int(left) + (int(max_w) - w) // 2)
-    pic = slide.shapes.add_picture(path, x, int(top) + (int(max_h) - h) // 2, w, h)
-    if any(crop):
-        pic.crop_left, pic.crop_top, pic.crop_right, pic.crop_bottom = l, t, r, b
+    _cropped(slide.shapes.add_picture(path, int(left) + (int(max_w) - w) // 2, int(top) + (int(max_h) - h) // 2, w, h), crop)
 
 
-def image_adjust(content):
-    """The user's size/alignment/crop for an image, from the editor: scale 0.2-1 of the space, align, and crop
-    fractions per edge. Values are clamped so a bad save can never hide the image."""
+def add_picture_at(slide, path, x, y, w, crop=(0, 0, 0, 0)):
+    """Place an image where the user put it in the editor: x, y, w as fractions of the slide."""
+    l, t, r, b = crop
+    w_px, h_px = png_size(path)
+    width = int(SLIDE_WIDTH * w)
+    height = int(width * (h_px * (1 - t - b)) / (w_px * (1 - l - r)))
+    _cropped(slide.shapes.add_picture(path, int(SLIDE_WIDTH * x), int(SLIDE_HEIGHT * y), width, height), crop)
+
+
+def image_settings(content):
+    """The user's picture settings from the editor, clamped so a bad save can never hide the picture.
+    Slides: x, y, w as fractions of the slide (None = fit the default area). Documents: w as a fraction of the
+    text column, and align. Both: crop fractions (l, t, r, b) per edge."""
     a = content.get('image') or {}
-    try:
-        scale = min(1.0, max(0.2, float(a.get('scale', 1))))
-    except (TypeError, ValueError):
-        scale = 1.0
-    align = a.get('align') if a.get('align') in ('left', 'center', 'right') else 'center'
+
+    def num(key, lo, hi):
+        try:
+            return min(hi, max(lo, float(a[key])))
+        except (KeyError, TypeError, ValueError):
+            return None
+
     crop = a.get('crop') or {}
     def edge(k):
         try:
-            return min(0.9, max(0.0, float(crop.get(k, 0))))
+            return min(0.95, max(0.0, float(crop.get(k, 0))))
         except (TypeError, ValueError):
             return 0.0
     l, t, r, b = edge('l'), edge('t'), edge('r'), edge('b')
-    if l + r > 0.9:
+    if l + r > 0.95:
         l = r = 0.0
-    if t + b > 0.9:
+    if t + b > 0.95:
         t = b = 0.0
-    return scale, align, (l, t, r, b)
+    return {
+        'x': num('x', -1.0, 1.0), 'y': num('y', -1.0, 1.0), 'w': num('w', 0.02, 1.5),
+        'align': a.get('align') if a.get('align') in ('left', 'center', 'right') else 'center',
+        'crop': (l, t, r, b),
+    }
 
 
 def _add_notes(slide, content):
@@ -912,8 +930,11 @@ def render_diagram(slide, content, slide_idx=0, total=0):
 
     path = content.get('diagram_path')
     if path and Path(path).exists():
-        scale, align, crop = image_adjust(content)
-        add_picture_fit(slide, path, box_left, box_top, box_w, box_h, scale, align, crop)
+        img = image_settings(content)
+        if None not in (img['x'], img['y'], img['w']):
+            add_picture_at(slide, path, img['x'], img['y'], img['w'], img['crop'])
+        else:
+            add_picture_fit(slide, path, box_left, box_top, box_w, box_h, img['crop'])
     else:
         add_textbox(slide, box_left, box_top, box_w, box_h, 'Figure removed' if content.get('figure_id') else 'Diagram not available',
                     font_size=16, color=SLATE_LT, alignment=PP_ALIGN.CENTER, anchor='ctr')

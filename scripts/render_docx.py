@@ -246,27 +246,34 @@ def png_size(path):
     return struct.unpack('>II', head[16:24])
 
 
-def image_adjust(content):
-    """The user's size/alignment/crop for an image, from the editor: scale 0.2-1 of the space, align, and crop
-    fractions per edge. Values are clamped so a bad save can never hide the image."""
+def image_settings(content):
+    """The user's picture settings from the editor, clamped so a bad save can never hide the picture.
+    Slides: x, y, w as fractions of the slide (None = fit the default area). Documents: w as a fraction of the
+    text column, and align. Both: crop fractions (l, t, r, b) per edge."""
     a = content.get('image') or {}
-    try:
-        scale = min(1.0, max(0.2, float(a.get('scale', 1))))
-    except (TypeError, ValueError):
-        scale = 1.0
-    align = a.get('align') if a.get('align') in ('left', 'center', 'right') else 'center'
+
+    def num(key, lo, hi):
+        try:
+            return min(hi, max(lo, float(a[key])))
+        except (KeyError, TypeError, ValueError):
+            return None
+
     crop = a.get('crop') or {}
     def edge(k):
         try:
-            return min(0.9, max(0.0, float(crop.get(k, 0))))
+            return min(0.95, max(0.0, float(crop.get(k, 0))))
         except (TypeError, ValueError):
             return 0.0
     l, t, r, b = edge('l'), edge('t'), edge('r'), edge('b')
-    if l + r > 0.9:
+    if l + r > 0.95:
         l = r = 0.0
-    if t + b > 0.9:
+    if t + b > 0.95:
         t = b = 0.0
-    return scale, align, (l, t, r, b)
+    return {
+        'x': num('x', -1.0, 1.0), 'y': num('y', -1.0, 1.0), 'w': num('w', 0.02, 1.5),
+        'align': a.get('align') if a.get('align') in ('left', 'center', 'right') else 'center',
+        'crop': (l, t, r, b),
+    }
 
 
 def cropped_copy(path, crop):
@@ -290,16 +297,21 @@ def render_diagram(doc, content, figure_no=1):
 
     path = content.get('diagram_path')
     if path and Path(path).exists():
-        user_scale, align, crop = image_adjust(content)
+        img = image_settings(content)
+        crop = img['crop']
         if any(crop):
             path = cropped_copy(path, crop)
         w_px, h_px = png_size(path)
         natural_w = Inches(w_px / DIAGRAM_DPI)
         natural_h = Inches(h_px / DIAGRAM_DPI)
-        scale = min(1.0, FIGURE_MAX_W / natural_w, FIGURE_MAX_H / natural_h) * user_scale
+        if img['w'] is not None:
+            # The editor's width is a share of the text column; kept within the page height.
+            width = min(FIGURE_MAX_W * min(img['w'], 1.0), FIGURE_MAX_H * natural_w / natural_h)
+        else:
+            width = natural_w * min(1.0, FIGURE_MAX_W / natural_w, FIGURE_MAX_H / natural_h)
         p = doc.add_paragraph()
-        p.alignment = {'left': WD_ALIGN_PARAGRAPH.LEFT, 'right': WD_ALIGN_PARAGRAPH.RIGHT}.get(align, WD_ALIGN_PARAGRAPH.CENTER)
-        p.add_run().add_picture(path, width=int(natural_w * scale))
+        p.alignment = {'left': WD_ALIGN_PARAGRAPH.LEFT, 'right': WD_ALIGN_PARAGRAPH.RIGHT}.get(img['align'], WD_ALIGN_PARAGRAPH.CENTER)
+        p.add_run().add_picture(path, width=int(width))
         if any(crop):
             Path(path).unlink(missing_ok=True)
         p.paragraph_format.keep_with_next = True  # keep the caption on the same page as the figure
