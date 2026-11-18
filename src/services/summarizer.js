@@ -1,8 +1,7 @@
-import { requestEmbedding } from './llm.js';
+import { requestEmbedding, generateStructured } from './llm.js';
 import { enrichTextForEmbedding } from './textChunker.js';
 import { insertChunkDb } from '../db/chunksQueries.js';
 import config from '../config.js';
-import * as provider from './providers/ollama.js';
 
 const { generateModel } = config.ollama;
 const SECTIONS_PER_BATCH = 8;
@@ -20,7 +19,7 @@ export async function generateSummaryChunks(docId, leafChunks, { onProgress } = 
 
     for (let i = 0; i < batch.length; i++) {
       const section = batch[i];
-      const summary = summaries[i] || summaries[summaries.length - 1];
+      const summary = summaries[i];
       const heading = section.heading || `Section`;
       const page = section.chunks[0]?.page ?? null;
 
@@ -91,46 +90,49 @@ function batchSections(sections, batchSize) {
   return batches;
 }
 
-async function summarizeBatch(sections) {
+// Summaries run without thinking (a large document has dozens of these calls; thinking made them the slowest
+// step of ingestion) and as JSON: with thinking off, qwen3 reasons out loud in plain-text replies, which
+// would end up in the stored summary. Answers are matched by section number, not position, so a skipped
+// answer can't shift every later summary onto the wrong section.
+export async function summarizeBatch(sections) {
   const parts = sections.map((section, i) => {
     const label = section.heading || `Section ${i + 1}`;
+    // Without thinking these calls are cheap, so each section gets more of its text: at 1,200 characters,
+    // facts in later table rows were cut off and the model guessed them.
     const text = section.chunks
-      .map((c) => c.text.slice(0, 400))
+      .map((c) => c.text.slice(0, 1200))
       .join(' ')
-      .slice(0, 1200);
-    return `### ${label}\n${text}`;
+      .slice(0, 2400);
+    return `### ${i + 1}. ${label}\n${text}`;
   });
 
   const prompt =
-    `Summarize each of the following ${sections.length} document sections in 2-3 concise sentences each. ` +
-    `Return each summary on its own line, prefixed with the section number (1., 2., etc.). ` +
-    `Capture the key facts and topics.\n\n` +
+    `Summarize each of the following ${sections.length} document sections in 2-3 concise sentences each, ` +
+    `capturing the key facts and topics. State only facts that appear in the section's text; never guess a ` +
+    `date, number or name. n is the section's number.\n\n` +
     parts.join('\n\n');
+  const schema = {
+    type: 'object',
+    properties: {
+      summaries: {
+        type: 'array',
+        minItems: sections.length,
+        maxItems: sections.length,
+        items: {
+          type: 'object',
+          properties: { n: { type: 'integer' }, summary: { type: 'string' } },
+          required: ['n', 'summary'],
+        },
+      },
+    },
+    required: ['summaries'],
+  };
 
-  const raw = await provider.generate(prompt, generateModel, {});
-  return parseNumberedList(raw, sections.length);
-}
-
-function parseNumberedList(text, expected) {
-  const lines = text.split('\n').filter((l) => l.trim());
-  const results = [];
-  let current = '';
-
-  for (const line of lines) {
-    const match = line.match(/^\d+[\.\)]\s*/);
-    if (match) {
-      if (current) results.push(current.trim());
-      current = line.replace(/^\d+[\.\)]\s*/, '');
-    } else {
-      current += ' ' + line;
-    }
-  }
-  if (current) results.push(current.trim());
-
-  while (results.length < expected) {
-    results.push(results[results.length - 1] || 'No summary available.');
-  }
-  return results;
+  const result = await generateStructured(prompt, generateModel, schema, { think: false });
+  const byNumber = new Map((result.summaries || []).map((x) => [x.n, x.summary?.trim()]));
+  // A section the model left out gets its opening text rather than a neighbour's summary.
+  return sections.map((section, i) => byNumber.get(i + 1)
+    || section.chunks.map((c) => c.text).join(' ').replace(/\s+/g, ' ').slice(0, 300));
 }
 
 async function summarizeDocument(sectionSummaries) {
@@ -143,6 +145,7 @@ async function summarizeDocument(sectionSummaries) {
     `Write a comprehensive overview of the entire document in one paragraph (4-6 sentences). ` +
     `Cover the main topics, purpose, and key content areas.\n\n` +
     list;
-
-  return provider.generate(prompt, generateModel, {});
+  const schema = { type: 'object', properties: { overview: { type: 'string' } }, required: ['overview'] };
+  const result = await generateStructured(prompt, generateModel, schema, { think: false });
+  return result.overview.trim();
 }
