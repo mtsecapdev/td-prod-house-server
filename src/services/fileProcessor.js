@@ -12,24 +12,50 @@ const PAGES_PER_CHUNK = 25;
 // Docling inserts this between pages; we strip it and keep page start offsets instead.
 const PAGE_BREAK = '<!-- page-break -->';
 const SPLIT_SCRIPT = path.join(import.meta.dirname, '../../scripts/split_pdf.py');
+const PREPARE_SCRIPT = path.join(import.meta.dirname, '../../scripts/prepare_pdf.py');
 // Embedded images in docling's markdown mark where each figure sits.
 const EMBEDDED_IMAGE_RE = /!\[[^\]]*\]\(data:image\/[a-z]+;base64,[A-Za-z0-9+/=]+\)/g;
-// A figure is kept when it has a caption or readable text inside (a diagram). Uncaptioned images with little
-// text are decoration: logos, icons, chapter banners.
+// A figure is kept when it has a caption, readable text inside (a diagram), or is large (an illustration docling
+// did not link to its caption). Small uncaptioned images with little text are decoration: logos, icons, banners.
+// Anything kept by mistake can be hidden on the Assets page.
 const MIN_FIGURE_LABELS = 3;
+const MIN_FIGURE_SIDE = 300; // px at images_scale 2, i.e. about 2 inches on the page
 const MAX_FIGURE_TEXT = 1500;
 
 export async function extractMarkdownFromFile(filePath, filename, onProgress) {
-  if (path.extname(filename).toLowerCase() === '.pdf') {
-    const buffer = await fs.readFile(filePath);
-    const pageCount = await getPdfPageCount(buffer);
-    if (pageCount > PAGES_PER_CHUNK) {
-      return extractLargePdf(filePath, filename, pageCount, onProgress);
-    }
+  if (path.extname(filename).toLowerCase() !== '.pdf') {
+    if (onProgress) onProgress({ phase: 'converting', message: 'Converting document...' });
+    return extractMarkdownFromBuffer(await fs.readFile(filePath), filename);
   }
-  if (onProgress) onProgress({ phase: 'converting', message: 'Converting document...' });
-  const buffer = await fs.readFile(filePath);
-  return extractMarkdownFromBuffer(buffer, filename);
+  const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'tdph-prep-'));
+  try {
+    const source = await preparePdf(filePath, tmpDir);
+    const buffer = await fs.readFile(source);
+    const pageCount = await getPdfPageCount(buffer);
+    if (pageCount > PAGES_PER_CHUNK) return await extractLargePdf(source, filename, pageCount, onProgress);
+    if (onProgress) onProgress({ phase: 'converting', message: 'Converting document...' });
+    return await extractMarkdownFromBuffer(buffer, filename);
+  } finally {
+    await fs.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+  }
+}
+
+/**
+ * Illustrations stored in media annotations (interactive course PDFs) are drawn into the pages so docling sees
+ * them. Returns the path to convert: a prepared copy, or the original when there was nothing to do or it failed.
+ */
+async function preparePdf(filePath, tmpDir) {
+  const out = path.join(tmpDir, 'prepared.pdf');
+  try {
+    const { stdout } = await execFileAsync(config.pythonPath, [PREPARE_SCRIPT, filePath, out], { timeout: 120_000 });
+    const { baked } = JSON.parse(stdout);
+    if (!baked) return filePath;
+    console.log(`Drew ${baked} media annotation(s) into the pages so their pictures are found`);
+    return out;
+  } catch (err) {
+    console.warn(`PDF preparation skipped (${err.message.split('\n')[0]})`);
+    return filePath;
+  }
 }
 
 async function getPdfPageCount(buffer) {
@@ -137,7 +163,8 @@ function extractFigures(doc) {
     const png = uri.startsWith('data:image/') ? Buffer.from(uri.split(',', 2)[1], 'base64') : null;
     const width = Math.round(pic.image?.size?.width || 0);
     const height = Math.round(pic.image?.size?.height || 0);
-    const keep = Boolean(png) && (Boolean(caption) || labels.length >= MIN_FIGURE_LABELS);
+    const large = width >= MIN_FIGURE_SIDE && height >= MIN_FIGURE_SIDE;
+    const keep = Boolean(png) && (Boolean(caption) || labels.length >= MIN_FIGURE_LABELS || large);
     return {
       key: png ? crypto.createHash('sha256').update(png).digest('hex').slice(0, 16) : null,
       page: pic.prov?.[0]?.page_no ?? null,
