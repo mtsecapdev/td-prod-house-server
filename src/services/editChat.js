@@ -7,6 +7,12 @@ import { SECTION_SCHEMAS } from './docSchemas.js';
 import { mermaidGuide, renderWithRepair, DiagramSyntaxError } from './diagrams.js';
 import { DECK_LIMITS, DOC_LIMITS, fitContent } from './planning/fit.js';
 
+// Set by the app, not the model: which document figure an item shows and how the user sized/cropped its image.
+// Hidden from the model and carried over unchanged, so a chat edit never drops the figure or its adjustments.
+const APP_FIELDS = ['figure_id', 'image'];
+const appFields = (content) => Object.fromEntries(APP_FIELDS.filter((f) => content?.[f] !== undefined).map((f) => [f, content[f]]));
+const forModel = (content) => Object.fromEntries(Object.entries(content || {}).filter(([f]) => !APP_FIELDS.includes(f)));
+
 export async function editSlide(generationId, slideIndex, instruction, history = []) {
   const generation = await getGenerationByIdDb(generationId);
   const { outline, source_document_ids: docIds } = generation;
@@ -27,7 +33,7 @@ export async function editSlide(generationId, slideIndex, instruction, history =
     .map((c, i) => `[${i + 1}] (page ${c.page ?? '?'}): ${c.content}`)
     .join('\n\n');
 
-  const currentSlide = JSON.stringify(slide.content, null, 2);
+  const currentSlide = JSON.stringify(forModel(slide.content), null, 2);
 
   const editLog = (generation.edit_history || [])
     .filter((e) => e.slide_index === slideIndex && e.before)
@@ -50,6 +56,7 @@ export async function editSlide(generationId, slideIndex, instruction, history =
     comparison_table: 'Fields: "title" (slide title), "columns" (array of header strings), "rows" (array of arrays matching column count), "speaker_notes". To add a row, add an array. To add a column, add to columns and extend each row.',
     key_stats: 'Fields: "title" (slide title), "stats" (array of {value, label, detail}), "speaker_notes". To remove a stat, omit it. To add one, add a new entry using a number from the source.',
     diagram: `Fields: "title" (slide title), "diagram_type" (flowchart, sequence or mindmap), "mermaid_code", "caption" (one sentence), "speaker_notes". To change the diagram, edit mermaid_code.\n${mermaidGuide({ direction: 'LR' })}`,
+    figure: 'Fields: "title" (slide title), "caption" (one sentence about the figure), "speaker_notes". The figure image itself cannot be edited here; the user changes it with "Change figure".',
   };
 
   const messages = [
@@ -80,7 +87,7 @@ export async function editSlide(generationId, slideIndex, instruction, history =
   const updatedSlides = [...outline.slides];
   updatedSlides[slideIndex] = {
     ...slide,
-    content: { ...updatedContent, source_chunk_ids: slide.content.source_chunk_ids },
+    content: { ...updatedContent, ...appFields(slide.content), source_chunk_ids: slide.content.source_chunk_ids },
   };
 
   const editEntry = {
@@ -107,6 +114,7 @@ const sectionGuide = {
   key_points: 'Fields: "title", "introduction", "points" (array of {label, description}), "notes". To remove a point, omit it from the array.',
   reference_table: 'Fields: "title", "introduction", "columns" (array of header strings), "rows" (array of arrays matching column count), "notes". To add a row, add an array. To add a column, add to columns and extend each row.',
   summary: 'Fields: "title", "recap_points" (array of strings), "next_steps", "notes". To remove a point, omit it from the array.',
+  figure: 'Fields: "title", "introduction", "caption" (short figure title), "notes". The figure image itself cannot be edited here; the user changes it with "Change figure".',
   diagram: `Fields: "title", "introduction", "diagram_type" (flowchart, sequence or mindmap), "mermaid_code", "caption" (short figure title), "notes". To change the figure, edit mermaid_code.\n${mermaidGuide({ direction: 'TD' })}`,
 };
 
@@ -130,7 +138,7 @@ export async function editSection(generationId, sectionIndex, instruction, histo
     .map((c, i) => `[${i + 1}] (page ${c.page ?? '?'}): ${c.content}`)
     .join('\n\n');
 
-  const currentSection = JSON.stringify(section.content, null, 2);
+  const currentSection = JSON.stringify(forModel(section.content), null, 2);
 
   const editLog = (generation.edit_history || [])
     .filter((e) => e.section_index === sectionIndex && e.before)
@@ -164,7 +172,7 @@ export async function editSection(generationId, sectionIndex, instruction, histo
   const updatedSections = [...outline.sections];
   updatedSections[sectionIndex] = {
     ...section,
-    content: { ...updatedContent, source_chunk_ids: section.content.source_chunk_ids },
+    content: { ...updatedContent, ...appFields(section.content), source_chunk_ids: section.content.source_chunk_ids },
   };
 
   const editEntry = {

@@ -142,7 +142,12 @@ export async function writeItem(generation, index, { note, type: typeOverride } 
 
   if (type === 'figure') {
     const figure = item.figure_id ? await getFigureByIdDb(item.figure_id) : null;
-    if (figure) return { type, ...(await writeAs(generation, kind, index, type, { note, figure })) };
+    if (figure) {
+      const written = await writeAs(generation, kind, index, type, { note, figure });
+      // Rewriting around the same figure keeps the user's size/crop; a different figure starts fresh.
+      const image = item.content?.figure_id === figure.id ? item.content.image : undefined;
+      return { type, ...written, content: { ...written.content, ...(image ? { image } : {}) } };
+    }
     // The figure was deleted: write the slide as points instead.
     const fallback = await writeAs(generation, kind, index, kind.defaultType, { note });
     return { type: kind.defaultType, ...fallback };

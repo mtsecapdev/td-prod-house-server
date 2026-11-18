@@ -14,7 +14,7 @@ const ACTIONS = ['edit', 'layout', 'add', 'delete', 'move'];
 
 function textOf(content) {
   if (!content) return '(not written)';
-  const { source_chunk_ids: _a, used_pages: _b, diagram_file: _c, mermaid_code: _d, speaker_notes: _e, ...rest } = content;
+  const { source_chunk_ids: _a, used_pages: _b, diagram_file: _c, mermaid_code: _d, speaker_notes: _e, image: _f, ...rest } = content;
   return JSON.stringify(rest).replace(/[{}"[\]]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 300);
 }
 
