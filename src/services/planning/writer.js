@@ -108,6 +108,13 @@ async function writeAs(generation, kind, index, type, { note, figure } = {}) {
     userNote ? `Note from the user (follow it): ${userNote}` : '',
     `Type: ${type}. How to fill it: ${kind.writeGuide[type] || ''}`,
     `Do not repeat points or figures the earlier ${kind.nounPlural} already made unless this one builds on them.`,
+    // A fact belongs to what its passage is about: the engine manual's gasoline ignition timing ended up as
+    // "diesel injection timing" once. Planned points are a plan, not evidence.
+    `Keep each fact with what its source passage says it is about: a passage about one engine type, system, ` +
+      `product or process is not evidence about another. If the sources do not support a planned point for this ` +
+      `${kind.noun}'s subject, leave the point out.`,
+    `Lines starting "Text in the figure:" list the words printed in a figure; use them to understand it, never ` +
+      `copy them into the text.`,
     `Sources for this ${kind.noun}:\n${sourceText}`,
   ].filter(Boolean).join('\n\n');
 
@@ -129,6 +136,20 @@ async function writeAs(generation, kind, index, type, { note, figure } = {}) {
     used_pages: [...new Set(rows.map((r) => r.page).filter((p) => p != null))].sort((a, b) => a - b),
   });
   return { content, sources };
+}
+
+/** A subheading the model repeated is dropped, so the paragraph continues under the one before. */
+function distinctSubheadings(content) {
+  if (!Array.isArray(content?.paragraphs)) return content;
+  const seen = new Set();
+  const paragraphs = content.paragraphs.map((p) => {
+    const key = String(p.subheading || '').trim().toLowerCase();
+    if (!key) return p;
+    if (seen.has(key)) return { ...p, subheading: '' };
+    seen.add(key);
+    return p;
+  });
+  return { ...content, paragraphs };
 }
 
 const MIN_KEY_STATS = 2;
@@ -182,7 +203,9 @@ async function writeContent(generation, index, { note, type: typeOverride } = {}
     return { type: kind.defaultType, ...fallback };
   }
 
-  const { content, sources } = await writeAs(generation, kind, index, type, { note });
+  const written = await writeAs(generation, kind, index, type, { note });
+  const content = distinctSubheadings(written.content);
+  const { sources } = written;
   if (type === 'key_stats' || type === 'stat_focus') return checkStatistics(generation, kind, index, type, { content, sources }, note);
   if (type !== 'diagram') return { type, content, sources };
 

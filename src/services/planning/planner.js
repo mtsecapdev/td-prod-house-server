@@ -111,6 +111,8 @@ async function planContent(generation, kind, material, count) {
     `Rules:\n` +
     `- Exactly ${count} ${kind.nounPlural}. The first is ${opening}; the last is ${closing}.\n` +
     `- One main idea per ${kind.noun}; no two cover the same ground. Cover everything the user asked for.\n` +
+    `- Keep each fact with what its passage is about: a passage about one engine type, system, product or process ` +
+    `is not evidence about another, even when the wording is similar.\n` +
     `- Order them so the ${kind.product} builds an argument from situation to conclusion.\n` +
     `Also return: audience (who it is for, a few words; the user's if given), tone (2-4 adjectives), and thesis ` +
     `(the one sentence the ${kind.name === 'deck' ? 'audience' : 'reader'} should leave with).`;
@@ -133,7 +135,8 @@ export async function planOutline(generation) {
   let items = (plan.items || []).filter((raw) => raw.title).map((raw) => ({
     id: newItemId(kind),
     title: cleanTitle(raw.title),
-    bullets: (raw.bullets || []).map((b) => b.trim()).filter(Boolean),
+    // Passage ids belong in source_ids; the model sometimes leaves them in the text ("… [2463]").
+    bullets: (raw.bullets || []).map((b) => b.replace(/\s*\[\d+(?:\s*,\s*\d+)*\]/g, '').trim()).filter(Boolean),
     // The passages this item was planned from become its sources.
     sources: [...new Set(raw.source_ids || [])].filter((id) => byId.has(id))
       .slice(0, kind.sourcesPerItem + 2).map((id) => toSource(byId.get(id))),

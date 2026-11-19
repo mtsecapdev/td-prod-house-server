@@ -141,7 +141,7 @@ const DOC = {
 
   writeGuide: {
     heading: 'title: max 10 words. subtitle: one sentence on the document\'s purpose for the reader. summary: 2-4 sentences on what it covers and why it matters.',
-    body: '2-5 paragraphs. subheading: 3-6 words. text: 3-6 sentences with specifics from the sources. key_takeaway: one sentence.',
+    body: '2-5 paragraphs. subheading: 3-6 words, a different one for each paragraph (or empty to continue the one before). text: 3-6 sentences with specifics from the sources. key_takeaway: one sentence.',
     procedure: 'introduction: when and why to follow it (1-2 sentences). 3-10 steps: step_number, action (verb first), detail (1-2 sentences), caution (a specific warning, or an empty string). notes: anything else the reader needs.',
     key_points: 'introduction: 1-2 sentences. 3-8 points: label (2-5 words), description (1-3 sentences with specifics). notes: optional context.',
     reference_table: 'introduction: what the table holds and how to use it. 2-6 columns; rows of short cells matching the columns. notes: abbreviations or special values.',

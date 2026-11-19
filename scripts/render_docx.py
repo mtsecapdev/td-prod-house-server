@@ -359,7 +359,7 @@ def render_picture(doc, pic, figure_no):
         add_body_text(doc, '[Image removed]' if pic.get('image_id') else '[Figure removed]', color=SLATE)
 
     # The document numbers its own figures, so the source's number ("Figure 2.2-1 ...") is dropped here.
-    caption = re.sub(r'^fig(?:ure)?\.?\s*[A-Z]?\d+(?:[.\-]\d+)*[a-z]?[:.]?\s*', '', (pic.get('caption') or '').strip(), flags=re.I)
+    caption = re.sub(r'^fig(?:ure)?\.?\s*[A-Z]?\d+(?:[.\-]\d+)*[a-z]?\s*[-–—:.]*\s*', '', (pic.get('caption') or '').strip(), flags=re.I)
     p = doc.add_paragraph()
     p.alignment = {'left': WD_ALIGN_PARAGRAPH.LEFT, 'right': WD_ALIGN_PARAGRAPH.RIGHT}.get(img['align'], WD_ALIGN_PARAGRAPH.CENTER)
     run_label = p.add_run(f'Figure {figure_no}' + (': ' if caption else ''))
