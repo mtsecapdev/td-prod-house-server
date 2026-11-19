@@ -49,7 +49,7 @@ async function createTables() {
 
     await client.query(`CREATE TABLE IF NOT EXISTS assets (
       id INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-      generation_id INTEGER NOT NULL REFERENCES generations(id) ON DELETE CASCADE,
+      generation_id INTEGER REFERENCES generations(id) ON DELETE SET NULL,
       kind TEXT NOT NULL,
       file_path TEXT NOT NULL,
       mime TEXT,

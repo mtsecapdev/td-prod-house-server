@@ -15,6 +15,7 @@ import { kindOf } from '../services/planning/kinds.js';
 import { editItem, insertItem } from '../services/planning/itemOps.js';
 import { planAgent, applyAgent, undoAgent } from '../services/planning/agent.js';
 import { startJob } from '../services/jobs.js';
+import { deleteDiagrams } from '../services/diagrams.js';
 
 const HISTORY_MESSAGES = 10;
 const TITLE_CHARS = 60;
@@ -68,9 +69,11 @@ async function updateConversation(req, res) {
   res.json(responseFactory.createJsonResponse({ conversation }));
 }
 
+// Deleting a conversation deletes what was made in it (copies saved to the Library are separate files).
 async function deleteConversation(req, res) {
-  await deleteConversationDb(req.params.id);
-  res.json(responseFactory.createJsonResponse({ deleted: true }));
+  const generationIds = await deleteConversationDb(req.params.id);
+  await Promise.all(generationIds.map((id) => deleteDiagrams(id).catch(() => {})));
+  res.json(responseFactory.createJsonResponse({ deleted: true, generations: generationIds.length }));
 }
 
 // ── Messages ──

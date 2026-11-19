@@ -41,9 +41,22 @@ export async function updateConversationDb(id, { title, docIds }) {
   return res.rows[0];
 }
 
+/** Deletes the conversation and the decks/documents made in it; returns their ids (for file clean-up). */
 export async function deleteConversationDb(id) {
-  const res = await pool.query('DELETE FROM conversations WHERE id = $1 RETURNING id', [id]);
-  if (res.rowCount === 0) throw new AppError(`Conversation ${id} not found`, 404);
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const made = await client.query('DELETE FROM generations WHERE conversation_id = $1 RETURNING id', [id]);
+    const res = await client.query('DELETE FROM conversations WHERE id = $1 RETURNING id', [id]);
+    if (res.rowCount === 0) throw new AppError(`Conversation ${id} not found`, 404);
+    await client.query('COMMIT');
+    return made.rows.map((r) => r.id);
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
+  }
 }
 
 /** Links a deck/document made outside a conversation to one (older items opened from the Library). */
