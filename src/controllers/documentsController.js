@@ -249,7 +249,7 @@ async function listDocuments(req, res) {
 
 // Where this document's figures are used in decks and documents (checked before deleting it).
 async function figureUsageOfDocument(documentId) {
-  const figures = await listFiguresDb({ documentIds: [Number(documentId)], includeHidden: true });
+  const figures = await listFiguresDb({ documentIds: [Number(documentId)] });
   return figureUsageDb(figures.map((f) => f.id));
 }
 

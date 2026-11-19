@@ -1,7 +1,7 @@
 import pool from './pool.js';
 import { generationName } from './generationsQueries.js';
 
-const FIGURE_COLUMNS = 'f.id, f.document_id, f.key, f.page, f.caption, f.labels, f.width, f.height, f.hidden';
+const FIGURE_COLUMNS = 'f.id, f.document_id, f.key, f.page, f.caption, f.labels, f.width, f.height';
 
 export async function insertFigureDb(documentId, { key, page, caption, labels, filePath, width, height }) {
   await pool.query(
@@ -12,14 +12,13 @@ export async function insertFigureDb(documentId, { key, page, caption, labels, f
   );
 }
 
-/** Figures by (document, key) pairs, e.g. those referenced by retrieved passages. Hidden ones excluded. */
+/** Figures by (document, key) pairs, e.g. those referenced by retrieved passages. */
 export async function getFiguresByKeysDb(pairs) {
   if (!pairs.length) return [];
   const res = await pool.query(
     `SELECT ${FIGURE_COLUMNS}
      FROM figures f
-     JOIN unnest($1::int[], $2::text[]) AS want(document_id, key) USING (document_id, key)
-     WHERE NOT f.hidden`,
+     JOIN unnest($1::int[], $2::text[]) AS want(document_id, key) USING (document_id, key)`,
     [pairs.map((p) => p.documentId), pairs.map((p) => p.key)],
   );
   return res.rows;
@@ -40,10 +39,9 @@ export async function getFiguresByIdsDb(ids) {
  * Figures for the Assets page and pickers, newest documents first. q matches the caption or the text inside
  * the figure; documentIds limits to those documents.
  */
-export async function listFiguresDb({ q, documentIds, includeHidden = false } = {}) {
+export async function listFiguresDb({ q, documentIds } = {}) {
   const where = [];
   const params = [];
-  if (!includeHidden) where.push('NOT f.hidden');
   if (documentIds?.length) {
     params.push(documentIds);
     where.push(`f.document_id = ANY($${params.length})`);
@@ -60,11 +58,6 @@ export async function listFiguresDb({ q, documentIds, includeHidden = false } = 
     params,
   );
   return res.rows;
-}
-
-export async function setFiguresHiddenDb(ids, hidden) {
-  const res = await pool.query('UPDATE figures SET hidden = $2 WHERE id = ANY($1)', [ids, hidden]);
-  return res.rowCount;
 }
 
 /** Deletes the figures and returns their image files (for the caller to remove). */

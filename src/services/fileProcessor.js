@@ -17,7 +17,7 @@ const PREPARE_SCRIPT = path.join(import.meta.dirname, '../../scripts/prepare_pdf
 const EMBEDDED_IMAGE_RE = /!\[[^\]]*\]\(data:image\/[a-z]+;base64,[A-Za-z0-9+/=]+\)/g;
 // A figure is kept when it has a caption, readable text inside (a diagram), or is large (an illustration docling
 // did not link to its caption). Small uncaptioned images with little text are decoration: logos, icons, banners.
-// Anything kept by mistake can be hidden on the Assets page.
+// Anything kept by mistake can be deleted on the Assets page.
 const MIN_FIGURE_LABELS = 3;
 const MIN_FIGURE_SIDE = 300; // px at images_scale 2, i.e. about 2 inches on the page
 const MAX_FIGURE_TEXT = 1500;

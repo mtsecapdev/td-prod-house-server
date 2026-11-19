@@ -1,11 +1,11 @@
-// Figures from ingested documents as assets: list/search, image, and bulk download, usage check, hide, delete.
+// Figures from ingested documents as assets: list/search, image, and bulk download, usage check, delete.
 // Bulk actions take a list of ids so the Assets page acts on a selection in one request.
 import { unlink } from 'node:fs/promises';
 import responseFactory from '../utils/responseFactory.js';
 import AppError from '../utils/AppError.js';
 import { writeZip } from '../utils/zip.js';
 import {
-  listFiguresDb, getFigureByIdDb, setFiguresHiddenDb, deleteFiguresDb, figureUsageDb, getFiguresForDownloadDb,
+  listFiguresDb, getFigureByIdDb, deleteFiguresDb, figureUsageDb, getFiguresForDownloadDb,
 } from '../db/figuresQueries.js';
 
 const MAX_BULK = 500;
@@ -26,11 +26,7 @@ function idsFrom(value) {
 
 async function listFigures(req, res) {
   const documentIds = String(req.query.documentIds || '').split(',').map(Number).filter(Number.isInteger).filter(Boolean);
-  const figures = await listFiguresDb({
-    q: req.query.q,
-    documentIds,
-    includeHidden: req.query.includeHidden === '1',
-  });
+  const figures = await listFiguresDb({ q: req.query.q, documentIds });
   res.json(responseFactory.createJsonResponse({ figures: figures.map(toPublic) }));
 }
 
@@ -70,12 +66,6 @@ async function getUsage(req, res) {
   res.json(responseFactory.createJsonResponse({ usage: await figureUsageDb(idsFrom(req.body?.ids)) }));
 }
 
-async function setHidden(req, res) {
-  if (typeof req.body?.hidden !== 'boolean') throw new AppError('Say whether to hide or show', 400);
-  const updated = await setFiguresHiddenDb(idsFrom(req.body.ids), req.body.hidden);
-  res.json(responseFactory.createJsonResponse({ updated }));
-}
-
 // Deleting figures that decks or documents use needs force: true; without it the response lists where they are
 // used so the client can warn first. Slides that used them then show "Figure removed".
 async function deleteFigures(req, res) {
@@ -91,4 +81,4 @@ async function deleteFigures(req, res) {
   res.json(responseFactory.createJsonResponse({ deleted: files.length, removedFrom: usage.length }));
 }
 
-export default { listFigures, serveImage, downloadFigures, getUsage, setHidden, deleteFigures };
+export default { listFigures, serveImage, downloadFigures, getUsage, deleteFigures };
