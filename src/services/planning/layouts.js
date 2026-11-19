@@ -29,7 +29,19 @@ export function requestedTypes(kind, brief = {}) {
 
 // ── Evidence checks ──
 
-const HAS_NUMBER = /\d/;
+// A statistic, not a reference: page, figure, table, section and step numbers ("(p. 15)", "Figure 2-14",
+// "No. 2 diesel", "2.2.5") say nothing about whether a slide has numbers to show.
+const REFERENCE_RE = /\(?\bp(?:p|age)?\.?\s*\d+(?:\s*[-–,]\s*\d+)*\)?|\b(?:fig(?:ure)?|table|section|chapter|step|no)\.?\s*[A-Z]?\d+(?:[.-]\d+)*|\b\d+(?:\.\d+){2,}\b/gi;
+export function hasStatistic(text) {
+  return /\d/.test(String(text || '').replace(REFERENCE_RE, ''));
+}
+const HAS_NUMBER = { test: hasStatistic };
+
+/** A stat's value ("17:1", "S$5.9b", "Up to 30,000 psi") — not ",0", a word, or a page number. */
+export function isStatValue(value) {
+  const text = String(value || '').replace(REFERENCE_RE, '');
+  return /(?:^|[\s(~≈<>±+\-–$€£¥])\d/.test(text.trim());
+}
 const HAS_DATE = /\b(19|20)\d{2}\b|\bQ[1-4]\b|\b(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\b|\bFY\s?\d{2,4}\b/i;
 const QUOTATION = /["“][^"”]{25,}["”]/;
 const SPOKEN_SOURCE = /\b(letter|message|statement|foreword|interview|speech|remarks)\b/i;

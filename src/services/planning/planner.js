@@ -153,7 +153,7 @@ export async function planOutline(generation) {
 // ── Figures from the documents ──
 
 const MAX_SUGGESTED_FIGURES = 2;
-const STOPWORDS = new Set('with from that this their which about into over under between overall other these those there where when what'.split(' '));
+const STOPWORDS = new Set('with from that this their which about into over under between overall other these those there where when what figure'.split(' '));
 
 function keywords(text) {
   return new Set((String(text).toLowerCase().match(/[a-z][a-z0-9&-]{3,}/g) || []).filter((w) => !STOPWORDS.has(w)));
@@ -162,80 +162,125 @@ function keywords(text) {
 // Layouts that carry content a figure can't replace: numbers, quotes, a single statement, bookends.
 const KEEP_TYPES = new Set(['key_stats', 'stat_focus', 'quote_highlight', 'big_idea', 'section_divider', 'key_points']);
 const FIGURE_PAGE_DISTANCE = 3;
+// A word in more than this share of the documents' figures ("engine" in an engine manual) says nothing about
+// which figure a slide needs.
+const COMMON_WORD_SHARE = 0.2;
+const MIN_FIGURE_SCORE = 0.4;
+// Matches this strong are taken as they are; weaker ones are checked by the model.
+const SURE_FIGURE_SCORE = 0.75;
 
-const FIGURE_CANDIDATES_PER_ITEM = 3;
-const MIN_CANDIDATE_OVERLAP = 0.25;
+const captionOf = (f) => f.caption.replace(/^fig(ure)?\.?\s*[A-Z]?\d+(?:[.-]\d+)*[a-z]?\s*[-–—:]?\s*/i, '');
 
 /**
  * Turns slides into Figure slides when a figure in their documents shows what they are about.
- * 1. Candidates by cheap matching: figures the slide names ("Figure 2.0-1"), or whose caption shares key words
- *    with the slide and that sit within a few pages of its sources. (A figure's marker is in one passage only,
- *    so requiring it in the slide's own sources missed figures on the next page.)
- * 2. One quick model call decides, per slide, which candidate shows its subject, or none. Word matching alone
- *    missed abbreviations ("SE Engine" vs "Systems Engineering Engine") and matched recap slides that merely
- *    repeat a caption's words.
- * At most two per deck; each figure once; number, quote and statement slides are left alone.
+ * 1. Scores every (slide, figure) pair in code: a figure the slide names ("Figure 2-6") scores 1; otherwise the
+ *    figure must sit within a few pages of the slide's sources, and the score is the share of its caption's
+ *    distinctive words (its printed text, for uncaptioned figures) found in the slide, title matches counting
+ *    more. Words common to many of the documents' figures are ignored.
+ * 2. Each figure goes to the slide it fits best and each slide gets at most one (best pairs first).
+ * 3. Strong pairs are taken; weaker ones are checked by the model (yes/no): the figure must show what the
+ *    whole slide is about.
+ * Earlier the model chose among candidates itself and moved figures to the wrong slides (the cooling-system
+ * figure onto "Why engines need cooling", not "Cooling system components").
+ * At most two per deck; number, quote and statement slides, the first and the last are left alone.
  */
 async function suggestFigures(kind, items, documentIds) {
   const figures = await listFiguresDb({ documentIds });
   if (!figures.length) return items;
 
-  const candidates = new Map(); // item index -> figures
+  const wordsOf = new Map(figures.map((f) => [f.id, {
+    caption: keywords(captionOf(f)),
+    labels: keywords(f.labels.slice(0, 300)),
+  }]));
+  const share = new Map();
+  for (const { caption, labels } of wordsOf.values()) {
+    for (const w of new Set([...caption, ...labels])) share.set(w, (share.get(w) || 0) + 1 / figures.length);
+  }
+  const distinctive = (set) => [...set].filter((w) => (share.get(w) || 0) <= COMMON_WORD_SHARE);
+
+  const pairs = [];
   items.forEach((it, i) => {
     if (i === 0 || i === items.length - 1 || KEEP_TYPES.has(it[kind.typeKey])) return;
     const text = `${it.title} ${(it.bullets || []).join(' ')}`;
     const words = keywords(text);
+    const titleWords = keywords(it.title);
     const pages = (it.sources || []).map((s) => s.page).filter((p) => p != null);
-    const scored = figures.map((f) => {
+    for (const f of figures) {
       const n = figureNumber(f.caption);
       const named = n && new RegExp(`\\bfig(?:ure)?\\.?\\s*${n.replace(/[.-]/g, '[.-]')}\\b`, 'i').test(text);
       const near = f.page != null && pages.some((p) => Math.abs(p - f.page) <= FIGURE_PAGE_DISTANCE);
-      const captionWords = keywords(`${f.caption.replace(/^fig(ure)?\.?\s*[A-Z]?\d+(?:[.-]\d+)*[a-z]?\s*/i, '')} ${f.labels.slice(0, 300)}`);
-      const overlap = captionWords.size ? [...captionWords].filter((w) => words.has(w)).length / captionWords.size : 0;
-      return { f, score: named ? 1 : near ? overlap + 0.2 : 0 };
-    }).filter((x) => x.score >= MIN_CANDIDATE_OVERLAP).sort((x, y) => y.score - x.score).slice(0, FIGURE_CANDIDATES_PER_ITEM);
-    if (scored.length) candidates.set(i, scored.map((x) => x.f));
+      let score = 0;
+      if (named) score = 1;
+      else if (near) {
+        const { caption, labels } = wordsOf.get(f.id);
+        // The caption: its distinctive words found in the slide (title matches count more). One stray word in
+        // a bullet is not enough: it needs a title match or two words.
+        const capKey = distinctive(caption);
+        const capHits = capKey.filter((w) => words.has(w)).length;
+        const capTitle = capKey.filter((w) => titleWords.has(w)).length;
+        const captionScore = capKey.length && (capTitle || capHits >= 2) ? Math.min(1, (capHits + 0.5 * capTitle) / capKey.length) : 0;
+        // The text printed in it (part names), for figures whose caption is general or missing: two or more hits.
+        const labelKey = distinctive(labels);
+        const labelHits = labelKey.filter((w) => words.has(w)).length;
+        const labelScore = labelHits >= 2 ? 0.8 * Math.min(1, labelHits / Math.min(labelKey.length, 6)) : 0;
+        score = Math.max(captionScore, labelScore);
+      }
+      if (score >= MIN_FIGURE_SCORE) pairs.push({ i, f, score });
+    }
   });
-  if (!candidates.size) return items;
+
+  // Best pairs first; a figure goes to one slide, a slide gets one figure.
+  pairs.sort((a, b) => b.score - a.score);
+  const chosen = [];
+  const usedSlides = new Set();
+  const usedFigures = new Set();
+  for (const pair of pairs) {
+    if (usedSlides.has(pair.i) || usedFigures.has(pair.f.id)) continue;
+    chosen.push(pair);
+    usedSlides.add(pair.i);
+    usedFigures.add(pair.f.id);
+  }
+  const approved = new Set(chosen.flatMap((p, k) => (p.score >= SURE_FIGURE_SCORE ? [k] : [])));
+  const unsure = chosen.map((p, k) => ({ ...p, k })).filter((p) => !approved.has(p.k));
+  if (unsure.length) for (const k of await confirmFigures(kind, items, unsure)) approved.add(k);
+
+  let used = 0;
+  chosen.forEach((p, k) => {
+    if (!approved.has(k) || used >= MAX_SUGGESTED_FIGURES) return;
+    items[p.i] = { ...items[p.i], [kind.typeKey]: 'figure', figure_id: p.f.id, type_reason: `Shows ${p.f.caption || 'a figure from the document'}` };
+    used++;
+  });
+  return items;
+}
+
+/**
+ * Asks the model (thinking: without it the answer flipped between runs) which of these weaker pairings really
+ * show the slide's subject. Returns the approved pairs' k.
+ */
+async function confirmFigures(kind, items, pairs) {
 
   const prompt =
-    `For each ${kind.noun} below, decide whether one of its candidate figures (from the source documents) shows ` +
-    `what the ${kind.noun} is about, so the ${kind.noun} should present that figure.\n\n` +
-    [...candidates.entries()].map(([i, figs]) =>
-      `[S${i + 1}] ${items[i].title}\n${(items[i].bullets || []).map((b) => `  - ${b}`).join('\n')}\n` +
-      `  Candidates:\n${figs.map((f) => `   [${f.id}] ${f.caption}. Text in it: ${f.labels.slice(0, 240)}`).join('\n')}`,
-    ).join('\n\n') +
-    `\n\nAnswer for each ${kind.noun} by its label (S2, S3...) with the id of the figure that shows its subject, or 0 for none. Choose a ` +
-    `figure only when it is clearly about the same thing as the whole ${kind.noun}, not just related. Recaps, ` +
-    `takeaways and next steps get 0.`;
+    `Check each pairing of a ${kind.noun} with a figure from the source documents. Answer yes only if the figure ` +
+    `shows what the whole ${kind.noun} is about, so presenting the figure on it helps; answer no if it is only ` +
+    `loosely related, shows something else, or the ${kind.noun} is a recap.\n\n` +
+    pairs.map((p) => `[P${p.k + 1}] ${kind.noun} "${items[p.i].title}": ${(items[p.i].bullets || []).join('; ')}\n` +
+      `  figure: ${p.f.caption || '(no caption)'}. Text in it: ${p.f.labels.slice(0, 240)}`).join('\n\n');
   const schema = {
     type: 'object',
     properties: {
-      choices: {
+      answers: {
         type: 'array',
         items: {
           type: 'object',
-          // Labels, not numbers: asked for numbers, the model counted its own answers from 0.
-          properties: { slide: { type: 'string', enum: [...candidates.keys()].map((i) => `S${i + 1}`) }, figure_id: { type: 'integer' } },
-          required: ['slide', 'figure_id'],
+          properties: { pair: { type: 'string', enum: pairs.map((p) => `P${p.k + 1}`) }, shows_subject: { type: 'boolean' } },
+          required: ['pair', 'shows_subject'],
         },
       },
     },
-    required: ['choices'],
+    required: ['answers'],
   };
-  const result = await generateStructured(prompt, generateModel, schema, { think: false });
-
-  const usedFigures = new Set();
-  let used = 0;
-  for (const { slide, figure_id: figureId } of result.choices || []) {
-    const i = Number(String(slide).slice(1)) - 1;
-    const figure = candidates.get(i)?.find((f) => f.id === figureId);
-    if (!figure || usedFigures.has(figure.id) || used >= MAX_SUGGESTED_FIGURES) continue;
-    items[i] = { ...items[i], [kind.typeKey]: 'figure', figure_id: figure.id, type_reason: `Shows ${figure.caption}` };
-    usedFigures.add(figure.id);
-    used++;
-  }
-  return items;
+  const { answers = [] } = await generateStructured(prompt, generateModel, schema, { think: true });
+  return answers.filter((a) => a.shows_subject).map((a) => Number(String(a.pair).slice(1)) - 1);
 }
 
 // The user split their text into slides with "---": one item per part, in their order, each carrying its

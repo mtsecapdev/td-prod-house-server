@@ -12,6 +12,7 @@ import { fitContent } from './fit.js';
 import { stripFigureMarkers, pictureOf } from '../figures.js';
 import { getFigureByIdDb } from '../../db/figuresQueries.js';
 import { sourceQuery, pastedText } from './planner.js';
+import { isStatValue } from './layouts.js';
 
 const { generateModel } = config.ollama;
 // Free-form pasted text goes into the shared plan block (identical for every item, so it is cached).
@@ -130,6 +131,24 @@ async function writeAs(generation, kind, index, type, { note, figure } = {}) {
   return { content, sources };
 }
 
+const MIN_KEY_STATS = 2;
+
+/**
+ * Number layouts need real numbers. Stats whose value has none (",0", "Critical", a page number) are dropped;
+ * too few left, and the item is written with the default layout instead, as a diagram that won't render is.
+ */
+async function checkStatistics(generation, kind, index, type, written, note) {
+  const { content } = written;
+  if (type === 'stat_focus' ? isStatValue(content.stat_value) : true) {
+    if (type === 'stat_focus') return { type, ...written };
+    const stats = (content.stats || []).filter((s) => isStatValue(s.value));
+    if (stats.length >= MIN_KEY_STATS) return { type, ...written, content: { ...content, stats } };
+  }
+  console.warn(`${kind.noun} ${index + 1}: ${type} without real numbers; using ${kind.defaultType}`);
+  const fallback = await writeAs(generation, kind, index, kind.defaultType, { note });
+  return { type: kind.defaultType, content: fallback.content, sources: fallback.sources };
+}
+
 /**
  * Writes one item. Returns { type, content, sources }; type differs from the plan only when a diagram could not
  * be rendered and fell back.
@@ -164,6 +183,7 @@ async function writeContent(generation, index, { note, type: typeOverride } = {}
   }
 
   const { content, sources } = await writeAs(generation, kind, index, type, { note });
+  if (type === 'key_stats' || type === 'stat_focus') return checkStatistics(generation, kind, index, type, { content, sources }, note);
   if (type !== 'diagram') return { type, content, sources };
 
   try {
