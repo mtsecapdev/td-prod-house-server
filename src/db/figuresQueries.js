@@ -62,13 +62,26 @@ export async function listFiguresDb({ q, documentIds, includeHidden = false } = 
   return res.rows;
 }
 
-export async function setFigureHiddenDb(id, hidden) {
-  await pool.query('UPDATE figures SET hidden = $2 WHERE id = $1', [id, hidden]);
+export async function setFiguresHiddenDb(ids, hidden) {
+  const res = await pool.query('UPDATE figures SET hidden = $2 WHERE id = ANY($1)', [ids, hidden]);
+  return res.rowCount;
 }
 
-export async function deleteFigureDb(id) {
-  const res = await pool.query('DELETE FROM figures WHERE id = $1 RETURNING file_path', [id]);
-  return res.rows[0] || null;
+/** Deletes the figures and returns their image files (for the caller to remove). */
+export async function deleteFiguresDb(ids) {
+  const res = await pool.query('DELETE FROM figures WHERE id = ANY($1) RETURNING file_path', [ids]);
+  return res.rows.map((r) => r.file_path);
+}
+
+/** Figures with their document name, for downloads. */
+export async function getFiguresForDownloadDb(ids) {
+  const res = await pool.query(
+    `SELECT f.id, f.page, f.caption, f.file_path, d.name AS document_name
+     FROM figures f JOIN documents d ON d.id = f.document_id
+     WHERE f.id = ANY($1) ORDER BY d.name, f.page NULLS LAST, f.id`,
+    [ids],
+  );
+  return res.rows;
 }
 
 /**
