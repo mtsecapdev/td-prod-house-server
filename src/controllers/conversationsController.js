@@ -14,6 +14,7 @@ import { imageBrief, startImage } from '../services/imageSkill.js';
 import { routeMessage, namedItem } from '../services/router.js';
 import { createPlan } from '../services/planning/outlineJob.js';
 import { kindOf } from '../services/planning/kinds.js';
+import { countSectionsDb } from '../db/chunksQueries.js';
 import { editItem, insertItem } from '../services/planning/itemOps.js';
 import { planAgent, applyAgent, undoAgent } from '../services/planning/agent.js';
 import { startJob } from '../services/jobs.js';
@@ -209,7 +210,8 @@ async function runSkill(req, res) {
 
 /** A deck/document plan from the conversation; the reply is its card. */
 async function makePlan(conversation, previous, type, request) {
-  const brief = await briefFromConversation(previous, type, request);
+  const sectionCount = conversation.doc_ids?.length ? await countSectionsDb(conversation.doc_ids) : 0;
+  const brief = await briefFromConversation(previous, type, request, { sectionCount });
   if (!conversation.doc_ids?.length && !brief.source_text) {
     throw new AppError('Choose the documents to work with first (📎 Documents).', 400);
   }

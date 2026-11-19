@@ -4,7 +4,7 @@ import { startJob } from '../jobs.js';
 import { planOutline } from './planner.js';
 
 const BRIEF_FIELDS = [
-  'topic', 'count', 'format', 'text_amount', 'audience', 'tone', 'instructions', 'template', 'source_text', 'text_mode',
+  'topic', 'count', 'format', 'text_amount', 'audience', 'tone', 'instructions', 'template', 'source_text', 'text_mode', 'scope',
 ];
 const MAX_SOURCE_TEXT = 60000;
 const MAX_PINNED = 16;

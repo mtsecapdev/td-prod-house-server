@@ -111,6 +111,22 @@ export async function getDocumentMapDb(docIds, { topicEmbedding, limit = 40 } = 
   };
 }
 
+/** How many summarised sections the documents have (a measure of their size). */
+export async function countSectionsDb(docIds) {
+  const res = await pool.query(`SELECT count(*)::int AS n FROM chunks WHERE document_id = ANY($1) AND level = 'section'`, [docIds]);
+  return res.rows[0].n;
+}
+
+/** Every passage of the documents in reading order (for planning a whole-document deck). */
+export async function getAllPassagesDb(docIds) {
+  const res = await pool.query(
+    `SELECT id, document_id, content, page, heading FROM chunks
+     WHERE document_id = ANY($1) AND level = 'leaf' ORDER BY document_id, id`,
+    [docIds],
+  );
+  return res.rows;
+}
+
 /** Passages (leaf chunks only) for a slide or section, ranked like chat search: meaning + keywords. */
 export async function getSourcePassagesDb(queryEmbedding, k, docIds, queryText) {
   const res = await pool.query(

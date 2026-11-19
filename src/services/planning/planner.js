@@ -9,7 +9,7 @@
 import { randomBytes } from 'node:crypto';
 import config from '../../config.js';
 import { generateStructured, requestEmbedding, requestEmbeddingBatch } from '../llm.js';
-import { getChunksByIdsDb, getDocumentMapDb, getSourcePassagesDb } from '../../db/chunksQueries.js';
+import { getAllPassagesDb, getChunksByIdsDb, getDocumentMapDb, getSourcePassagesDb } from '../../db/chunksQueries.js';
 import { kindOf, briefBlock, storylineBlock, itemCount } from './kinds.js';
 import { chooseLayouts, finishLayouts } from './layouts.js';
 import { stripFigureMarkers, figureNumber } from '../figures.js';
@@ -48,6 +48,7 @@ function passageBlock(rows) {
 async function planningMaterial(generation) {
   const pasted = pastedText(generation.brief);
   if (pasted) return { block: `The user's own text, to build from:\n"""\n${pasted}\n"""`, passages: [] };
+  if (generation.brief?.scope === 'full') return wholeDocumentMaterial(generation);
 
   const query = [generation.brief?.topic, generation.brief?.instructions].filter(Boolean).join('\n');
   const embedding = await requestEmbedding(query);
@@ -66,6 +67,27 @@ async function planningMaterial(generation) {
   return {
     block: `Sections of the documents:\n${sections}\n\nPassages (id, page, section):\n${passageBlock(ordered)}`,
     passages: ordered,
+  };
+}
+
+// A whole-document deck plans from every part of the documents, not the passages that best match the request:
+// each section's summary, and passages spread evenly through the documents (shortened to fit the context).
+const FULL_PASSAGES = 36;
+const FULL_PASSAGE_CHARS = 1400;
+
+async function wholeDocumentMaterial(generation) {
+  const docIds = generation.source_document_ids || [];
+  const [all, map] = await Promise.all([getAllPassagesDb(docIds), getDocumentMapDb(docIds)]);
+  const step = Math.max(1, all.length / FULL_PASSAGES);
+  const passages = [];
+  for (let k = 0; k < all.length && passages.length < FULL_PASSAGES; k += step) passages.push(all[Math.floor(k)]);
+  const shortened = passages.map((r) => ({ ...r, content: stripFigureMarkers(r.content).slice(0, FULL_PASSAGE_CHARS) }));
+  const sections = map.sections
+    .map((s) => `- ${s.heading}${s.page != null ? ` (p. ${s.page})` : ''}: ${s.content.replace(/^Summary:[^\n]*\n?/, '').replace(/\s+/g, ' ').slice(0, 300)}`)
+    .join('\n');
+  return {
+    block: `The documents' sections, in order, with summaries:\n${sections}\n\nPassages (id, page, section), in reading order:\n${passageBlock(shortened)}`,
+    passages,
   };
 }
 
@@ -111,6 +133,11 @@ async function planContent(generation, kind, material, count) {
     `Rules:\n` +
     `- Exactly ${count} ${kind.nounPlural}. The first is ${opening}; the last is ${closing}.\n` +
     `- One main idea per ${kind.noun}; no two cover the same ground. Cover everything the user asked for.\n` +
+    (generation.brief?.scope === 'full'
+      ? `- The user wants the documents covered as a whole: cover every main section, in the documents' order ` +
+        `(merge small related sections into one ${kind.noun}; skip front and back matter such as prerequisites, ` +
+        `course maps and reference lists).\n`
+      : '') +
     `- Keep each fact with what its passage is about: a passage about one engine type, system, product or process ` +
     `is not evidence about another, even when the wording is similar.\n` +
     `- Order them so the ${kind.product} builds an argument from situation to conclusion.\n` +

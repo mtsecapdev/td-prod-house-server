@@ -25,9 +25,21 @@ const BRIEF_SCHEMA = {
     tone: { type: 'string' },
     instructions: { type: 'string' },
     count: { type: 'integer' },
+    scope: { type: 'string', enum: ['full', 'focused'] },
   },
-  required: ['topic', 'audience', 'tone', 'instructions', 'count'],
+  required: ['topic', 'audience', 'tone', 'instructions', 'count', 'scope'],
 };
+
+// Sections include front and back matter (prerequisites, references) and small subsections that share an item.
+const ITEMS_PER_SECTION = 0.6;
+const FULL_COVERAGE_MIN = 8;
+const FULL_COVERAGE_MAX = 20;
+
+/** How many slides/sections a whole-document deck/document needs for this many document sections. */
+export function fullCoverageCount(kind, sectionCount) {
+  const n = Math.round(sectionCount * ITEMS_PER_SECTION);
+  return Math.min(kind.countRange[1], FULL_COVERAGE_MAX, Math.max(FULL_COVERAGE_MIN, n));
+}
 
 /** The recent conversation as plain text (earlier skill requests left out). */
 export function transcript(messages) {
@@ -55,8 +67,9 @@ function pinnedPassages(messages) {
  * @param {object[]} messages  the conversation so far (oldest first)
  * @param {'deck'|'doc'} type
  * @param {string} request  what the user typed with the skill (may be empty)
+ * @param {{ sectionCount?: number }} documents  how big the conversation's documents are
  */
-export async function briefFromConversation(messages, type, request = '') {
+export async function briefFromConversation(messages, type, request = '', { sectionCount = 0 } = {}) {
   const kind = KINDS[type];
   const history = transcript(messages);
   if (!history && !request.trim()) {
@@ -73,7 +86,10 @@ export async function briefFromConversation(messages, type, request = '') {
     `audience: Who is it for, if they said (for example "new hires")? Empty if they did not say.\n` +
     `tone: What tone did they ask for? Empty if none.\n` +
     `instructions: What did they ask to include, stress or avoid? Empty if nothing.\n` +
-    `count: How many ${kind.nounPlural} did they ask for? 0 if they did not say.`;
+    `count: How many ${kind.nounPlural} did they ask for? 0 if they did not say.\n` +
+    `scope: "full" if they want the documents covered as a whole (e.g. "comprehensive", "cover this PDF", ` +
+    `"everything in the manual", "the whole chapter"); "focused" if they want particular topics or points.` +
+    (sectionCount ? `\n(The documents have ${sectionCount} sections.)` : '');
   let brief = await generateStructured(prompt, config.ollama.generateModel, BRIEF_SCHEMA, { think: false });
   // Without thinking the model occasionally copies the questions into the answers; think it through then.
   if (Object.values(brief).some((v) => typeof v === 'string' && ECHO_RE.test(v))) {
@@ -83,12 +99,18 @@ export async function briefFromConversation(messages, type, request = '') {
   // The user's own material (pasted notes, a draft) is planned from as written.
   const ownText = messages.filter((m) => m.role === 'user' && m.kind === 'text' && m.content.length >= OWN_TEXT_CHARS).slice(-1)[0];
   const [min, max] = kind.countRange;
+  const scope = brief.scope === 'full' ? 'full' : 'focused';
+  // A whole-document deck is sized to the documents (about one item per main section) unless a number was given;
+  // the default of 8 covered a third of a 29-page chapter.
+  const asked = brief.count >= min && brief.count <= max ? brief.count : null;
+  const count = asked ?? (scope === 'full' && sectionCount ? fullCoverageCount(kind, sectionCount) : null);
   return {
     topic: brief.topic.trim() || request.trim(),
     audience: brief.audience.trim(),
     tone: brief.tone.trim(),
     instructions: brief.instructions.trim(),
-    ...(brief.count >= min && brief.count <= max ? { count: brief.count } : {}),
+    ...(count ? { count } : {}),
+    scope,
     pinned_chunk_ids: pinnedPassages(messages),
     ...(ownText ? { source_text: ownText.content } : {}),
   };

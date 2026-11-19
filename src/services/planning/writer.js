@@ -113,6 +113,10 @@ async function writeAs(generation, kind, index, type, { note, figure } = {}) {
     `Keep each fact with what its source passage says it is about: a passage about one engine type, system, ` +
       `product or process is not evidence about another. If the sources do not support a planned point for this ` +
       `${kind.noun}'s subject, leave the point out.`,
+    `Examples in the sources stay examples: one engine's figures, or a value shown in a diagram, are never a ` +
+      `specification or rule for all.`,
+    `Do not add procedures, tips or advice the sources do not give, in the text, takeaways or notes.`,
+    `Refer to other ${kind.nounPlural} only by what the outline above says they contain.`,
     `Lines starting "Text in the figure:" list the words printed in a figure; use them to understand it, never ` +
       `copy them into the text.`,
     `Sources for this ${kind.noun}:\n${sourceText}`,
