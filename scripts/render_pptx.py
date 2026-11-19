@@ -986,7 +986,7 @@ def render_pictures(slide, content, layout):
         if exists:
             _cropped(slide.shapes.add_picture(path, left, top, width, height), img['crop'])
         else:
-            add_textbox(slide, left, top, width, height, 'Figure removed', font_size=16, color=SLATE_LT,
+            add_textbox(slide, left, top, width, height, 'Image removed' if pic.get('image_id') else 'Figure removed', font_size=16, color=SLATE_LT,
                         alignment=PP_ALIGN.CENTER, anchor='ctr')
         caption = (pic.get('caption') or '').strip()
         if caption:

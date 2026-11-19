@@ -125,3 +125,13 @@ export async function withHeartbeat(id, work) {
     clearInterval(timer);
   }
 }
+
+/** Saved files of generated images, for pictures placed on slides/sections. */
+export async function getImagePathsDb(ids) {
+  if (!ids.length) return [];
+  const res = await pool.query(
+    "SELECT id, outline->>'file_path' AS file_path FROM generations WHERE type = 'image' AND id = ANY($1)",
+    [ids],
+  );
+  return res.rows.filter((r) => r.file_path);
+}

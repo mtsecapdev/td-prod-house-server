@@ -125,3 +125,17 @@ export async function placeFigure(generationId, figureId, index) {
   await updateGenerationDb(generationId, { outline: JSON.stringify({ ...latest.outline, [kind.listKey]: latestItems }) });
   return { index: at, item: saved };
 }
+
+/**
+ * Adds a picture (a document figure { figure_id } or a generated image { image_id }, with caption) to one
+ * slide/section. Unplaced, it sits in the layout's default spot until the user moves it.
+ */
+export async function addPicture(generationId, index, picture) {
+  const generation = await getGenerationByIdDb(generationId);
+  const kind = kindOf(generation);
+  const items = [...(generation.outline?.[kind.listKey] || [])];
+  const item = items[index];
+  if (!item?.content) throw new Error(`${kind.noun[0].toUpperCase() + kind.noun.slice(1)} ${index + 1} is not written yet`);
+  items[index] = { ...item, content: { ...item.content, pictures: [...(item.content.pictures || []), picture] } };
+  await updateGenerationDb(generationId, { outline: JSON.stringify({ ...generation.outline, [kind.listKey]: items }) });
+}

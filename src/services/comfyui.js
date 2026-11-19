@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import { access } from 'node:fs/promises';
 import { join } from 'node:path';
 import config from '../config.js';
 import AppError from '../utils/AppError.js';
@@ -7,6 +8,9 @@ const { baseUrl, dir: comfyDir } = config.comfyui;
 
 let comfyProcess = null;
 
+const NOT_SET_UP = 'Image generation is not set up on this server: ComfyUI is not running and could not be started.';
+
+/** Makes sure ComfyUI answers, starting the portable install in COMFYUI_DIR if needed. */
 export async function ensureRunning() {
   if (await isAvailable()) return;
 
@@ -17,6 +21,8 @@ export async function ensureRunning() {
 
   const pythonPath = join(comfyDir, 'python_embeded', 'python.exe');
   const mainPath = join(comfyDir, 'ComfyUI', 'main.py');
+  // Without an install there is nothing to start (and spawning a missing program would crash the server).
+  if (!(await access(pythonPath).then(() => true, () => false))) throw new AppError(NOT_SET_UP, 503);
 
   comfyProcess = spawn(pythonPath, ['-s', mainPath, '--windows-standalone-build'], {
     cwd: comfyDir,
@@ -24,6 +30,7 @@ export async function ensureRunning() {
     detached: true,
   });
 
+  comfyProcess.on('error', () => { comfyProcess = null; });
   comfyProcess.on('exit', () => { comfyProcess = null; });
   comfyProcess.unref();
 
@@ -33,14 +40,7 @@ export async function ensureRunning() {
     await new Promise((r) => setTimeout(r, 1000));
   }
 
-  throw new AppError('ComfyUI failed to start within 60 seconds', 503);
-}
-
-export function shutdown() {
-  if (!comfyProcess) return false;
-  comfyProcess.kill('SIGTERM');
-  comfyProcess = null;
-  return true;
+  throw new AppError(NOT_SET_UP, 503);
 }
 
 function buildWorkflow(prompt, { width = 1024, height = 1024, steps = 4, seed } = {}) {
@@ -93,86 +93,8 @@ function buildWorkflow(prompt, { width = 1024, height = 1024, steps = 4, seed } 
   };
 }
 
-function buildImg2ImgWorkflow(prompt, { width = 1024, height = 1024, steps = 8, seed, denoise = 0.65, imageName } = {}) {
-  const actualSeed = seed ?? Math.floor(Math.random() * 2 ** 32);
-
-  return {
-    '1': {
-      class_type: 'UNETLoader',
-      inputs: { unet_name: 'flux1-schnell.safetensors', weight_dtype: 'default' },
-    },
-    '2': {
-      class_type: 'DualCLIPLoader',
-      inputs: { clip_name1: 'clip_l.safetensors', clip_name2: 't5xxl_fp8_e4m3fn.safetensors', type: 'flux' },
-    },
-    '3': {
-      class_type: 'VAELoader',
-      inputs: { vae_name: 'ae.safetensors' },
-    },
-    '4': {
-      class_type: 'CLIPTextEncodeFlux',
-      inputs: { clip: ['2', 0], clip_l: prompt, t5xxl: prompt, guidance: 3.5 },
-    },
-    '9': {
-      class_type: 'LoadImage',
-      inputs: { image: imageName },
-    },
-    '10': {
-      class_type: 'ImageScale',
-      inputs: { image: ['9', 0], width, height, upscale_method: 'lanczos', crop: 'center' },
-    },
-    '11': {
-      class_type: 'VAEEncode',
-      inputs: { pixels: ['10', 0], vae: ['3', 0] },
-    },
-    '6': {
-      class_type: 'KSampler',
-      inputs: {
-        model: ['1', 0],
-        positive: ['4', 0],
-        negative: ['4', 0],
-        latent_image: ['11', 0],
-        seed: actualSeed,
-        steps,
-        cfg: 1.0,
-        sampler_name: 'euler',
-        scheduler: 'simple',
-        denoise,
-      },
-    },
-    '7': {
-      class_type: 'VAEDecode',
-      inputs: { samples: ['6', 0], vae: ['3', 0] },
-    },
-    '8': {
-      class_type: 'SaveImage',
-      inputs: { images: ['7', 0], filename_prefix: 'tdph' },
-    },
-  };
-}
-
-export async function uploadImage(buffer, filename) {
-  const formData = new FormData();
-  formData.append('image', new Blob([buffer]), filename);
-
-  const res = await fetch(new URL('/upload/image', baseUrl), {
-    method: 'POST',
-    body: formData,
-  });
-
-  if (!res.ok) {
-    const body = await res.text();
-    throw new AppError(`ComfyUI image upload failed: ${body}`, 502);
-  }
-
-  const data = await res.json();
-  return data.name;
-}
-
 export async function queuePrompt(promptText, options = {}) {
-  const workflow = options.imageName
-    ? buildImg2ImgWorkflow(promptText, options)
-    : buildWorkflow(promptText, options);
+  const workflow = buildWorkflow(promptText, options);
 
   const res = await fetch(new URL('/prompt', baseUrl), {
     method: 'POST',

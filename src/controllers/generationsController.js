@@ -5,17 +5,7 @@ import responseFactory from '../utils/responseFactory.js';
 import config from '../config.js';
 import AppError from '../utils/AppError.js';
 import {
-  insertGenerationDb,
-  getGenerationByIdDb,
-  updateGenerationDb,
-  getAllGenerationsDb,
-  deleteGenerationDb,
-  claimJobDb,
-  heartbeatJobDb,
-  failJobDb,
-  isJobLive,
-  presentGeneration,
-  withHeartbeat,
+  getGenerationByIdDb, updateGenerationDb, getAllGenerationsDb, deleteGenerationDb, claimJobDb, heartbeatJobDb, failJobDb, isJobLive, presentGeneration, withHeartbeat,
 } from '../db/generationsQueries.js';
 import { kindOf } from '../services/planning/kinds.js';
 import { attachSources, searchSources, suggestTypes } from '../services/planning/planner.js';
@@ -23,20 +13,10 @@ import { writeAll } from '../services/planning/writer.js';
 import { rewriteItem, placeFigure } from '../services/planning/itemOps.js';
 import { startJob } from '../services/jobs.js';
 import { normalizeBrief, startOutlineJob } from '../services/planning/outlineJob.js';
-import { craftImagePrompt, generateImageFromPrompt } from '../services/imageGenerator.js';
+import { runImageJob } from '../services/imageSkill.js';
 import { renderDiagram, ensureDiagramFile, deleteDiagrams, DiagramSyntaxError } from '../services/diagrams.js';
 import { listTemplates, createBrandTemplate, deleteBrandTemplate } from '../services/templates.js';
 import { renderOfficeFile, notReadyMessage, officeExt, downloadName } from '../services/officeRenderer.js';
-import { uploadImage as uploadToComfyUI, shutdown as shutdownComfyUI } from '../services/comfyui.js';
-
-// Images only: decks and training documents start from a conversation (POST /conversations/:id/skills/:type).
-async function createGeneration(req, res) {
-  const { type, brief, sourceDocumentIds, model, settings } = req.body;
-  if (type !== 'image') throw new AppError('Decks and documents are made from a conversation', 400);
-  const id = await insertGenerationDb({ type, brief, sourceDocumentIds: sourceDocumentIds ?? [], model, settings });
-  await updateGenerationDb(id, { status: 'pending' });
-  res.status(201).json(responseFactory.createJsonResponse({ generation: await getGenerationByIdDb(id) }));
-}
 
 async function getTemplates(req, res) {
   res.json(responseFactory.createJsonResponse(await listTemplates()));
@@ -316,82 +296,13 @@ async function serveDiagram(req, res) {
   res.sendFile(filePath);
 }
 
-async function uploadReferenceImage(req, res) {
-  if (!req.file) {
-    return res.status(400).json(responseFactory.createJsonResponse(null, { message: 'No image file provided' }));
-  }
-
+// Retries an image that failed (e.g. ComfyUI was not running): generates it again in the background.
+async function retryImage(req, res) {
   const generation = await getGenerationByIdDb(req.params.id);
-  const comfyName = await uploadToComfyUI(req.file.buffer, req.file.originalname);
-
-  const brief = { ...generation.brief, reference_image: comfyName };
-  await updateGenerationDb(generation.id, { brief: JSON.stringify(brief) });
-
-  const updated = await getGenerationByIdDb(generation.id);
-  res.json(responseFactory.createJsonResponse({ generation: updated, comfyImageName: comfyName }));
-}
-
-async function releaseGpu(req, res) {
-  const stopped = shutdownComfyUI();
-  res.json(responseFactory.createJsonResponse({ released: stopped }));
-}
-
-async function craftPrompt(req, res) {
-  const generation = await getGenerationByIdDb(req.params.id);
-  const promptData = await craftImagePrompt(generation);
-
-  await updateGenerationDb(generation.id, {
-    outline: JSON.stringify({ prompt: promptData.prompt, negative_prompt: promptData.negative_prompt }),
-    status: 'prompt_ready',
-  });
-
-  const updated = await getGenerationByIdDb(generation.id);
-  res.json(responseFactory.createJsonResponse({ generation: updated }));
-}
-
-async function updatePrompt(req, res) {
-  const { prompt, negative_prompt } = req.body;
-  const generation = await getGenerationByIdDb(req.params.id);
-  const outline = generation.outline || {};
-
-  await updateGenerationDb(generation.id, {
-    outline: JSON.stringify({ ...outline, prompt, negative_prompt: negative_prompt || outline.negative_prompt || '' }),
-    status: 'prompt_ready',
-  });
-
-  const updated = await getGenerationByIdDb(generation.id);
-  res.json(responseFactory.createJsonResponse({ generation: updated }));
-}
-
-async function generateImageSSE(req, res) {
-  res.writeHead(200, {
-    'Content-Type': 'text/event-stream',
-    'Cache-Control': 'no-cache',
-    Connection: 'keep-alive',
-  });
-
-  const send = (data) => res.write(`data: ${JSON.stringify(data)}\n\n`);
-
-  try {
-    const generation = await getGenerationByIdDb(req.params.id);
-    await updateGenerationDb(generation.id, { status: 'generating' });
-
-    send({ phase: 'start' });
-
-    const result = await generateImageFromPrompt(generation, (progress) => send(progress));
-
-    await updateGenerationDb(generation.id, {
-      outline: JSON.stringify(result),
-      status: 'done',
-    });
-
-    send({ phase: 'done', image: result });
-  } catch (err) {
-    await updateGenerationDb(req.params.id, { status: 'failed', error: err.message });
-    send({ phase: 'error', message: err.message });
-  }
-
-  res.end();
+  if (generation.type !== 'image') throw new AppError('Not an image', 400);
+  if (!(await runImageJob(generation.id))) return busy(res, generation);
+  await updateGenerationDb(generation.id, { status: 'generating' });
+  res.status(202).json(responseFactory.createJsonResponse({ generation: presentGeneration(await getGenerationByIdDb(generation.id)) }));
 }
 
 async function serveImage(req, res) {
@@ -418,7 +329,7 @@ async function deleteGeneration(req, res) {
 }
 
 export default {
-  createGeneration,
+  retryImage,
   getGeneration,
   getTemplates,
   uploadTemplate,
@@ -436,11 +347,6 @@ export default {
   downloadFile,
   openInDeckCraft,
   openInWordCraft,
-  uploadReferenceImage,
-  craftPrompt,
-  updatePrompt,
-  releaseGpu,
-  generateImageSSE,
   serveImage,
   renderDiagramCode,
   serveDiagram,

@@ -5,7 +5,7 @@ import config from '../config.js';
 import { generateStructured } from './llm.js';
 import { KINDS } from './planning/kinds.js';
 
-export const SKILLS = ['deck', 'doc'];
+export const SKILLS = ['deck', 'doc', 'image'];
 
 const RECENT_MESSAGES = 14;
 const MESSAGE_CHARS = 1200;
@@ -29,7 +29,8 @@ const BRIEF_SCHEMA = {
   required: ['topic', 'audience', 'tone', 'instructions', 'count'],
 };
 
-function transcript(messages) {
+/** The recent conversation as plain text (earlier skill requests left out). */
+export function transcript(messages) {
   return messages
     // Earlier "make a deck…" requests belong to what they made (their length, their audience), not this one.
     .filter((m) => m.kind === 'text' && m.content.trim() && !m.data?.skill)

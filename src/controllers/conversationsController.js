@@ -10,6 +10,8 @@ import { listMessagesDb, insertMessageDb, getMessageDb, updateMessageDataDb } fr
 import { getGenerationByIdDb, isJobLive, presentGeneration } from '../db/generationsQueries.js';
 import { answerQuestion } from '../services/answer.js';
 import { SKILLS, briefFromConversation } from '../services/skills.js';
+import { imageBrief, startImage } from '../services/imageSkill.js';
+import { routeMessage, namedItem } from '../services/router.js';
 import { createPlan } from '../services/planning/outlineJob.js';
 import { kindOf } from '../services/planning/kinds.js';
 import { editItem, insertItem } from '../services/planning/itemOps.js';
@@ -102,23 +104,45 @@ async function sendMessage(req, res) {
   if (conversation.title === 'New chat' && !target) await updateConversationDb(conversation.id, { title: titleFrom(content) });
 
   let reply;
+  let sent = userMessage;
+  const onPhase = (phase) => send({ phase });
   try {
-    reply = target
-      ? await changeGeneration(target, content, (phase) => send({ phase }))
-      : await answer(conversation, previous, content, (phase) => send({ phase }));
+    // A plain message may ask for a deck/document/image; while editing, it may be a question instead.
+    const intent = await routeMessage(content, { editing: Boolean(target) });
+    if (intent === 'deck' || intent === 'doc' || intent === 'image') {
+      sent = await updateMessageDataDb(userMessage.id, { skill: intent });
+      onPhase(intent === 'image' ? 'imaging' : 'skill');
+      reply = intent === 'image'
+        ? await makeImage(conversation, previous, content, target ? await imageTarget(target, content) : null)
+        : await makePlan(conversation, previous, intent, content);
+    } else if (intent === 'edit' && target) {
+      reply = await changeGeneration(target, content, onPhase);
+    } else {
+      reply = await answer(conversation, previous, content, onPhase);
+    }
   } catch (err) {
     reply = { kind: 'error', content: err.message };
   }
   const assistantMessage = await insertMessageDb(conversation.id, { role: 'assistant', ...reply });
   clearInterval(keepalive);
-  send({ phase: 'done', messages: [userMessage, assistantMessage] });
+  send({ phase: 'done', messages: [sent, assistantMessage] });
   res.end();
+}
+
+/** The slide/section an image is for: the one selected, or one the message names ("for slide 3"). */
+async function imageTarget(target, text) {
+  const generation = await getGenerationByIdDb(target.generationId);
+  const items = generation.outline?.[kindOf(generation).listKey] || [];
+  const named = namedItem(text);
+  const index = named && items[named - 1] ? named - 1 : target.index;
+  return index === undefined || index === null || !items[index] ? null : { generation, index };
 }
 
 async function answer(conversation, previous, question, onPhase) {
   if (!conversation.doc_ids?.length) throw new Error('Choose the documents to work with first (📎 Documents).');
+  // Only the question-and-answer turns: requests to make or change things would steer the answer's form.
   const history = previous
-    .filter((m) => m.kind === 'text')
+    .filter((m) => m.kind === 'text' && !m.data?.skill && !m.data?.target)
     .slice(-HISTORY_MESSAGES)
     .map((m) => ({ role: m.role, content: m.content }));
   const result = await answerQuestion({ question, history, docIds: conversation.doc_ids, onPhase });
@@ -129,12 +153,17 @@ async function answer(conversation, previous, question, onPhase) {
   };
 }
 
-async function changeGeneration(target, instruction, onPhase) {
-  const generation = await getGenerationByIdDb(target.generationId);
+async function changeGeneration(requested, instruction, onPhase) {
+  const generation = await getGenerationByIdDb(requested.generationId);
   const kind = kindOf(generation);
   if (isJobLive(generation.job)) throw new Error(`Still working on the ${generation.job.kind}. Ask again when it finishes.`);
   const items = generation.outline?.[kind.listKey] || [];
   const base = { generation_id: generation.id };
+  // "Shorten slide 3" asked of the whole deck is a change to slide 3.
+  const named = namedItem(instruction);
+  const target = (requested.index === undefined || requested.index === null) && (requested.after === undefined || requested.after === null) && named && items[named - 1]
+    ? { ...requested, index: named - 1 }
+    : requested;
 
   if (target.after !== undefined && target.after !== null) {
     onPhase('writing');
@@ -155,7 +184,13 @@ async function changeGeneration(target, instruction, onPhase) {
 
 // ── Skills ──
 
-/** POST { request? }: makes a plan for a deck/document from the conversation; the chat shows it as a card. */
+const SKILL_REQUESTS = {
+  deck: 'Make a slide deck from this',
+  doc: 'Make a training document from this',
+  image: 'Make an image for this',
+};
+
+/** POST { request? }: a skill chip was pressed. Makes a plan (deck/document) or an image from the conversation. */
 async function runSkill(req, res) {
   const type = req.params.skill;
   if (!SKILLS.includes(type)) throw new AppError('Unknown skill', 404);
@@ -163,20 +198,33 @@ async function runSkill(req, res) {
   const request = String(req.body?.request || '').trim();
   const previous = await listMessagesDb(conversation.id);
 
+  const reply = type === 'image'
+    ? await makeImage(conversation, previous, request, null)
+    : await makePlan(conversation, previous, type, request);
+  const userMessage = await insertMessageDb(conversation.id, { role: 'user', content: request || SKILL_REQUESTS[type], data: { skill: type } });
+  if (conversation.title === 'New chat' && request) await updateConversationDb(conversation.id, { title: titleFrom(request) });
+  const assistantMessage = await insertMessageDb(conversation.id, { role: 'assistant', ...reply });
+  res.status(201).json(responseFactory.createJsonResponse({ messages: [userMessage, assistantMessage] }));
+}
+
+/** A deck/document plan from the conversation; the reply is its card. */
+async function makePlan(conversation, previous, type, request) {
   const brief = await briefFromConversation(previous, type, request);
   if (!conversation.doc_ids?.length && !brief.source_text) {
     throw new AppError('Choose the documents to work with first (📎 Documents).', 400);
   }
-  const userMessage = await insertMessageDb(conversation.id, {
-    role: 'user', content: request || (type === 'deck' ? 'Make a slide deck from this' : 'Make a training document from this'),
-    data: { skill: type },
-  });
-  if (conversation.title === 'New chat' && request) await updateConversationDb(conversation.id, { title: titleFrom(request) });
   const generation = await createPlan({ type, brief, documentIds: conversation.doc_ids, conversationId: conversation.id });
-  const assistantMessage = await insertMessageDb(conversation.id, {
-    role: 'assistant', kind: 'generation', data: { generation_id: generation.id, type },
-  });
-  res.status(201).json(responseFactory.createJsonResponse({ messages: [userMessage, assistantMessage] }));
+  return { kind: 'generation', data: { generation_id: generation.id, type } };
+}
+
+/** An image from the conversation (for one slide/section when target is set); generated in the background. */
+async function makeImage(conversation, previous, request, target) {
+  const brief = await imageBrief(previous, request, target);
+  const generation = await startImage({ brief, conversationId: conversation.id, documentIds: conversation.doc_ids, target });
+  return {
+    kind: 'image',
+    data: { generation_id: generation.id, ...(target ? { target: { generation_id: target.generation.id, index: target.index } } : {}) },
+  };
 }
 
 // ── Deck-wide changes proposed in the chat ──

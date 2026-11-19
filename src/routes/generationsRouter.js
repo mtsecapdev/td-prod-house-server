@@ -4,7 +4,6 @@ import { uploadToMemory } from '../middleware/upload.js';
 
 const generationsRouter = Router();
 
-generationsRouter.post('/', generationsController.createGeneration);
 generationsRouter.get('/', generationsController.listGenerations);
 generationsRouter.get('/templates', generationsController.getTemplates);
 generationsRouter.post('/templates', uploadToMemory.single('file'), generationsController.uploadTemplate);
@@ -28,14 +27,10 @@ generationsRouter.post('/:id/figures', generationsController.addFigure);
 generationsRouter.get('/:id/file', generationsController.downloadFile);
 generationsRouter.post('/:id/open-deckcraft', generationsController.openInDeckCraft);
 generationsRouter.post('/:id/open-wordcraft', generationsController.openInWordCraft);
-generationsRouter.post('/:id/reference-image', uploadToMemory.single('image'), generationsController.uploadReferenceImage);
-generationsRouter.post('/:id/craft-prompt', generationsController.craftPrompt);
-generationsRouter.put('/:id/prompt', generationsController.updatePrompt);
-generationsRouter.post('/:id/generate-image', generationsController.generateImageSSE);
 generationsRouter.get('/:id/image', generationsController.serveImage);
+generationsRouter.post('/:id/image', generationsController.retryImage);
 generationsRouter.post('/:id/diagram', generationsController.renderDiagramCode);
 generationsRouter.get('/:id/diagrams/:key', generationsController.serveDiagram);
-generationsRouter.post('/release-gpu', generationsController.releaseGpu);
 generationsRouter.delete('/:id', generationsController.deleteGeneration);
 
 export default generationsRouter;

@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import config from '../config.js';
 import { generateStructured } from './llm.js';
 import { unload as unloadOllama } from './providers/ollama.js';
-import { queuePrompt, pollUntilDone, downloadImage, ensureRunning } from './comfyui.js';
+import { queuePrompt, pollUntilDone, downloadImage, ensureRunning, freeVram } from './comfyui.js';
 import AppError from '../utils/AppError.js';
 
 const IMAGE_PROMPT_SCHEMA = {
@@ -78,21 +78,7 @@ export async function generateImageFromPrompt(generation, onProgress) {
 
   onProgress({ phase: 'generating', message: 'Generating image...' });
 
-  const referenceImage = brief.reference_image;
-  const denoise = brief.strength != null ? brief.strength : 0.65;
-
-  const promptOpts = {
-    width: size.width,
-    height: size.height,
-    steps: referenceImage ? 8 : 8,
-  };
-
-  if (referenceImage) {
-    promptOpts.imageName = referenceImage;
-    promptOpts.denoise = denoise;
-  }
-
-  const promptId = await queuePrompt(promptText, promptOpts);
+  const promptId = await queuePrompt(promptText, { width: size.width, height: size.height, steps: 8 });
 
   const images = await pollUntilDone(promptId, { timeout: 120_000 });
   const img = images[0];
@@ -105,6 +91,8 @@ export async function generateImageFromPrompt(generation, onProgress) {
   await mkdir(outDir, { recursive: true });
   const outputPath = join(outDir, `${generation.id}.png`);
   await writeFile(outputPath, imageBuffer);
+  // Hand the GPU back to the chat model.
+  await freeVram();
 
   return {
     prompt: promptText,

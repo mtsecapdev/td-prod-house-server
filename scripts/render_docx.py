@@ -356,7 +356,7 @@ def render_picture(doc, pic, figure_no):
         if any(crop):
             Path(path).unlink(missing_ok=True)
     else:
-        add_body_text(doc, '[Figure removed]', color=SLATE)
+        add_body_text(doc, '[Image removed]' if pic.get('image_id') else '[Figure removed]', color=SLATE)
 
     # The document numbers its own figures, so the source's number ("Figure 2.2-1 ...") is dropped here.
     caption = re.sub(r'^fig(?:ure)?\.?\s*[A-Z]?\d+(?:[.\-]\d+)*[a-z]?[:.]?\s*', '', (pic.get('caption') or '').strip(), flags=re.I)
