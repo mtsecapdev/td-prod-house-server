@@ -24,14 +24,7 @@ generationsRouter.post('/:id/slides/:index/regenerate', generationsController.re
 generationsRouter.post('/:id/sections/:index/regenerate', generationsController.regenerateItem);
 generationsRouter.get('/:id/slides/:index/layouts', generationsController.suggestLayouts);
 generationsRouter.get('/:id/sections/:index/layouts', generationsController.suggestLayouts);
-generationsRouter.post('/:id/slides', generationsController.addItem);
 generationsRouter.post('/:id/figures', generationsController.addFigure);
-generationsRouter.post('/:id/agent/plan', generationsController.agentPlan);
-generationsRouter.post('/:id/agent/apply', generationsController.agentApply);
-generationsRouter.post('/:id/agent/undo', generationsController.agentUndo);
-generationsRouter.post('/:id/sections', generationsController.addItem);
-generationsRouter.post('/:id/slides/:slideIndex/chat', generationsController.editSlideChat);
-generationsRouter.post('/:id/sections/:sectionIndex/chat', generationsController.editSectionChat);
 generationsRouter.get('/:id/file', generationsController.downloadFile);
 generationsRouter.post('/:id/open-deckcraft', generationsController.openInDeckCraft);
 generationsRouter.post('/:id/open-wordcraft', generationsController.openInWordCraft);

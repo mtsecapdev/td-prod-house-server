@@ -1,11 +1,11 @@
 import AppError from '../utils/AppError.js';
 import pool from './pool.js';
 
-export async function insertGenerationDb({ type, brief, sourceDocumentIds, model, settings }) {
+export async function insertGenerationDb({ type, brief, sourceDocumentIds, model, settings, conversationId = null }) {
   const res = await pool.query(
-    `INSERT INTO generations (type, brief, source_document_ids, model, settings)
-     VALUES ($1, $2, $3, $4, $5) RETURNING id`,
-    [type, brief, sourceDocumentIds, model, settings],
+    `INSERT INTO generations (type, brief, source_document_ids, model, settings, conversation_id)
+     VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
+    [type, brief, sourceDocumentIds, model, settings, conversationId],
   );
   return res.rows[0].id;
 }
@@ -37,7 +37,7 @@ export async function updateGenerationDb(id, fields) {
 
 export async function getAllGenerationsDb() {
   const res = await pool.query(
-    `SELECT id, type, status, brief, job, created_at, updated_at,
+    `SELECT id, type, status, brief, job, conversation_id, created_at, updated_at,
        coalesce(outline->'slides'->0->'content'->>'title', outline->'sections'->0->'content'->>'title') AS first_title
      FROM generations ORDER BY created_at DESC`,
   );

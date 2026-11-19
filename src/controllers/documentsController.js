@@ -7,62 +7,16 @@ import responseFactory from '../utils/responseFactory.js';
 import AppError from '../utils/AppError.js';
 import { extractMarkdownFromFile } from '../services/fileProcessor.js';
 import { splitMarkdown, enrichTextForEmbedding } from '../services/textChunker.js';
-import {
-  generateAnswer,
-  requestEmbedding,
-  requestEmbeddingBatch,
-  rewriteQuery,
-} from '../services/llm.js';
+import { requestEmbeddingBatch } from '../services/llm.js';
 import { getAllDocumentsDb, getDocumentByIdDb, insertDocumentDb, updateDocumentStatusDb, deleteDocumentDb, documentExistsDb } from '../db/documentsQueries.js';
-import { getSimilarChunksDb, getNeighborChunksDb, insertChunkDb } from '../db/chunksQueries.js';
+import { insertChunkDb } from '../db/chunksQueries.js';
 import { generateSummaryChunks } from '../services/summarizer.js';
-import { saveFigures, deleteFigureFiles, figuresInChunks, figuresMentioned, stripFigureMarkers } from '../services/figures.js';
+import { saveFigures, deleteFigureFiles } from '../services/figures.js';
 import { figureUsageDb, listFiguresDb } from '../db/figuresQueries.js';
 
 async function ensureDir(dir) {
   await fs.mkdir(dir, { recursive: true });
 }
-
-const uploadDocumentsPost = [
-  uploadToMemory.single('uploaded_file'),
-  async (req, res) => {
-    const { buffer, originalname } = req.file;
-    const fileHash = crypto.createHash('sha256').update(buffer).digest('hex');
-
-    await ensureDir(config.uploadsDir);
-    const ext = path.extname(originalname);
-    const savedName = `${fileHash}${ext}`;
-    const filePath = path.join(config.uploadsDir, savedName);
-    await fs.writeFile(filePath, buffer);
-
-    const docId = await insertDocumentDb(originalname, { filePath, fileHash, status: 'processing' });
-
-    res.json(responseFactory.createJsonResponse({
-      message: `Upload received — processing ${originalname}`,
-      document: { id: docId, name: originalname, status: 'processing' },
-    }));
-
-    try {
-      const { markdown, pageCount, pageStarts, figures } = await extractMarkdownFromFile(filePath, originalname);
-      await saveFigures(docId, figures);
-      const chunks = await splitMarkdown(markdown, pageStarts);
-      const embeddings = await requestEmbeddingBatch(chunks.map((c) => enrichTextForEmbedding(c.text, c)));
-
-      for (let i = 0; i < chunks.length; i++) {
-        await insertChunkDb(docId, chunks[i].text, embeddings[i], { page: chunks[i].page, heading: chunks[i].heading });
-      }
-
-      console.log(`Generating summaries for: ${originalname}`);
-      await generateSummaryChunks(docId, chunks);
-
-      await updateDocumentStatusDb(docId, 'ready');
-      console.log(`Ingested upload: ${originalname} (id: ${docId}, ${chunks.length} chunks)`);
-    } catch (err) {
-      await updateDocumentStatusDb(docId, 'failed', err.message);
-      console.error(`Upload ingestion failed: ${originalname} — ${err.message}`);
-    }
-  },
-];
 
 async function downloadDocument(req, res) {
   const doc = await getDocumentByIdDb(req.params.id);
@@ -75,94 +29,6 @@ async function downloadDocument(req, res) {
   }
 
   res.download(doc.file_path, doc.name);
-}
-
-async function queryDocumentsPost(req, res) {
-  const { query: originalQuery, history, docIdsToReference } = req.body;
-
-  res.writeHead(200, {
-    'Content-Type': 'text/event-stream',
-    'Cache-Control': 'no-cache',
-    Connection: 'keep-alive',
-  });
-  res.flushHeaders();
-
-  const send = (data) => { res.write(`data: ${JSON.stringify(data)}\n\n`); };
-
-  let keepalive;
-  try {
-    send({ phase: 'loading', message: 'Preparing model...' });
-    keepalive = setInterval(() => res.write(': keepalive\n\n'), 5000);
-
-    send({ phase: 'rewriting' });
-    const rewrittenQuery = await rewriteQuery(history, originalQuery);
-
-    send({ phase: 'searching' });
-    const queryEmbedding = await requestEmbedding(rewrittenQuery);
-    const topChunks = await getSimilarChunksDb(
-      queryEmbedding,
-      config.rag.topK,
-      docIdsToReference,
-      rewrittenQuery,
-    );
-
-    const seenIds = new Set(topChunks.map((c) => c.id));
-    const expanded = [...topChunks];
-    const EXPAND_THRESHOLD = 0.6;
-    for (const chunk of topChunks) {
-      if (chunk.level !== 'leaf' || chunk.similarity < EXPAND_THRESHOLD) continue;
-      const neighbors = await getNeighborChunksDb(chunk.id, chunk.document_id, 3);
-      for (const n of neighbors) {
-        if (!seenIds.has(n.id)) {
-          seenIds.add(n.id);
-          n.similarity = chunk.similarity * 0.9;
-          expanded.push(n);
-        }
-      }
-    }
-    expanded.sort((a, b) => b.similarity - a.similarity);
-    const finalChunks = expanded.slice(0, config.rag.topK + 5);
-
-    send({ phase: 'generating' });
-    const available = await figuresInChunks(finalChunks);
-    // The rewrite is only for retrieval. Answer what the user actually asked; history supplies the context.
-    const { llmResponse, avgConfidenceScore, grounded } = await generateAnswer(
-      originalQuery,
-      history,
-      finalChunks.map((c) => ({ ...c, content: stripFigureMarkers(c.content) })),
-      available,
-    );
-    // Figures shown under the answer: only those it refers to.
-    const figures = figuresMentioned(available, llmResponse.content).map((f) => ({
-      id: f.id, caption: f.caption, page: f.page, width: f.width, height: f.height, document_id: f.document_id,
-    }));
-
-    const chunksByDoc = {};
-    for (const docId of docIdsToReference) {
-      chunksByDoc[docId] = finalChunks.filter((c) => c.document_id === docId)
-        .map((c) => ({ ...c, content: stripFigureMarkers(c.content) }));
-    }
-
-    send({
-      phase: 'done',
-      originalQuery,
-      modelResponse: llmResponse,
-      history: [
-        ...history,
-        { role: 'user', content: originalQuery },
-        llmResponse,
-      ],
-      chunks: chunksByDoc,
-      avgConfidenceScore,
-      grounded,
-      figures,
-    });
-  } catch (err) {
-    send({ phase: 'error', message: err.message });
-  } finally {
-    clearInterval(keepalive);
-  }
-  res.end();
 }
 
 const uploadDocumentsStream = [
@@ -272,10 +138,8 @@ async function deleteOneDocument(req, res) {
 
 export default {
   listDocuments,
-  uploadDocumentsPost,
   uploadDocumentsStream,
   downloadDocument,
-  queryDocumentsPost,
   documentUsage,
   deleteOneDocument,
 };

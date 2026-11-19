@@ -1,39 +1,40 @@
 import pool from './pool.js';
 import AppError from '../utils/AppError.js';
 
+const COLUMNS = 'id, title, doc_ids, created_at, updated_at';
+
+/** Conversations, most recently active first, with the kinds of things made in each (deck, doc, image). */
 export async function listConversationsDb() {
   const res = await pool.query(
-    'SELECT id, title, doc_ids, created_at, updated_at FROM conversations ORDER BY updated_at DESC',
+    `SELECT c.id, c.title, c.doc_ids, c.created_at, c.updated_at,
+            COALESCE((SELECT array_agg(DISTINCT g.type) FROM generations g WHERE g.conversation_id = c.id), '{}') AS made
+     FROM conversations c ORDER BY c.updated_at DESC`,
   );
   return res.rows;
 }
 
 export async function getConversationDb(id) {
-  const res = await pool.query('SELECT * FROM conversations WHERE id = $1', [id]);
+  const res = await pool.query(`SELECT ${COLUMNS} FROM conversations WHERE id = $1`, [id]);
   if (res.rowCount === 0) throw new AppError(`Conversation ${id} not found`, 404);
   return res.rows[0];
 }
 
 export async function createConversationDb(title, docIds) {
   const res = await pool.query(
-    `INSERT INTO conversations (title, doc_ids) VALUES ($1, $2) RETURNING *`,
+    `INSERT INTO conversations (title, doc_ids) VALUES ($1, $2) RETURNING ${COLUMNS}`,
     [title, docIds],
   );
   return res.rows[0];
 }
 
-export async function updateConversationDb(id, { title, messages, docIds }) {
+export async function updateConversationDb(id, { title, docIds }) {
   const sets = ['updated_at = NOW()'];
   const vals = [];
-  let idx = 1;
-
-  if (title !== undefined) { sets.push(`title = $${idx++}`); vals.push(title); }
-  if (messages !== undefined) { sets.push(`messages = $${idx++}`); vals.push(JSON.stringify(messages)); }
-  if (docIds !== undefined) { sets.push(`doc_ids = $${idx++}`); vals.push(docIds); }
-
+  if (title !== undefined) { vals.push(title); sets.push(`title = $${vals.length}`); }
+  if (docIds !== undefined) { vals.push(docIds); sets.push(`doc_ids = $${vals.length}`); }
   vals.push(id);
   const res = await pool.query(
-    `UPDATE conversations SET ${sets.join(', ')} WHERE id = $${idx} RETURNING *`,
+    `UPDATE conversations SET ${sets.join(', ')} WHERE id = $${vals.length} RETURNING ${COLUMNS}`,
     vals,
   );
   if (res.rowCount === 0) throw new AppError(`Conversation ${id} not found`, 404);
@@ -43,5 +44,9 @@ export async function updateConversationDb(id, { title, messages, docIds }) {
 export async function deleteConversationDb(id) {
   const res = await pool.query('DELETE FROM conversations WHERE id = $1 RETURNING id', [id]);
   if (res.rowCount === 0) throw new AppError(`Conversation ${id} not found`, 404);
-  return res.rows[0];
+}
+
+/** Links a deck/document made outside a conversation to one (older items opened from the Library). */
+export async function adoptGenerationDb(conversationId, generationId) {
+  await pool.query('UPDATE generations SET conversation_id = $1 WHERE id = $2', [conversationId, generationId]);
 }

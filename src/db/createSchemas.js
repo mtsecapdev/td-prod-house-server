@@ -61,7 +61,6 @@ async function createTables() {
     await client.query(`CREATE TABLE IF NOT EXISTS conversations (
       id INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
       title TEXT NOT NULL DEFAULT 'New chat',
-      messages JSONB NOT NULL DEFAULT '[]',
       doc_ids INTEGER[] NOT NULL DEFAULT '{}',
       created_at TIMESTAMPTZ DEFAULT NOW(),
       updated_at TIMESTAMPTZ DEFAULT NOW()

@@ -18,33 +18,24 @@ import {
   withHeartbeat,
 } from '../db/generationsQueries.js';
 import { kindOf } from '../services/planning/kinds.js';
-import { planOutline, attachSources, searchSources, suggestTypes } from '../services/planning/planner.js';
+import { attachSources, searchSources, suggestTypes } from '../services/planning/planner.js';
 import { writeAll } from '../services/planning/writer.js';
-import { rewriteItem, insertItem, placeFigure } from '../services/planning/itemOps.js';
-import { planAgent, applyAgent, undoAgent } from '../services/planning/agent.js';
+import { rewriteItem, placeFigure } from '../services/planning/itemOps.js';
 import { startJob } from '../services/jobs.js';
-import { editSlide, editSection } from '../services/editChat.js';
+import { normalizeBrief, startOutlineJob } from '../services/planning/outlineJob.js';
 import { craftImagePrompt, generateImageFromPrompt } from '../services/imageGenerator.js';
 import { renderDiagram, ensureDiagramFile, deleteDiagrams, DiagramSyntaxError } from '../services/diagrams.js';
 import { listTemplates, createBrandTemplate, deleteBrandTemplate } from '../services/templates.js';
 import { renderOfficeFile, notReadyMessage, officeExt, downloadName } from '../services/officeRenderer.js';
 import { uploadImage as uploadToComfyUI, shutdown as shutdownComfyUI } from '../services/comfyui.js';
 
+// Images only: decks and training documents start from a conversation (POST /conversations/:id/skills/:type).
 async function createGeneration(req, res) {
   const { type, brief, sourceDocumentIds, model, settings } = req.body;
+  if (type !== 'image') throw new AppError('Decks and documents are made from a conversation', 400);
   const id = await insertGenerationDb({ type, brief, sourceDocumentIds: sourceDocumentIds ?? [], model, settings });
-
-  const generation = await getGenerationByIdDb(id);
-
-  if (type === 'deck' || type === 'doc') {
-    await updateGenerationDb(id, { brief: JSON.stringify(normalizeBrief(brief)) });
-    await startOutlineJob(await getGenerationByIdDb(id));
-  } else if (type === 'image') {
-    await updateGenerationDb(id, { status: 'pending' });
-  }
-
-  const updated = await getGenerationByIdDb(id);
-  res.status(201).json(responseFactory.createJsonResponse({ generation: updated }));
+  await updateGenerationDb(id, { status: 'pending' });
+  res.status(201).json(responseFactory.createJsonResponse({ generation: await getGenerationByIdDb(id) }));
 }
 
 async function getTemplates(req, res) {
@@ -85,22 +76,6 @@ async function updateOutline(req, res) {
 
 // ── Planning (Gamma-style): prompt -> outline (one job) -> settings ──
 
-const BRIEF_FIELDS = [
-  'topic', 'count', 'format', 'text_amount', 'audience', 'tone', 'instructions', 'template', 'source_text', 'text_mode',
-];
-const MAX_SOURCE_TEXT = 60000;
-
-function normalizeBrief(input = {}, previous = {}) {
-  const brief = { ...previous };
-  for (const f of BRIEF_FIELDS) {
-    if (input[f] === undefined) continue;
-    if (f === 'count') brief[f] = Number(input[f]) || undefined;
-    else if (f === 'source_text') brief[f] = String(input[f] ?? '').slice(0, MAX_SOURCE_TEXT);
-    else brief[f] = String(input[f] ?? '').trim();
-  }
-  return brief;
-}
-
 async function getPlannable(id) {
   const generation = await getGenerationByIdDb(id);
   kindOf(generation); // throws for images
@@ -111,26 +86,6 @@ function busy(res, generation) {
   return res.status(409).json(responseFactory.createJsonResponse(null, {
     message: `Still working on the ${generation.job?.kind || 'previous step'}. Try again when it finishes.`,
   }));
-}
-
-// Plans the outline in the background. The planner suggests an audience and tone; they fill the brief only
-// where the user left them empty, so the settings panel opens pre-filled (as Gamma does).
-async function startOutlineJob(generation) {
-  return startJob(generation.id, 'outline', async () => {
-    const { storyline, outline } = await planOutline(generation);
-    const latest = await getGenerationByIdDb(generation.id);
-    const brief = {
-      ...latest.brief,
-      audience: latest.brief?.audience || storyline.audience,
-      tone: latest.brief?.tone || storyline.tone,
-    };
-    return {
-      brief: JSON.stringify(brief),
-      storyline: JSON.stringify(storyline),
-      outline: JSON.stringify(outline),
-      status: 'outline_ready',
-    };
-  });
 }
 
 // Settings on the outline screen (text amount, audience, tone, format, instructions). They apply when
@@ -264,19 +219,6 @@ async function suggestLayouts(req, res) {
   res.json(responseFactory.createJsonResponse({ suggestions }));
 }
 
-// "Add with AI": plans one new slide/section from a description, writes it, and inserts it after `after`.
-async function addItem(req, res) {
-  const generation = await getPlannable(req.params.id);
-  const kind = kindOf(generation);
-  const description = String(req.body?.description || '').trim();
-  if (!description) throw new AppError('Describe what to add', 400);
-  if (isJobLive(generation.job)) return busy(res, generation);
-
-  const items = generation.outline?.[kind.listKey] || [];
-  const result = await insertItem(generation.id, req.body?.after ?? items.length - 1, description);
-  res.status(201).json(responseFactory.createJsonResponse(result));
-}
-
 // Puts a document figure into the deck/document: { figureId, index, mode: 'replace' | 'after' }.
 async function addFigure(req, res) {
   const generation = await getPlannable(req.params.id);
@@ -293,49 +235,6 @@ async function addFigure(req, res) {
 }
 
 // ── Deck-wide agent ──
-
-// Proposes the steps for a deck-wide request. Nothing changes until /agent/apply.
-async function agentPlan(req, res) {
-  const generation = await getPlannable(req.params.id);
-  const instruction = String(req.body?.instruction || '').trim();
-  if (!instruction) throw new AppError('Say what to change', 400);
-  if (isJobLive(generation.job)) return busy(res, generation);
-  res.json(responseFactory.createJsonResponse(await planAgent(generation, instruction)));
-}
-
-// Applies the steps the user kept, as a background job; poll the generation to watch items change.
-async function agentApply(req, res) {
-  const generation = await getPlannable(req.params.id);
-  const steps = Array.isArray(req.body?.steps) ? req.body.steps : [];
-  if (!steps.length) throw new AppError('No steps to apply', 400);
-  const started = await startJob(generation.id, 'agent', async () => {
-    await applyAgent(generation.id, steps);
-    return {};
-  });
-  if (!started) return busy(res, generation);
-  res.status(202).json(responseFactory.createJsonResponse({ generation: presentGeneration(await getGenerationByIdDb(generation.id)) }));
-}
-
-async function agentUndo(req, res) {
-  const generation = await getPlannable(req.params.id);
-  if (isJobLive(generation.job)) return busy(res, generation);
-  await undoAgent(generation.id);
-  res.json(responseFactory.createJsonResponse({ generation: await getGenerationByIdDb(generation.id) }));
-}
-
-async function editSlideChat(req, res) {
-  const { instruction, history } = req.body;
-  const slideIndex = Number(req.params.slideIndex);
-  const updatedContent = await editSlide(req.params.id, slideIndex, instruction, history);
-  res.json(responseFactory.createJsonResponse({ slide: updatedContent }));
-}
-
-async function editSectionChat(req, res) {
-  const { instruction, history } = req.body;
-  const sectionIndex = Number(req.params.sectionIndex);
-  const updatedContent = await editSection(req.params.id, sectionIndex, instruction, history);
-  res.json(responseFactory.createJsonResponse({ section: updatedContent }));
-}
 
 async function downloadFile(req, res) {
   const generation = await getGenerationByIdDb(req.params.id);
@@ -533,13 +432,7 @@ export default {
   writeSSE,
   regenerateItem,
   suggestLayouts,
-  addItem,
   addFigure,
-  agentPlan,
-  agentApply,
-  agentUndo,
-  editSlideChat,
-  editSectionChat,
   downloadFile,
   openInDeckCraft,
   openInWordCraft,

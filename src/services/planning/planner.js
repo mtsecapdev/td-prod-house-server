@@ -9,7 +9,7 @@
 import { randomBytes } from 'node:crypto';
 import config from '../../config.js';
 import { generateStructured, requestEmbedding, requestEmbeddingBatch } from '../llm.js';
-import { getDocumentMapDb, getSourcePassagesDb } from '../../db/chunksQueries.js';
+import { getChunksByIdsDb, getDocumentMapDb, getSourcePassagesDb } from '../../db/chunksQueries.js';
 import { kindOf, briefBlock, storylineBlock, itemCount } from './kinds.js';
 import { chooseLayouts, finishLayouts } from './layouts.js';
 import { stripFigureMarkers, figureNumber } from '../figures.js';
@@ -24,6 +24,12 @@ const ADD_ITEM_PASSAGES = 6;
 const MAX_PASTED_CHARS = 20000;
 // Slides marked by the user: a line containing only "---".
 const SPLIT_RE = /\n\s*-{3,}\s*\n/;
+
+// The model sometimes labels titles with their role ("Deck Title: …", "Slide 3: …"); the label is not the title.
+const TITLE_LABEL_RE = /^(?:(?:deck|document|slide|section|page)\s*(?:title|\d+)?|title)\s*[:\-–]\s*/i;
+function cleanTitle(title) {
+  return title.replace(TITLE_LABEL_RE, '').trim() || title;
+}
 
 function newItemId(kind) {
   return kind.idPrefix + randomBytes(4).toString('hex');
@@ -45,10 +51,16 @@ async function planningMaterial(generation) {
 
   const query = [generation.brief?.topic, generation.brief?.instructions].filter(Boolean).join('\n');
   const embedding = await requestEmbedding(query);
-  const [passages, map] = await Promise.all([
-    getSourcePassagesDb(embedding, PLAN_PASSAGES, generation.source_document_ids, query),
-    getDocumentMapDb(generation.source_document_ids, { topicEmbedding: embedding }),
+  const docIds = generation.source_document_ids || [];
+  const [found, map, pinnedRows] = await Promise.all([
+    getSourcePassagesDb(embedding, PLAN_PASSAGES, docIds, query),
+    getDocumentMapDb(docIds, { topicEmbedding: embedding }),
+    getChunksByIdsDb(generation.brief?.pinned_chunk_ids || []),
   ]);
+  // Passages the conversation's answers used come first (still from these documents); search fills the rest.
+  const pinned = pinnedRows.filter((r) => docIds.includes(r.document_id));
+  const pinnedIds = new Set(pinned.map((r) => r.id));
+  const passages = [...pinned, ...found.filter((r) => !pinnedIds.has(r.id))].slice(0, PLAN_PASSAGES);
   const ordered = [...passages].sort((a, b) => a.document_id - b.document_id || a.id - b.id); // reading order
   const sections = map.sections.map((s) => `- ${s.heading}${s.page != null ? ` (p. ${s.page})` : ''}`).join('\n');
   return {
@@ -120,7 +132,7 @@ export async function planOutline(generation) {
   const byId = new Map(material.passages.map((p) => [p.id, p]));
   let items = (plan.items || []).filter((raw) => raw.title).map((raw) => ({
     id: newItemId(kind),
-    title: raw.title,
+    title: cleanTitle(raw.title),
     bullets: (raw.bullets || []).map((b) => b.trim()).filter(Boolean),
     // The passages this item was planned from become its sources.
     sources: [...new Set(raw.source_ids || [])].filter((id) => byId.has(id))
