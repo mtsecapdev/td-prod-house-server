@@ -24,21 +24,23 @@ export async function getAssetByIdDb(id) {
   return res.rows[0];
 }
 
+/** Saved copies, newest first, with the conversation their deck/document/image was made in (if it still exists). */
 export async function getAllAssetsDb({ q, kind } = {}) {
-  let query = 'SELECT * FROM assets WHERE deleted_at IS NULL';
+  let query = `SELECT a.*, g.conversation_id FROM assets a LEFT JOIN generations g ON g.id = a.generation_id
+               WHERE a.deleted_at IS NULL`;
   const values = [];
   let i = 1;
 
   if (kind) {
-    query += ` AND kind = $${i++}`;
+    query += ` AND a.kind = $${i++}`;
     values.push(kind);
   }
   if (q) {
-    query += ` AND title ILIKE $${i++}`;
+    query += ` AND a.title ILIKE $${i++}`;
     values.push(`%${q}%`);
   }
 
-  query += ' ORDER BY saved_at DESC';
+  query += ' ORDER BY a.saved_at DESC';
   const res = await pool.query(query, values);
   return res.rows;
 }
