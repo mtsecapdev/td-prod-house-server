@@ -300,6 +300,10 @@ def render_bullets(slide, content, slide_idx=0, total=0):
     num_bullets = len(bullets)
     available = 5.3
     per_bullet = min(available / max(num_bullets, 1), 1.3)
+    # With a picture on the slide the points take the left half; the picture sits in SIDE_BOX on the right.
+    beside = bool(content.get('pictures'))
+    text_w = Inches(5.3) if beside else Inches(10)
+    row_w = int(SLIDE_WIDTH * SIDE_BOX[0]) - Inches(0.6) if beside else SLIDE_WIDTH - Inches(0.5)
 
     y = Inches(1.8)
     for i, bullet in enumerate(bullets):
@@ -309,7 +313,7 @@ def render_bullets(slide, content, slide_idx=0, total=0):
         # Alternating row tint
         if i % 2 == 0:
             add_rect(slide, Inches(0.5), y - Inches(0.05),
-                     SLIDE_WIDTH - Inches(0.5), Inches(per_bullet),
+                     row_w, Inches(per_bullet),
                      CANVAS)
 
         # Numbered circle badge
@@ -322,12 +326,12 @@ def render_bullets(slide, content, slide_idx=0, total=0):
                     alignment=PP_ALIGN.CENTER, anchor='ctr')
 
         # Heading
-        add_textbox(slide, Inches(1.7), y, Inches(10), Inches(0.4),
+        add_textbox(slide, Inches(1.7), y, text_w, Inches(0.4),
                     heading, font_size=17, bold=True, color=NAVY)
 
         # Detail
         detail_h = Inches(max(per_bullet - 0.5, 0.4))
-        add_textbox(slide, Inches(1.7), y + Inches(0.38), Inches(10), detail_h,
+        add_textbox(slide, Inches(1.7), y + Inches(0.38), text_w, detail_h,
                     detail, font_size=13, color=SLATE)
 
         y += Inches(per_bullet)

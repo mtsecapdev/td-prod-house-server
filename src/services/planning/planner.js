@@ -196,6 +196,8 @@ const FIGURE_PAGE_DISTANCE = 3;
 // which figure a slide needs.
 const COMMON_WORD_SHARE = 0.2;
 const MIN_FIGURE_SCORE = 0.4;
+// A planned slide/section with this many points is a list: the figure goes beside it, not instead of it.
+const LIST_POINTS = 3;
 // Matches this strong are taken as they are; weaker ones are checked by the model.
 const SURE_FIGURE_SCORE = 0.75;
 
@@ -277,7 +279,16 @@ async function suggestFigures(kind, items, documentIds) {
   let used = 0;
   chosen.forEach((p, k) => {
     if (!approved.has(k) || used >= MAX_SUGGESTED_FIGURES) return;
-    items[p.i] = { ...items[p.i], [kind.typeKey]: 'figure', figure_id: p.f.id, type_reason: `Shows ${p.f.caption || 'a figure from the document'}` };
+    const item = items[p.i];
+    const caption = p.f.caption || 'a figure from the document';
+    // A slide that lists several things keeps them, with the figure beside (decks: only Bullets leaves room);
+    // a Figure slide shows just the figure. "Fuel injection system types" became the inline-pump figure alone
+    // and the six types were lost.
+    const isList = (item.bullets || []).length >= LIST_POINTS && p.score < 1;
+    if (isList && kind.name === 'deck' && item[kind.typeKey] !== 'bullets') return;
+    items[p.i] = isList
+      ? { ...item, figure_id: p.f.id, figure_beside: true, type_reason: `${item.type_reason ? `${item.type_reason}; ` : ''}with ${caption} beside` }
+      : { ...item, [kind.typeKey]: 'figure', figure_id: p.f.id, type_reason: `Shows ${caption}` };
     used++;
   });
   return items;

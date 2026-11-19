@@ -117,6 +117,11 @@ async function writeAs(generation, kind, index, type, { note, figure } = {}) {
       `specification or rule for all.`,
     `Do not add procedures, tips or advice the sources do not give, in the text, takeaways or notes.`,
     `Refer to other ${kind.nounPlural} only by what the outline above says they contain.`,
+    // Notes are where the model added its own tips and pointed at the wrong slides.
+    `Notes (speaker_notes / notes) explain this ${kind.noun}'s content from the sources; a question for the ` +
+      `audience is fine, tips, advice or claims the sources do not give are not. For transitions use only: ` +
+      `previous ${kind.noun} "${items[index - 1]?.title || '(none: this is the first)'}", next ${kind.noun} ` +
+      `"${items[index + 1]?.title || '(none: this is the last)'}".`,
     `Lines starting "Text in the figure:" list the words printed in a figure; use them to understand it, never ` +
       `copy them into the text.`,
     `Sources for this ${kind.noun}:\n${sourceText}`,
@@ -140,6 +145,24 @@ async function writeAs(generation, kind, index, type, { note, figure } = {}) {
     used_pages: [...new Set(rows.map((r) => r.page).filter((p) => p != null))].sort((a, b) => a - b),
   });
   return { content, sources };
+}
+
+// One-line fields (a subtitle) sometimes come back with a list appended: "Intro. - Point one- Point two".
+const ONE_LINE_FIELDS = ['subtitle'];
+// A list is two or more "- Item" markers (one dash is a normal subtitle: "Engine basics - for new hires").
+const LIST_MARKER_RE = /-\s*[A-Z]/g;
+
+/** Keeps one-line fields to their first line, without a list tacked on. */
+function oneLineFields(content) {
+  if (!content) return content;
+  const out = { ...content };
+  for (const f of ONE_LINE_FIELDS) {
+    if (typeof out[f] !== 'string') continue;
+    let text = out[f].split('\n')[0];
+    if ((text.match(LIST_MARKER_RE) || []).length >= 2) text = text.slice(0, text.search(/\s-\s*[A-Z]/)).trim() || text;
+    out[f] = text.trim();
+  }
+  return out;
 }
 
 /** A subheading the model repeated is dropped, so the paragraph continues under the one before. */
@@ -184,6 +207,11 @@ export async function writeItem(generation, index, options = {}) {
   // Pictures the user placed stay through rewrites and layout changes; a figure item shows its figure first.
   const pictures = [...(item?.content?.pictures || [])];
   const { figure, ...rest } = written;
+  // A figure planned beside a list goes on as a picture (decks: on a Bullets slide, which leaves room for it).
+  if (!figure && item?.figure_beside && item.figure_id && (kindOf(generation).name === 'doc' || written.type === 'bullets')) {
+    const beside = await getFigureByIdDb(item.figure_id);
+    if (beside && !pictures.some((p) => Number(p.figure_id) === beside.id)) pictures.push(pictureOf(beside));
+  }
   if (figure) {
     // The writer's caption is only a stand-in for figures the document left uncaptioned.
     const { caption, ...content } = rest.content;
@@ -208,7 +236,7 @@ async function writeContent(generation, index, { note, type: typeOverride } = {}
   }
 
   const written = await writeAs(generation, kind, index, type, { note });
-  const content = distinctSubheadings(written.content);
+  const content = oneLineFields(distinctSubheadings(written.content));
   const { sources } = written;
   if (type === 'key_stats' || type === 'stat_focus') return checkStatistics(generation, kind, index, type, { content, sources }, note);
   if (type !== 'diagram') return { type, content, sources };
