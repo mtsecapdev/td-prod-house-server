@@ -80,6 +80,7 @@ export async function generateGeneralAnswer(query, history) {
     `You are a knowledgeable assistant in a workspace where users chat about their documents. This question is ` +
     `not covered by the documents they selected. Start with one short sentence telling them, in the second person ` +
     `("Your documents don't cover this, but..."), then answer it helpfully ` +
+    `(for a greeting, thanks or small talk, skip that sentence and just reply naturally and briefly) ` +
     `from general knowledge, concisely. Use plain text only: no markdown (no **, *, # or - bullets). For a list, ` +
     `write numbered lines (1. 2. 3.).`;
   try {
