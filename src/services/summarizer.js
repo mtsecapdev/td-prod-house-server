@@ -1,10 +1,13 @@
 import { requestEmbedding, generateStructured } from './llm.js';
 import { enrichTextForEmbedding } from './textChunker.js';
+import { readablePassage } from './figures.js';
 import { insertChunkDb } from '../db/chunksQueries.js';
 import config from '../config.js';
 
 const { generateModel } = config.ollama;
 const SECTIONS_PER_BATCH = 8;
+// Text shown per section (8 per call: up to ~48k characters, ~13k tokens, inside the 32k context with the reply).
+const SECTION_CHARS = 6000;
 
 export async function generateSummaryChunks(docId, leafChunks, { onProgress } = {}) {
   const sections = groupBySection(leafChunks);
@@ -97,19 +100,21 @@ function batchSections(sections, batchSize) {
 export async function summarizeBatch(sections) {
   const parts = sections.map((section, i) => {
     const label = section.heading || `Section ${i + 1}`;
-    // Without thinking these calls are cheap, so each section gets more of its text: at 1,200 characters,
-    // facts in later table rows were cut off and the model guessed them.
-    const text = section.chunks
-      .map((c) => c.text.slice(0, 1200))
-      .join(' ')
-      .slice(0, 2400);
+    // Whole passages up to SECTION_CHARS. Cut shorter (1,200 per passage, 2,400 per section), the Norvane
+    // incident log showed rows 1-26 of 49 and the summary called that the total. When a section is still cut,
+    // it says so, so the summary gives no totals or counts for it.
+    const full = section.chunks.map((c) => readablePassage(c.text)).join('\n');
+    const text = full.length > SECTION_CHARS
+      ? `${full.slice(0, SECTION_CHARS)}\n[THIS SECTION CONTINUES; the rest is not shown]`
+      : full;
     return `### ${i + 1}. ${label}\n${text}`;
   });
 
   const prompt =
     `Summarize each of the following ${sections.length} document sections in 2-3 concise sentences each, ` +
     `capturing the key facts and topics. State only facts that appear in the section's text; never guess a ` +
-    `date, number or name. n is the section's number.\n\n` +
+    `date, number or name. A section marked "THIS SECTION CONTINUES" is cut short: describe what it contains, ` +
+    `but give no totals, counts or ranges for it, since you have not seen all of it. n is the section's number.\n\n` +
     parts.join('\n\n');
   const schema = {
     type: 'object',

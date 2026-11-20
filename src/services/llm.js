@@ -188,6 +188,9 @@ export async function generateAnswer(query, history, chunks, figures = [], { who
       ? `- The excerpts below are the whole document, in reading order: first a summary of each section, then ` +
         `its passages. The user wants it covered as a whole. Go through every section in the document's order, ` +
         `giving each its key facts and figures briefly (a short heading line per section, then numbered points). ` +
+        `Use the document's own section names and numbers, starting with its first section; an overview of your ` +
+        `own may come first, but never fold a section into it. Where a later section or appendix revises an ` +
+        `earlier one, give the revised version in the earlier section too. ` +
         `Skip none, including appendices. Take each page number from the label of the excerpt the fact comes ` +
         `from, and copy numbers exactly as written.` +
         (Array.isArray(wholeDocument) && wholeDocument.length
