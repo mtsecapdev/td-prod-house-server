@@ -11,6 +11,17 @@ const EXPAND_THRESHOLD = 0.6;
 // ones ("How did the defence business do?" 0.38, a running question 0.37), so the line stays low: it never
 // skipped an answerable question in the test, and caught 6 of 7 unrelated ones.
 const RELEVANCE_MIN = 0.35;
+const NOT_COVERED_RE = /^\s*your documents (?:don't|do not) cover (?:this|that)[^,.:]*(?:,\s*but\s*|[.:]\s*)/i;
+
+/**
+ * Drops the "Your documents don't cover this, but..." opening when an earlier reply already said it, so a
+ * conversation about something else doesn't repeat it every turn (the model doesn't skip it reliably itself).
+ */
+function withoutRepeatedNote(content, history) {
+  if (!history.some((m) => m.role === 'assistant' && NOT_COVERED_RE.test(m.content || ''))) return content;
+  const rest = content.replace(NOT_COVERED_RE, '');
+  return rest === content ? content : rest.charAt(0).toUpperCase() + rest.slice(1);
+}
 // Passages remembered with an answer: a deck made later in the conversation starts from them.
 const SOURCES_KEPT = 8;
 
@@ -28,7 +39,7 @@ export async function answerQuestion({ question, history, docIds, onPhase = () =
   if (best < RELEVANCE_MIN) {
     onPhase('generating');
     const reply = await generateGeneralAnswer(question, history);
-    return { content: reply.content, grounded: false, figures: [], sourceIds: [] };
+    return { content: withoutRepeatedNote(reply.content, history), grounded: false, figures: [], sourceIds: [] };
   }
   // Strong matches bring their neighbours, so an answer sees the whole passage around a hit.
   const seen = new Set(topChunks.map((c) => c.id));
@@ -58,5 +69,6 @@ export async function answerQuestion({ question, history, docIds, onPhase = () =
     id: f.id, caption: f.caption, page: f.page, width: f.width, height: f.height, document_id: f.document_id,
   }));
   const sourceIds = finalChunks.filter((c) => c.level === 'leaf' || !c.level).slice(0, SOURCES_KEPT).map((c) => c.id);
-  return { content: llmResponse.content, grounded, figures, sourceIds };
+  const content = grounded ? llmResponse.content : withoutRepeatedNote(llmResponse.content, history);
+  return { content, grounded, figures, sourceIds };
 }

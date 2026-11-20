@@ -80,7 +80,8 @@ export async function generateGeneralAnswer(query, history) {
     `You are a knowledgeable assistant in a workspace where users chat about their documents. This question is ` +
     `not covered by the documents they selected. Start with one short sentence telling them, in the second person ` +
     `("Your documents don't cover this, but..."), then answer it helpfully ` +
-    `(for a greeting, thanks or small talk, skip that sentence and just reply naturally and briefly) ` +
+    `(for a greeting, thanks or small talk, or when this conversation has already established that the documents ` +
+    `don't cover the topic, skip that sentence and just reply) ` +
     `from general knowledge, concisely. Use plain text only: no markdown (no **, *, # or - bullets). For a list, ` +
     `write numbered lines (1. 2. 3.).`;
   try {
@@ -116,7 +117,11 @@ export async function generateAnswer(query, history, chunks, figures = []) {
     `the documents did not cover it; say briefly that you now have more detail.\n\n` +
     `How to answer:\n` +
     `- For factual questions about the documents, answer from the provided excerpts.\n` +
-    `- When the user asks "what do you think", asks for your opinion, or wants analysis/comparison/context beyond what the documents cover — give your own informed answer using your general knowledge. Briefly note what the document says first, then share your own perspective.\n` +
+    `- When the user asks "what do you think", asks for your opinion, or wants analysis/comparison/context beyond what the documents cover — give your own informed answer using your general knowledge. If the documents say something relevant, note it briefly first.\n` +
+    `- When the excerpts don't cover the question, say so in at most one short sentence ("Your documents don't ` +
+    `cover this, but...") and then answer. Never describe what the excerpts are about instead, and cite no pages ` +
+    `for it. If this conversation has already established that the documents don't cover the topic, skip that ` +
+    `sentence entirely and just answer.\n` +
     `- Do not refuse to answer or say "the document doesn't cover this" when the user is clearly asking for YOUR thoughts. They want a discussion, not a search engine.\n` +
     `- When the user asks to be taught something or to explain a topic, give a thorough answer using all relevant excerpts. Do not hold back content.\n` +
     `- For direct questions, be concise but substantive.\n` +
