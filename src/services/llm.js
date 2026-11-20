@@ -71,6 +71,24 @@ export async function rewriteQuery(history, originalQuery) {
 const NOT_IN_DOCS_MARKER = '[NOT IN DOCUMENTS]';
 const NOT_IN_DOCS_RE = /\[\s*NOT[ _]IN[ _]DOCUMENTS\s*\]/gi;
 
+/**
+ * Answers a question the user's documents don't cover (nothing in them came close), from general knowledge,
+ * without reading any excerpts.
+ */
+export async function generateGeneralAnswer(query, history) {
+  const systemPrompt =
+    `You are a knowledgeable assistant in a workspace where users chat about their documents. This question is ` +
+    `not covered by the documents they selected. Start with one short sentence telling them, in the second person ` +
+    `("Your documents don't cover this, but..."), then answer it helpfully ` +
+    `from general knowledge, concisely. Use plain text only: no markdown (no **, *, # or - bullets). For a list, ` +
+    `write numbered lines (1. 2. 3.).`;
+  try {
+    return await provider.chat([{ role: 'system', content: systemPrompt }, ...history, { role: 'user', content: query }], generateModel);
+  } catch (error) {
+    throw new AppError(`Answer generation failed: ${error.message}`, 503, error);
+  }
+}
+
 export async function generateAnswer(query, history, chunks, figures = []) {
   let listOfChunks = '';
   let totalScore = 0;
