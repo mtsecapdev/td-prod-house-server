@@ -168,7 +168,11 @@ export async function generateAnswer(query, history, chunks, figures = [], { who
     // The model flags answers the excerpts don't support. Retrieval scores can't: unanswerable questions about
     // the document's subject ("staff in Brazil?") score as high as answerable ones.
     const grounded = Boolean(wholeDocument) || !NOT_IN_DOCS_RE.test(llmResponse.content);
-    llmResponse.content = llmResponse.content.replace(NOT_IN_DOCS_RE, '').trimEnd();
+    llmResponse.content = llmResponse.content.replace(NOT_IN_DOCS_RE, '')
+      // The model sometimes copies an excerpt's label: "(p. 4 · 2.1 History)" becomes "(p. 4)", "[p. 22]" "(p. 22)".
+      .replace(/\((p\.\s*\d+(?:\s*[-–]\s*\d+)?)\s*·[^)]*\)/g, '($1)')
+      .replace(/\[(p\.\s*\d+)\]/g, '($1)')
+      .trimEnd();
     return { llmResponse, avgConfidenceScore, grounded };
   } catch (error) {
     throw new AppError(`Answer generation failed: ${error.message}`, 503, error);

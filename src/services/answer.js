@@ -38,6 +38,18 @@ const ALL_DOCS_RE = /\b(all|each|every|both|these|those) (?:of )?(?:the |my )?(d
 const WHOLE_DOC_CHARS = 64000;
 const SAMPLE_PASSAGES = 40;
 
+// A short instruction right after a whole-document answer ("include references", "make it shorter", "in bullet
+// points") changes that answer, so it reads the same documents again. A question ("what about the dividend?")
+// is a new search.
+const REVISION_RE = /^\s*(?:please\s+|pls\s+|can you\s+|could you\s+|now\s+|ok(?:ay)?,?\s+)?(?:include|add|make|shorten|expand|rewrite|redo|reformat|format|put|use|cite|give (?:it|me it|me that)|turn|condense|simplify|translate|drop|remove|keep|split|do (?:it|that)|with|without|in|as|more|less|shorter|longer|briefer)\b/i;
+const QUESTION_WORD_RE = /\b(what|which|who|whom|whose|why|when|where|how)\b/i;
+const REVISION_MAX_WORDS = 14;
+
+export function isRevision(question) {
+  return REVISION_RE.test(question) && !QUESTION_WORD_RE.test(question)
+    && question.trim().split(/\s+/).length <= REVISION_MAX_WORDS;
+}
+
 export function isWholeDocumentRequest(question) {
   if (PART_RE.test(question)) return false;
   return (SUMMARY_RE.test(question) && WHOLE_RE.test(question)) || COVERED_RE.test(question);
@@ -89,10 +101,14 @@ async function wholeDocumentChunks(docIds) {
 }
 
 /**
- * @param {{ question: string, history: {role, content}[], docIds: number[], onPhase?: (phase) => void }} input
- * @returns {Promise<{ content: string, grounded: boolean, figures: object[], sourceIds: number[] }>}
+ * @param {{ question: string, history: {role, content}[], docIds: number[], onPhase?: (phase) => void,
+ *   lastWholeDocument?: number[] }} input  lastWholeDocument: the documents the previous answer covered whole
+ * @returns {Promise<{ content: string, grounded: boolean, figures: object[], sourceIds: number[], wholeDocument?: number[] }>}
  */
-export async function answerQuestion({ question, history, docIds, onPhase = () => {} }) {
+export async function answerQuestion({ question, history, docIds, onPhase = () => {}, lastWholeDocument }) {
+  const again = lastWholeDocument?.filter((id) => docIds.includes(id));
+  if (again?.length && isRevision(question)) return answerWholeDocument(question, history, again, onPhase);
+
   onPhase('rewriting');
   const searchQuery = await rewriteQuery(history, question);
 
@@ -105,16 +121,7 @@ export async function answerQuestion({ question, history, docIds, onPhase = () =
     return { content: withoutRepeatedNote(reply.content, history), grounded: false, figures: [], sourceIds: [] };
   }
   if (isWholeDocumentRequest(question)) {
-    const { chunks, headings } = await wholeDocumentChunks(documentsMeant(question, docIds, topChunks));
-    onPhase('generating');
-    const { llmResponse } = await generateAnswer(
-      question, history, chunks.map((c) => ({ ...c, content: stripFigureMarkers(c.content) })), [], { wholeDocument: headings },
-    );
-    const leaves = chunks.filter((c) => c.level === 'leaf');
-    const step = Math.max(1, leaves.length / SOURCES_KEPT);
-    const sourceIds = [];
-    for (let k = 0; k < leaves.length && sourceIds.length < SOURCES_KEPT; k += step) sourceIds.push(leaves[Math.floor(k)].id);
-    return { content: llmResponse.content, grounded: true, figures: [], sourceIds };
+    return answerWholeDocument(question, history, documentsMeant(question, docIds, topChunks), onPhase);
   }
   // Strong matches bring their neighbours, so an answer sees the whole passage around a hit.
   const seen = new Set(topChunks.map((c) => c.id));
@@ -146,4 +153,17 @@ export async function answerQuestion({ question, history, docIds, onPhase = () =
   const sourceIds = finalChunks.filter((c) => c.level === 'leaf' || !c.level).slice(0, SOURCES_KEPT).map((c) => c.id);
   const content = grounded ? llmResponse.content : withoutRepeatedNote(llmResponse.content, history);
   return { content, grounded, figures, sourceIds };
+}
+
+async function answerWholeDocument(question, history, docIds, onPhase) {
+  const { chunks, headings } = await wholeDocumentChunks(docIds);
+  onPhase('generating');
+  const { llmResponse } = await generateAnswer(
+    question, history, chunks.map((c) => ({ ...c, content: stripFigureMarkers(c.content) })), [], { wholeDocument: headings },
+  );
+  const leaves = chunks.filter((c) => c.level === 'leaf');
+  const step = Math.max(1, leaves.length / SOURCES_KEPT);
+  const sourceIds = [];
+  for (let k = 0; k < leaves.length && sourceIds.length < SOURCES_KEPT; k += step) sourceIds.push(leaves[Math.floor(k)].id);
+  return { content: llmResponse.content, grounded: true, figures: [], sourceIds, wholeDocument: docIds };
 }

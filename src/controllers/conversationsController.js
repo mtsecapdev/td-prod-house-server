@@ -146,11 +146,17 @@ async function answer(conversation, previous, question, onPhase) {
     .filter((m) => m.kind === 'text' && !m.data?.skill && !m.data?.target)
     .slice(-HISTORY_MESSAGES)
     .map((m) => ({ role: m.role, content: m.content }));
-  const result = await answerQuestion({ question, history, docIds: conversation.doc_ids, onPhase });
+  const lastAnswer = previous.findLast((m) => m.role === 'assistant' && m.kind === 'text');
+  const result = await answerQuestion({
+    question, history, docIds: conversation.doc_ids, onPhase, lastWholeDocument: lastAnswer?.data?.whole_document,
+  });
   return {
     kind: 'text',
     content: result.content,
-    data: { figures: result.figures, grounded: result.grounded, source_ids: result.sourceIds },
+    data: {
+      figures: result.figures, grounded: result.grounded, source_ids: result.sourceIds,
+      ...(result.wholeDocument ? { whole_document: result.wholeDocument } : {}),
+    },
   };
 }
 
