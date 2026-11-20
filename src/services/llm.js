@@ -29,42 +29,82 @@ export async function requestEmbeddingBatch(inputs) {
 }
 
 const NUM_RECENT_MESSAGES = 4;
-const REWRITE_FORMAT = {
-  type: 'object',
-  properties: { query: { type: 'string' } },
-  required: ['query'],
-};
+// Earlier turns are shown shortened: a whole-report summary would otherwise fill the prompt.
+const RECENT_MESSAGE_CHARS = 700;
 
-export async function rewriteQuery(history, originalQuery) {
-  if (!history || history.length === 0) return originalQuery;
-
-  const recent = history
-    .slice(-NUM_RECENT_MESSAGES)
-    .map((m) => `${m.role}: ${m.content}`)
-    .join('\n');
-
-  const prompt =
-    `Given this conversation history:\n${recent}\n\n` +
-    `Rewrite the following query to be fully self-contained and specific, ` +
-    `suitable for a semantic document search. ` +
-    `Resolve references like "this" or "it" using the history, and keep everything the user is asking for ` +
-    `(for example a page, date or source). Keep it phrased as a question if it is one. ` +
-    `Return only the rewritten query, no explanation.\n\n` +
-    `Query: ${originalQuery}`;
-
+/**
+ * Reads a chat message once, before searching: the search query it needs (self-contained, using the
+ * conversation), whether it wants a whole document covered, whether it only asks to redo the previous answer, and
+ * whether it means every selected document. One short structured call (~0.5 s). The conversation goes in as real
+ * turns, so a reply like "more detail please" reads as a reply to the last answer; each choice is its own yes/no
+ * question, which this small model judges better than one choice among three.
+ * @returns {Promise<{ query: string, scope: 'specific'|'whole_document'|'change_last_answer', smallTalk: boolean, aboutDocuments: boolean,
+ *   allDocuments: boolean }>}
+ */
+export async function understandMessage(history, message, { canChangeLast = false, documents = [] } = {}) {
+  const recent = (history || []).slice(-NUM_RECENT_MESSAGES).map((m) => ({
+    role: m.role,
+    content: m.content.length > RECENT_MESSAGE_CHARS ? `${m.content.slice(0, RECENT_MESSAGE_CHARS)}...` : m.content,
+  }));
+  const system =
+    `You read the user's next message in a workspace where they chat about their uploaded documents. Do not ` +
+    `answer it.\n` +
+    (documents.length
+      ? `Their documents:\n${documents.map((d) => `- ${d.name}${d.overview ? `: ${d.overview.replace(/\s+/g, ' ')}...` : ''}`).join('\n')}\n`
+      : '') +
+    `Return JSON:\n` +
+    (canChangeLast
+      ? `- redo_previous_answer: true when the message only tells you how to redo your previous answer, with no ` +
+        `new question: add references, sources, citations or page numbers; make it shorter, longer or more ` +
+        `detailed; use bullets, a table or another language; or be sure it includes something. False when it asks ` +
+        `something new (a fact, a topic, "why", "who", "what about X").\n`
+      : '') +
+    `- whole_document: true when the user wants a whole document taken in: its summary, gist, overview or main ` +
+    `points, what it is about or covers, or a briefing on it; also true when they want each or all of their ` +
+    `documents summarised. False when they ask about particular facts or topics: a summary or overview OF ONE ` +
+    `topic, policy, site, section or part (e.g. "overview of the hiring policy", "summary of chapter 3") is ` +
+    `false.\n` +
+    `- small_talk: true for greetings, thanks, goodbyes and chit-chat, even in the middle of a conversation.\n` +
+    `- about_documents: true when the message could be answered from their documents or asks about something ` +
+    `in them or in this conversation (names, roles, figures, terms, sites, topics), even if it is short or uses ` +
+    `an abbreviation. False for small talk and for questions plainly unrelated to the documents (a recipe, ` +
+    `sport, coding help).\n` +
+    `- all_documents: true when they want all of their documents covered, or ask what documents they have. ` +
+    `False when it is about one document.\n` +
+    `- query: their message rewritten as a self-contained search query for the documents. Resolve "this", "it" ` +
+    `or "that document" from the conversation, name the company or document the conversation is about, spell ` +
+    `out abbreviations alongside them ("CFO (Chief Financial Officer)"), and keep everything asked for (a page, ` +
+    `date or source).\n` +
+    `Messages can be in any language.`;
+  const properties = {
+    ...(canChangeLast ? { redo_previous_answer: { type: 'boolean' } } : {}),
+    whole_document: { type: 'boolean' },
+    small_talk: { type: 'boolean' },
+    about_documents: { type: 'boolean' },
+    all_documents: { type: 'boolean' },
+    query: { type: 'string' },
+  };
+  const format = { type: 'object', properties, required: Object.keys(properties) };
   try {
-    // With think:false qwen3 still reasons in plain text (1000+ tokens, 20-50 s) and that ramble became the
-    // search query. A JSON schema forces a single short answer (~0.5 s).
-    const raw = await provider.generate(prompt, rewriteModel, { think: false, format: REWRITE_FORMAT });
-    let rewritten = '';
-    try {
-      rewritten = String(JSON.parse(raw).query ?? '').trim();
-    } catch {
-      // fall back to the user's own words
-    }
-    return rewritten || originalQuery;
+    // With think:false qwen3 still reasons in plain text unless a JSON schema forces a short answer.
+    const reply = await provider.chat(
+      [{ role: 'system', content: system }, ...recent, { role: 'user', content: message }],
+      rewriteModel, { think: false, format },
+    );
+    let parsed = {};
+    try { parsed = JSON.parse(reply.content); } catch { /* fall back below */ }
+    const scope = canChangeLast && parsed.redo_previous_answer === true ? 'change_last_answer'
+      : parsed.whole_document === true ? 'whole_document' : 'specific';
+    return {
+      // Without history there is nothing to resolve: search with the user's own words.
+      query: (history?.length && String(parsed.query ?? '').trim()) || message,
+      scope,
+      smallTalk: parsed.small_talk === true,
+      aboutDocuments: parsed.small_talk !== true && parsed.about_documents !== false,
+      allDocuments: parsed.all_documents === true,
+    };
   } catch (error) {
-    throw new AppError(`Query rewrite failed: ${error.message}`, 503, error);
+    throw new AppError(`Reading the message failed: ${error.message}`, 503, error);
   }
 }
 
@@ -75,15 +115,16 @@ const NOT_IN_DOCS_RE = /\[\s*NOT[ _]IN[ _]DOCUMENTS\s*\]/gi;
  * Answers a question the user's documents don't cover (nothing in them came close), from general knowledge,
  * without reading any excerpts.
  */
-export async function generateGeneralAnswer(query, history) {
-  const systemPrompt =
-    `You are a knowledgeable assistant in a workspace where users chat about their documents. This question is ` +
-    `not covered by the documents they selected. Start with one short sentence telling them, in the second person ` +
-    `("Your documents don't cover this, but..."), then answer it helpfully ` +
-    `(for a greeting, thanks or small talk, or when this conversation has already established that the documents ` +
-    `don't cover the topic, skip that sentence and just reply) ` +
-    `from general knowledge, concisely. Use plain text only: no markdown (no **, *, # or - bullets). For a list, ` +
-    `write numbered lines (1. 2. 3.).`;
+export async function generateGeneralAnswer(query, history, { smallTalk = false } = {}) {
+  const systemPrompt = smallTalk
+    ? `You are a friendly assistant in a workspace where users chat about their documents. Reply naturally and ` +
+      `briefly, in a sentence or two, in plain text.`
+    : `You are a knowledgeable assistant in a workspace where users chat about their documents. This question is ` +
+      `not covered by the documents they selected. Start with one short sentence telling them, in the second ` +
+      `person ("Your documents don't cover this, but..."), then answer it helpfully (when this conversation has ` +
+      `already established that the documents don't cover the topic, skip that sentence and just reply) ` +
+      `from general knowledge, concisely. Use plain text only: no markdown (no **, *, # or - bullets). For a ` +
+      `list, write numbered lines (1. 2. 3.).`;
   try {
     return await provider.chat([{ role: 'system', content: systemPrompt }, ...history, { role: 'user', content: query }], generateModel);
   } catch (error) {

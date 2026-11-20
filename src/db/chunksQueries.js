@@ -117,6 +117,17 @@ export async function countSectionsDb(docIds) {
   return res.rows[0].n;
 }
 
+/** Each document's name and the start of its overview (what the documents are about, for reading a message). */
+export async function getDocumentOverviewsDb(docIds, chars = 240) {
+  const res = await pool.query(
+    `SELECT d.id, d.name, left(c.content, $2) AS overview
+     FROM documents d LEFT JOIN chunks c ON c.document_id = d.id AND c.level = 'document'
+     WHERE d.id = ANY($1) ORDER BY d.id`,
+    [docIds, chars],
+  );
+  return res.rows;
+}
+
 /** Every section summary of the documents in reading order (for answering about a whole document). */
 export async function getSectionSummariesDb(docIds) {
   const res = await pool.query(

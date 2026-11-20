@@ -1,16 +1,19 @@
 // Answers a question from the conversation's documents (retrieval-augmented), as the chat does.
 import config from '../config.js';
-import { generateAnswer, generateGeneralAnswer, requestEmbedding, rewriteQuery } from './llm.js';
-import { getSimilarChunksDb, getNeighborChunksDb, getSectionSummariesDb, getAllPassagesDb } from '../db/chunksQueries.js';
+import { generateAnswer, generateGeneralAnswer, requestEmbedding, understandMessage } from './llm.js';
+import { getSimilarChunksDb, getNeighborChunksDb, getSectionSummariesDb, getAllPassagesDb, getDocumentOverviewsDb } from '../db/chunksQueries.js';
 import { figuresInChunks, figuresMentioned, stripFigureMarkers } from './figures.js';
 
 const EXPAND_THRESHOLD = 0.6;
-// Below this best-match score nothing in the documents is close, so the model answers from general knowledge
-// without reading excerpts. Calibrated on 21 questions over three documents: answerable ones scored 0.38-0.79,
-// unrelated ones (a cake recipe, Python, "hi") 0.26-0.33. Loosely worded real questions score close to unrelated
-// ones ("How did the defence business do?" 0.38, a running question 0.37), so the line stays low: it never
-// skipped an answerable question in the test, and caught 6 of 7 unrelated ones.
-const RELEVANCE_MIN = 0.35;
+// Whether to read the documents: small talk never does. Otherwise the search runs (it is cheap), and the answer
+// skips the documents only when the model judged the message unrelated AND nothing in them scored above
+// UNRELATED_MAX, or nothing came close at all. Neither signal is enough alone: the model can't know every detail a
+// document holds ("which site has the most women" looked unrelated to it; it scored 0.36), and scores overlap
+// ("which company has the most female users", not in the report, also scored 0.35). Unrelated questions (recipes,
+// sport, wifi, coding) scored 0.28-0.29. Anything in between is read by the answering model, which flags answers
+// the documents don't support.
+const UNRELATED_MAX = 0.30;
+const NOTHING_CLOSE = 0.25;
 const NOT_COVERED_RE = /^\s*your documents (?:don't|do not) cover (?:this|that)[^,.:]*(?:,\s*but\s*|[.:]\s*)/i;
 
 /**
@@ -25,39 +28,14 @@ function withoutRepeatedNote(content, history) {
 // Passages remembered with an answer: a deck made later in the conversation starts from them.
 const SOURCES_KEPT = 8;
 
-// "Summarise the whole report", "what was covered in that document": the best few passages can't answer these,
-// so the answer reads the document's section summaries and passages instead. A summary of one part
-// ("summarise section 3", "...the risks") stays a normal search.
-const SUMMARY_RE = /\b(summar(?:y|ies|ise|ize|ised|ized)|overview|recap|outline|tl;?dr|key (?:points|takeaways)|go through)\b/i;
-const WHOLE_RE = /\b(whole|entire|full|comprehensive|complete|everything|all of it|documents?|docs?|reports?|pdfs?|files?|manuals?|guides?|papers?|handbooks?)\b/i;
-const COVERED_RE = /\bwhat(?:'s| is| was| does| did)?\b.*\b(?:covered|cover|in (?:the|this|that|it)\b.*\b(?:document|doc|report|pdf|file|manual))\b/i;
-const PART_RE = /\b(section|chapter|appendix|page|part)\b/i;
-const ALL_DOCS_RE = /\b(all|each|every|both|these|those) (?:of )?(?:the |my )?(documents|docs|reports|files|manuals|pdfs)\b/i;
 // Passages for a whole-document answer, in characters (~16k tokens; with the section summaries, the history and
 // the reply it stays inside the 32k context). Longer documents are sampled evenly and shortened.
 const WHOLE_DOC_CHARS = 64000;
 const SAMPLE_PASSAGES = 40;
 
-// A short instruction right after a whole-document answer ("include references", "make it shorter", "in bullet
-// points") changes that answer, so it reads the same documents again. A question ("what about the dividend?")
-// is a new search.
-const REVISION_RE = /^\s*(?:please\s+|pls\s+|can you\s+|could you\s+|now\s+|ok(?:ay)?,?\s+)?(?:include|add|make|shorten|expand|rewrite|redo|reformat|format|put|use|cite|give (?:it|me it|me that)|turn|condense|simplify|translate|drop|remove|keep|split|do (?:it|that)|with|without|in|as|more|less|shorter|longer|briefer)\b/i;
-const QUESTION_WORD_RE = /\b(what|which|who|whom|whose|why|when|where|how)\b/i;
-const REVISION_MAX_WORDS = 14;
-
-export function isRevision(question) {
-  return REVISION_RE.test(question) && !QUESTION_WORD_RE.test(question)
-    && question.trim().split(/\s+/).length <= REVISION_MAX_WORDS;
-}
-
-export function isWholeDocumentRequest(question) {
-  if (PART_RE.test(question)) return false;
-  return (SUMMARY_RE.test(question) && WHOLE_RE.test(question)) || COVERED_RE.test(question);
-}
-
-/** The documents a whole-document request is about: all, when it says so; otherwise the ones the search matched best. */
-function documentsMeant(question, docIds, topChunks) {
-  if (docIds.length <= 1 || ALL_DOCS_RE.test(question)) return docIds;
+/** The documents a whole-document request is about: all when asked, otherwise the ones the search matched best. */
+function documentsMeant(allDocuments, docIds, topChunks) {
+  if (docIds.length <= 1 || allDocuments || !topChunks.length) return docIds;
   const bestByDoc = new Map();
   for (const c of topChunks) bestByDoc.set(c.document_id, Math.max(bestByDoc.get(c.document_id) ?? 0, c.similarity));
   const top = Math.max(...bestByDoc.values());
@@ -106,22 +84,23 @@ async function wholeDocumentChunks(docIds) {
  * @returns {Promise<{ content: string, grounded: boolean, figures: object[], sourceIds: number[], wholeDocument?: number[] }>}
  */
 export async function answerQuestion({ question, history, docIds, onPhase = () => {}, lastWholeDocument }) {
-  const again = lastWholeDocument?.filter((id) => docIds.includes(id));
-  if (again?.length && isRevision(question)) return answerWholeDocument(question, history, again, onPhase);
-
+  const again = (lastWholeDocument || []).filter((id) => docIds.includes(id));
   onPhase('rewriting');
-  const searchQuery = await rewriteQuery(history, question);
+  const documents = await getDocumentOverviewsDb(docIds);
+  const { query: searchQuery, scope, smallTalk, aboutDocuments, allDocuments } = await understandMessage(
+    history, question, { canChangeLast: again.length > 0, documents },
+  );
+  if (scope === 'change_last_answer' && again.length) return answerWholeDocument(question, history, again, onPhase);
+
+  if (smallTalk && scope === 'specific') return answerFromGeneralKnowledge(question, history, true, onPhase);
 
   onPhase('searching');
   const topChunks = await getSimilarChunksDb(await requestEmbedding(searchQuery), config.rag.topK, docIds, searchQuery);
+  // A whole-document request skips the relevance gate: "give me the gist" matches no passage closely.
+  if (scope === 'whole_document') return answerWholeDocument(question, history, documentsMeant(allDocuments, docIds, topChunks), onPhase);
   const best = Math.max(0, ...topChunks.map((c) => c.similarity));
-  if (best < RELEVANCE_MIN) {
-    onPhase('generating');
-    const reply = await generateGeneralAnswer(question, history);
-    return { content: withoutRepeatedNote(reply.content, history), grounded: false, figures: [], sourceIds: [] };
-  }
-  if (isWholeDocumentRequest(question)) {
-    return answerWholeDocument(question, history, documentsMeant(question, docIds, topChunks), onPhase);
+  if (best < NOTHING_CLOSE || (!aboutDocuments && best < UNRELATED_MAX)) {
+    return answerFromGeneralKnowledge(question, history, false, onPhase);
   }
   // Strong matches bring their neighbours, so an answer sees the whole passage around a hit.
   const seen = new Set(topChunks.map((c) => c.id));
@@ -166,4 +145,10 @@ async function answerWholeDocument(question, history, docIds, onPhase) {
   const sourceIds = [];
   for (let k = 0; k < leaves.length && sourceIds.length < SOURCES_KEPT; k += step) sourceIds.push(leaves[Math.floor(k)].id);
   return { content: llmResponse.content, grounded: true, figures: [], sourceIds, wholeDocument: docIds };
+}
+
+async function answerFromGeneralKnowledge(question, history, smallTalk, onPhase) {
+  onPhase('generating');
+  const reply = await generateGeneralAnswer(question, history, { smallTalk });
+  return { content: withoutRepeatedNote(reply.content, history), grounded: false, smallTalk, figures: [], sourceIds: [] };
 }
