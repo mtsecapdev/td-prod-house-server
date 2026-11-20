@@ -1,7 +1,7 @@
 // Answers a question from the conversation's documents (retrieval-augmented), as the chat does.
 import config from '../config.js';
 import { generateAnswer, generateGeneralAnswer, requestEmbedding, rewriteQuery } from './llm.js';
-import { getSimilarChunksDb, getNeighborChunksDb } from '../db/chunksQueries.js';
+import { getSimilarChunksDb, getNeighborChunksDb, getSectionSummariesDb, getAllPassagesDb } from '../db/chunksQueries.js';
 import { figuresInChunks, figuresMentioned, stripFigureMarkers } from './figures.js';
 
 const EXPAND_THRESHOLD = 0.6;
@@ -25,6 +25,69 @@ function withoutRepeatedNote(content, history) {
 // Passages remembered with an answer: a deck made later in the conversation starts from them.
 const SOURCES_KEPT = 8;
 
+// "Summarise the whole report", "what was covered in that document": the best few passages can't answer these,
+// so the answer reads the document's section summaries and passages instead. A summary of one part
+// ("summarise section 3", "...the risks") stays a normal search.
+const SUMMARY_RE = /\b(summar(?:y|ies|ise|ize|ised|ized)|overview|recap|outline|tl;?dr|key (?:points|takeaways)|go through)\b/i;
+const WHOLE_RE = /\b(whole|entire|full|comprehensive|complete|everything|all of it|documents?|docs?|reports?|pdfs?|files?|manuals?|guides?|papers?|handbooks?)\b/i;
+const COVERED_RE = /\bwhat(?:'s| is| was| does| did)?\b.*\b(?:covered|cover|in (?:the|this|that|it)\b.*\b(?:document|doc|report|pdf|file|manual))\b/i;
+const PART_RE = /\b(section|chapter|appendix|page|part)\b/i;
+const ALL_DOCS_RE = /\b(all|each|every|both|these|those) (?:of )?(?:the |my )?(documents|docs|reports|files|manuals|pdfs)\b/i;
+// Passages for a whole-document answer, in characters (~16k tokens; with the section summaries, the history and
+// the reply it stays inside the 32k context). Longer documents are sampled evenly and shortened.
+const WHOLE_DOC_CHARS = 64000;
+const SAMPLE_PASSAGES = 40;
+
+export function isWholeDocumentRequest(question) {
+  if (PART_RE.test(question)) return false;
+  return (SUMMARY_RE.test(question) && WHOLE_RE.test(question)) || COVERED_RE.test(question);
+}
+
+/** The documents a whole-document request is about: all, when it says so; otherwise the ones the search matched best. */
+function documentsMeant(question, docIds, topChunks) {
+  if (docIds.length <= 1 || ALL_DOCS_RE.test(question)) return docIds;
+  const bestByDoc = new Map();
+  for (const c of topChunks) bestByDoc.set(c.document_id, Math.max(bestByDoc.get(c.document_id) ?? 0, c.similarity));
+  const top = Math.max(...bestByDoc.values());
+  return [...bestByDoc].filter(([, s]) => s >= top - 0.05).map(([id]) => id);
+}
+
+// The document's own top-level headings ("3. Financial Performance", "Appendix F. ..."), as a checklist: without
+// it the model drops sections whose text sits inside a passage that starts under another heading.
+const HEADING_LINE_RE = /^#{1,4}\s+(.+)$/gm;
+const TOP_LEVEL_RE = /^(?:\d+\.\s|appendix\s+[a-z0-9]+\b|annex\s|chapter\s)/i;
+const MAX_HEADINGS = 40;
+
+function documentHeadings(passages) {
+  const all = [];
+  for (const p of passages) for (const m of p.content.matchAll(HEADING_LINE_RE)) {
+    const h = m[1].trim();
+    if (!all.includes(h)) all.push(h);
+  }
+  const top = all.filter((h) => TOP_LEVEL_RE.test(h));
+  return (top.length >= 3 ? top : all).slice(0, MAX_HEADINGS);
+}
+
+async function wholeDocumentChunks(docIds) {
+  const [sections, passages] = await Promise.all([getSectionSummariesDb(docIds), getAllPassagesDb(docIds)]);
+  const total = passages.reduce((n, p) => n + p.content.length, 0);
+  let picked = passages;
+  if (total > WHOLE_DOC_CHARS) {
+    const step = passages.length / SAMPLE_PASSAGES;
+    picked = [];
+    for (let k = 0; k < passages.length && picked.length < SAMPLE_PASSAGES; k += Math.max(1, step)) picked.push(passages[Math.floor(k)]);
+    const each = Math.floor(WHOLE_DOC_CHARS / picked.length);
+    picked = picked.map((p) => ({ ...p, content: p.content.slice(0, each) }));
+  }
+  return {
+    headings: documentHeadings(passages),
+    chunks: [
+      ...sections.map((s) => ({ ...s, content: s.content.replace(/^Summary:[^\n]*\n?/, ''), similarity: 1 })),
+      ...picked.map((p) => ({ ...p, level: 'leaf', similarity: 1 })),
+    ],
+  };
+}
+
 /**
  * @param {{ question: string, history: {role, content}[], docIds: number[], onPhase?: (phase) => void }} input
  * @returns {Promise<{ content: string, grounded: boolean, figures: object[], sourceIds: number[] }>}
@@ -40,6 +103,18 @@ export async function answerQuestion({ question, history, docIds, onPhase = () =
     onPhase('generating');
     const reply = await generateGeneralAnswer(question, history);
     return { content: withoutRepeatedNote(reply.content, history), grounded: false, figures: [], sourceIds: [] };
+  }
+  if (isWholeDocumentRequest(question)) {
+    const { chunks, headings } = await wholeDocumentChunks(documentsMeant(question, docIds, topChunks));
+    onPhase('generating');
+    const { llmResponse } = await generateAnswer(
+      question, history, chunks.map((c) => ({ ...c, content: stripFigureMarkers(c.content) })), [], { wholeDocument: headings },
+    );
+    const leaves = chunks.filter((c) => c.level === 'leaf');
+    const step = Math.max(1, leaves.length / SOURCES_KEPT);
+    const sourceIds = [];
+    for (let k = 0; k < leaves.length && sourceIds.length < SOURCES_KEPT; k += step) sourceIds.push(leaves[Math.floor(k)].id);
+    return { content: llmResponse.content, grounded: true, figures: [], sourceIds };
   }
   // Strong matches bring their neighbours, so an answer sees the whole passage around a hit.
   const seen = new Set(topChunks.map((c) => c.id));

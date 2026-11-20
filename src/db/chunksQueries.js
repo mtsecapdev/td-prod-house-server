@@ -117,6 +117,16 @@ export async function countSectionsDb(docIds) {
   return res.rows[0].n;
 }
 
+/** Every section summary of the documents in reading order (for answering about a whole document). */
+export async function getSectionSummariesDb(docIds) {
+  const res = await pool.query(
+    `SELECT id, document_id, content, page, heading, level FROM chunks
+     WHERE document_id = ANY($1) AND level = 'section' ORDER BY document_id, id`,
+    [docIds],
+  );
+  return res.rows;
+}
+
 /** Every passage of the documents in reading order (for planning a whole-document deck). */
 export async function getAllPassagesDb(docIds) {
   const res = await pool.query(

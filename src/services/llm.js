@@ -91,7 +91,7 @@ export async function generateGeneralAnswer(query, history) {
   }
 }
 
-export async function generateAnswer(query, history, chunks, figures = []) {
+export async function generateAnswer(query, history, chunks, figures = [], { wholeDocument = false } = {}) {
   let listOfChunks = '';
   let totalScore = 0;
 
@@ -141,10 +141,20 @@ export async function generateAnswer(query, history, chunks, figures = []) {
         figures.map((f) => `  * ${f.caption || 'Untitled figure'} (p. ${f.page ?? '?'})` +
           (f.labels ? `. Text in it: ${f.labels}` : '')).join('\n') + '\n'
       : '') +
-    `- Last step, always: decide whether the excerpts contain the answer. If they do not (the question is about ` +
-    `something the documents don't mention, or is unrelated to them, such as general trivia, and you answer from ` +
-    `general knowledge or say it isn't covered), end your reply with ${NOT_IN_DOCS_MARKER} on its own line. ` +
-    `Do not add it when the excerpts answer the question.\n\n` +
+    (wholeDocument
+      ? `- The excerpts below are the whole document, in reading order: first a summary of each section, then ` +
+        `its passages. The user wants it covered as a whole. Go through every section in the document's order, ` +
+        `giving each its key facts and figures briefly (a short heading line per section, then numbered points). ` +
+        `Skip none, including appendices. Take each page number from the label of the excerpt the fact comes ` +
+        `from, and copy numbers exactly as written.` +
+        (Array.isArray(wholeDocument) && wholeDocument.length
+          ? ` Its sections, in order (a heading may appear in the middle of a passage labelled with another; give ` +
+            `every one of them its own part of the answer):\n${wholeDocument.map((h) => `  * ${h}`).join('\n')}`
+          : '') + `\n\n`
+      : `- Last step, always: decide whether the excerpts contain the answer. If they do not (the question is about ` +
+        `something the documents don't mention, or is unrelated to them, such as general trivia, and you answer from ` +
+        `general knowledge or say it isn't covered), end your reply with ${NOT_IN_DOCS_MARKER} on its own line. ` +
+        `Do not add it when the excerpts answer the question.\n\n`) +
     `Document excerpts:\n` +
     listOfChunks;
 
@@ -155,7 +165,7 @@ export async function generateAnswer(query, history, chunks, figures = []) {
     );
     // The model flags answers the excerpts don't support. Retrieval scores can't: unanswerable questions about
     // the document's subject ("staff in Brazil?") score as high as answerable ones.
-    const grounded = !NOT_IN_DOCS_RE.test(llmResponse.content);
+    const grounded = Boolean(wholeDocument) || !NOT_IN_DOCS_RE.test(llmResponse.content);
     llmResponse.content = llmResponse.content.replace(NOT_IN_DOCS_RE, '').trimEnd();
     return { llmResponse, avgConfidenceScore, grounded };
   } catch (error) {
