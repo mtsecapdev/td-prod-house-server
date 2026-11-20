@@ -8,7 +8,7 @@ import { writeItem } from './writer.js';
 import { randomBytes } from 'node:crypto';
 import { getFigureByIdDb } from '../../db/figuresQueries.js';
 import { getChunksWithFigureDb } from '../../db/chunksQueries.js';
-import { stripFigureMarkers } from '../figures.js';
+import { readablePassage } from '../figures.js';
 
 function indexKey(kind) {
   return kind.name === 'deck' ? 'slide_index' : 'section_index';
@@ -107,7 +107,7 @@ export async function placeFigure(generationId, figureId, index) {
     figure_id: figure.id,
     sources: passages.map((p) => ({
       chunk_id: p.id, page: p.page, heading: p.heading,
-      preview: stripFigureMarkers(p.content).replace(/\s+/g, ' ').trim().slice(0, 220), added: true,
+      preview: readablePassage(p.content).replace(/\s+/g, ' ').trim().slice(0, 220), added: true,
     })),
     content: null,
   };

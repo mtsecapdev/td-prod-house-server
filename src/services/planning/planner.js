@@ -12,7 +12,7 @@ import { generateStructured, requestEmbedding, requestEmbeddingBatch } from '../
 import { getAllPassagesDb, getChunksByIdsDb, getDocumentMapDb, getSourcePassagesDb } from '../../db/chunksQueries.js';
 import { kindOf, briefBlock, storylineBlock, itemCount } from './kinds.js';
 import { chooseLayouts, finishLayouts } from './layouts.js';
-import { stripFigureMarkers, figureNumber } from '../figures.js';
+import { stripFigureMarkers, readablePassage, figureNumber } from '../figures.js';
 import { listFiguresDb } from '../../db/figuresQueries.js';
 
 const { generateModel } = config.ollama;
@@ -163,7 +163,7 @@ export async function planOutline(generation) {
     id: newItemId(kind),
     title: cleanTitle(raw.title),
     // Passage ids belong in source_ids; the model sometimes leaves them in the text ("… [2463]").
-    bullets: (raw.bullets || []).map((b) => b.replace(/\s*\[\d+(?:\s*,\s*\d+)*\]/g, '').trim()).filter(Boolean),
+    bullets: (raw.bullets || []).map((b) => b.replace(/\s*\[(?:p\. )?\d+(?:\s*,\s*\d+)*\]/g, '').trim()).filter(Boolean),
     // The passages this item was planned from become its sources.
     sources: [...new Set(raw.source_ids || [])].filter((id) => byId.has(id))
       .slice(0, kind.sourcesPerItem + 2).map((id) => toSource(byId.get(id))),
@@ -405,7 +405,7 @@ function toSource(row, added = false) {
     chunk_id: row.id,
     page: row.page,
     heading: row.heading,
-    preview: stripFigureMarkers(row.content).replace(/\s+/g, ' ').trim().slice(0, PREVIEW_CHARS),
+    preview: readablePassage(row.content).replace(/\s+/g, ' ').trim().slice(0, PREVIEW_CHARS),
     added, // true when the user added it; kept when sources are found again
   };
 }

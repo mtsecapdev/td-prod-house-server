@@ -128,6 +128,8 @@ export async function generateAnswer(query, history, chunks, figures = [], { who
     `- Each excerpt is labelled with its page and section, e.g. [p. 4 · 2.4 Group at a glance]. ` +
     `When you state a fact from the documents, cite only its page number in parentheses, e.g. (p. 4). ` +
     `When the user asks where something is stated, list the pages and section names. ` +
+    `An excerpt can run onto a later page: a line like [p. 22] inside it means the text after it is on page 22, ` +
+    `so cite that page for it. ` +
     `Never mention excerpts, chunks or their labels; the user cannot see them.\n` +
     `- Use plain text only: no markdown (no **, *, # or - bullets). For a list, write numbered lines (1. 2. 3.).\n` +
     (figures.length

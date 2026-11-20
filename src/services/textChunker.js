@@ -33,11 +33,38 @@ export async function splitMarkdown(markdown, pageStarts = []) {
     }
     searchFrom = offset + 1; // chunks are in order; overlap means the next one starts after this start
     return {
-      text,
+      text: markPages(text, markdown, offset, pageStarts),
       page: lastAtOrBefore(pageStarts, offset)?.page ?? null,
       heading: lastAtOrBefore(headings, offset)?.text ?? null,
     };
   });
+}
+
+/**
+ * A chunk is labelled with the page it starts on, but can run onto the next page ("Talent, p. 21" also held the
+ * p. 22 outlook), so answers cited the wrong page. Each page that starts inside the chunk gets a "[p. N]" line
+ * where it begins. Inside a table the mark waits until the table ends, so the table stays intact.
+ */
+export const PAGE_MARK_RE = /^\[p\. \d+\]\n?/gm;
+
+function markPages(text, markdown, offset, pageStarts) {
+  const end = offset + text.length;
+  let out = text;
+  for (const ps of pageStarts) {
+    if (ps.offset <= offset || ps.offset >= end) continue;
+    const probe = markdown.slice(ps.offset, ps.offset + 60).trim().split('\n')[0].slice(0, 40);
+    let at = probe ? out.indexOf(probe) : -1;
+    if (at === -1) continue;
+    at = out.lastIndexOf('\n', at - 1) + 1; // start of that line
+    while (/^\s*\|/.test(out.slice(at))) { // a table row: move past the table
+      const next = out.indexOf('\n', at);
+      if (next === -1) { at = -1; break; }
+      at = next + 1;
+    }
+    if (at <= 0 || at >= out.length) continue;
+    out = `${out.slice(0, at)}[p. ${ps.page}]\n${out.slice(at)}`;
+  }
+  return out;
 }
 
 // The splitter can normalise whitespace where it joins pieces, so match on the chunk's opening text.
@@ -65,7 +92,7 @@ function extractHeading(text) {
 const FIGURE_MARKER_RE = /<!-- figure:[a-f0-9]{16} -->\n?/g;
 
 export function enrichTextForEmbedding(rawText, { page, heading } = {}) {
-  const text = String(rawText).replace(FIGURE_MARKER_RE, '');
+  const text = String(rawText).replace(FIGURE_MARKER_RE, '').replace(PAGE_MARK_RE, '');
   const parts = [];
   if (heading) parts.push(heading);
   if (page != null) parts.push(`Page ${page}`);

@@ -45,6 +45,11 @@ export function stripFigureMarkers(text) {
   return String(text || '').replace(MARKER_RE, '');
 }
 
+/** Passage text for people to read (previews): no figure markers or "[p. N]" page marks. */
+export function readablePassage(text) {
+  return stripFigureMarkers(text).replace(/^\[p\. \d+\]\n?/gm, '');
+}
+
 /** The figures contained in a set of passages ({ document_id, content }). */
 export async function figuresInChunks(chunks) {
   const pairs = [];

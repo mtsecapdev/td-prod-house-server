@@ -165,6 +165,16 @@ function oneLineFields(content) {
   return out;
 }
 
+// Passages mark page changes with "[p. N]" lines; they are for the model, never for the slide.
+const PAGE_MARK_IN_TEXT_RE = /\s*\[p\. \d+\]/g;
+
+function withoutPageMarks(value) {
+  if (typeof value === 'string') return value.replace(PAGE_MARK_IN_TEXT_RE, '').trim();
+  if (Array.isArray(value)) return value.map(withoutPageMarks);
+  if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, withoutPageMarks(v)]));
+  return value;
+}
+
 /** A subheading the model repeated is dropped, so the paragraph continues under the one before. */
 function distinctSubheadings(content) {
   if (!Array.isArray(content?.paragraphs)) return content;
@@ -236,7 +246,7 @@ async function writeContent(generation, index, { note, type: typeOverride } = {}
   }
 
   const written = await writeAs(generation, kind, index, type, { note });
-  const content = oneLineFields(distinctSubheadings(written.content));
+  const content = oneLineFields(distinctSubheadings(withoutPageMarks(written.content)));
   const { sources } = written;
   if (type === 'key_stats' || type === 'stat_focus') return checkStatistics(generation, kind, index, type, { content, sources }, note);
   if (type !== 'diagram') return { type, content, sources };
