@@ -43,6 +43,10 @@ function sourceNumbers(text) {
   }
   const lower = String(text).toLowerCase();
   NUMBER_WORDS.forEach((w, i) => { if (new RegExp(`\\b${w}\\b`).test(lower)) nums.add(String(i)); });
+  // "roughly half" written as 50%.
+  for (const [w, n] of [['half', '50'], ['quarter', '25'], ['third', '33'], ['double', '2'], ['twice', '2']]) {
+    if (new RegExp(`\\b${w}\\b`).test(lower)) nums.add(n);
+  }
   return nums;
 }
 

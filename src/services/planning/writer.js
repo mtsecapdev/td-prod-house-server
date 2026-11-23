@@ -86,8 +86,23 @@ function writtenBlock(kind, items, uptoIndex) {
   return lines.length ? lines.join('\n') : '(none yet)';
 }
 
+// Passages found by searching on the item's title and points, added to those it was planned with.
+const SEARCHED_EXTRA = 2;
+
 async function sourcesFor(generation, kind, item) {
-  if (item.sources?.length) return { rows: await getChunksByIdsDb(item.sources.map((s) => s.chunk_id)), sources: item.sources };
+  if (item.sources?.length) {
+    const planned = await getChunksByIdsDb(item.sources.map((s) => s.chunk_id));
+    if (kind.noSourceTypes.includes(item[kind.typeKey]) || !generation.source_document_ids?.length) {
+      return { rows: planned, sources: item.sources };
+    }
+    // The planner sometimes attaches the wrong passages (a "Product Portfolio" slide planned from the finance and
+    // sustainability pages); the best matches for what the item is about come too, so it can be written in full.
+    const q = sourceQuery(item);
+    const have = new Set(planned.map((r) => r.id));
+    const found = (await getSourcePassagesDb(await requestEmbedding(q), SEARCHED_EXTRA + planned.length, generation.source_document_ids, q))
+      .filter((r) => !have.has(r.id)).slice(0, SEARCHED_EXTRA);
+    return { rows: [...planned, ...found], sources: item.sources };
+  }
   if (kind.noSourceTypes.includes(item[kind.typeKey])) return { rows: [], sources: [] };
   // An item the user added or emptied in the outline: search on its title and bullets.
   const q = sourceQuery(item);
@@ -121,6 +136,9 @@ async function writeAs(generation, kind, index, type, { note, figure } = {}) {
     userNote ? `Note from the user (follow it): ${userNote}` : '',
     `Type: ${type}. How to fill it: ${kind.writeGuide[type] || ''}`,
     `Do not repeat points or figures the earlier ${kind.nounPlural} already made unless this one builds on them.`,
+    // Planned points the sources don't support are dropped; the slide should still be full.
+    `Fill the layout's range with facts from the sources for this ${kind.noun}'s subject: if a planned point is ` +
+      `not in the sources, use other facts from them instead of leaving the ${kind.noun} short.`,
     // A fact belongs to what its passage is about: the engine manual's gasoline ignition timing ended up as
     // "diesel injection timing" once. Planned points are a plan, not evidence.
     `Keep each fact with what its source passage says it is about: a passage about one engine type, system, ` +

@@ -19,15 +19,17 @@ const ECHO_RE = /1-3 sentences|if they said|if they did not say|Empty if|0 if th
 
 const BRIEF_SCHEMA = {
   type: 'object',
+  // Whole document or particular topics: asked as "which topics does it name?" (empty: the whole document). As a
+  // direct full/focused choice the model leaned one way or the other with the prompt's wording (4/8, then 7/10).
   properties: {
+    named_topics: { type: 'array', items: { type: 'string' } },
     topic: { type: 'string' },
     audience: { type: 'string' },
     tone: { type: 'string' },
     instructions: { type: 'string' },
     count: { type: 'integer' },
-    scope: { type: 'string', enum: ['full', 'focused'] },
   },
-  required: ['topic', 'audience', 'tone', 'instructions', 'count', 'scope'],
+  required: ['named_topics', 'topic', 'audience', 'tone', 'instructions', 'count'],
 };
 
 // Sections include front and back matter (prerequisites, references) and small subsections that share an item.
@@ -81,14 +83,15 @@ export async function briefFromConversation(messages, type, request = '', { sect
     (history ? `The conversation:\n"""\n${history}\n"""\n\n` : '') +
     `What they asked for just now: ${request.trim() || `(nothing more: make the ${kind.product} from the conversation)`}\n\n` +
     `Answer these questions about the ${kind.product} they want, using only what they said:\n` +
+    `named_topics: The particular topics, parts or points the request names for it to cover (e.g. "safety ` +
+    `results", "the six sites", "travel policy"), as a list. Empty when it only names a document or report to ` +
+    `cover as a whole ("cover the annual report", "a deck on this PDF", "the whole handbook").\n` +
     `topic: In 1-3 sentences, what should it cover? Name the subject and the specific points they asked about; ` +
     `if the request just now narrows or changes that, follow it.\n` +
     `audience: Who is it for, if they said (for example "new hires")? Empty if they did not say.\n` +
     `tone: What tone did they ask for? Empty if none.\n` +
     `instructions: What did they ask to include, stress or avoid? Empty if nothing.\n` +
-    `count: How many ${kind.nounPlural} did they ask for? 0 if they did not say.\n` +
-    `scope: "full" if they want the documents covered as a whole (e.g. "comprehensive", "cover this PDF", ` +
-    `"everything in the manual", "the whole chapter"); "focused" if they want particular topics or points.` +
+    `count: How many ${kind.nounPlural} did they ask for? 0 if they did not say.` +
     (sectionCount ? `\n(The documents have ${sectionCount} sections.)` : '');
   let brief = await generateStructured(prompt, config.ollama.generateModel, BRIEF_SCHEMA, { think: false });
   // Without thinking the model occasionally copies the questions into the answers; think it through then.
@@ -99,7 +102,7 @@ export async function briefFromConversation(messages, type, request = '', { sect
   // The user's own material (pasted notes, a draft) is planned from as written.
   const ownText = messages.filter((m) => m.role === 'user' && m.kind === 'text' && m.content.length >= OWN_TEXT_CHARS).slice(-1)[0];
   const [min, max] = kind.countRange;
-  const scope = brief.scope === 'full' ? 'full' : 'focused';
+  const scope = (brief.named_topics || []).some((t) => String(t).trim()) ? 'focused' : 'full';
   // A whole-document deck is sized to the documents (about one item per main section) unless a number was given;
   // the default of 8 covered a third of a 29-page chapter.
   const asked = brief.count >= min && brief.count <= max ? brief.count : null;
