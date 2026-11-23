@@ -5,7 +5,7 @@
 // generation, so llama.cpp / vLLM can reuse them from their prompt cache. Item-specific text comes last.
 import config from '../../config.js';
 import { chatStructured, requestEmbedding } from '../llm.js';
-import { getChunksByIdsDb, getSourcePassagesDb } from '../../db/chunksQueries.js';
+import { getChunksByIdsDb, getSourcePassagesDb, getAllPassagesDb } from '../../db/chunksQueries.js';
 import { renderWithRepair, DiagramSyntaxError } from '../diagrams.js';
 import { kindOf, styleGuide, briefBlock, storylineBlock } from './kinds.js';
 import { fitContent } from './fit.js';
@@ -13,6 +13,19 @@ import { stripFigureMarkers, pictureOf } from '../figures.js';
 import { getFigureByIdDb } from '../../db/figuresQueries.js';
 import { sourceQuery, pastedText } from './planner.js';
 import { isStatValue } from './layouts.js';
+import { checkWritten } from './checkWritten.js';
+
+// Every passage of a generation's documents, for the fact check (kept briefly: items are written one after another).
+const passageCache = new Map();
+async function documentPassages(generation) {
+  const key = (generation.source_document_ids || []).join(',');
+  if (!key) return [];
+  if (!passageCache.has(key)) {
+    passageCache.set(key, getAllPassagesDb(generation.source_document_ids));
+    setTimeout(() => passageCache.delete(key), 10 * 60 * 1000).unref();
+  }
+  return passageCache.get(key);
+}
 
 const { generateModel } = config.ollama;
 // Free-form pasted text goes into the shared plan block (identical for every item, so it is cached).
@@ -139,10 +152,21 @@ async function writeAs(generation, kind, index, type, { note, figure } = {}) {
 
   const schema = kind.schemas[type];
   const result = await chatStructured(messages, generateModel, schema, { think: true });
-  const content = await fitContent(kind.limits[type], schema, {
+  const fitted = await fitContent(kind.limits[type], schema, {
     ...result,
     source_chunk_ids: rows.map((r) => r.id),
     used_pages: [...new Set(rows.map((r) => r.page).filter((p) => p != null))].sort((a, b) => a - b),
+  });
+  // What the item was written from: its passages, the user's own text, the figure's caption and words.
+  const checkSource = [
+    rows.length ? sourceText : '', item.own_text || '', pastedText(generation.brief) || '',
+    figure ? `${figure.caption || ''}\n${figure.labels || ''}` : '',
+  ].filter(Boolean).join('\n\n');
+  const docIds = generation.source_document_ids || [];
+  const content = await checkWritten(fitted, checkSource, {
+    documentPassages: await documentPassages(generation),
+    findMore: async (statement) => (await getSourcePassagesDb(await requestEmbedding(statement), 2, docIds, statement))
+      .map((r) => `[p. ${r.page ?? '?'}]\n${stripFigureMarkers(r.content)}`).join('\n\n'),
   });
   return { content, sources };
 }
@@ -190,6 +214,7 @@ function distinctSubheadings(content) {
 }
 
 const MIN_KEY_STATS = 2;
+const TABLE_TYPES = new Set(['comparison_table', 'reference_table']);
 
 /**
  * Number layouts need real numbers. Stats whose value has none (",0", "Critical", a page number) are dropped;
@@ -246,6 +271,12 @@ async function writeContent(generation, index, { note, type: typeOverride } = {}
   }
 
   const written = await writeAs(generation, kind, index, type, { note });
+  // A table with no rows or columns renders as nothing: write the item in the default layout instead.
+  if (TABLE_TYPES.has(type) && !(written.content?.rows?.length && written.content?.columns?.length)) {
+    console.warn(`${kind.noun} ${index + 1}: ${type} came back empty; using ${kind.defaultType}`);
+    const fallback = await writeAs(generation, kind, index, kind.defaultType, { note });
+    return { type: kind.defaultType, content: oneLineFields(distinctSubheadings(withoutPageMarks(fallback.content))), sources: fallback.sources };
+  }
   const content = oneLineFields(distinctSubheadings(withoutPageMarks(written.content)));
   const { sources } = written;
   if (type === 'key_stats' || type === 'stat_focus') return checkStatistics(generation, kind, index, type, { content, sources }, note);

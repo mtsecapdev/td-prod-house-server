@@ -71,9 +71,9 @@ const DECK = {
     title: 'title: max 8 words naming the subject. subtitle: one sentence on what the audience will be able to do afterwards.',
     bullets: '2-6 bullets. heading: 2-5 words. detail: one sentence with the specific fact, reason or action.',
     two_column: 'Two columns that genuinely contrast, each with a heading and 2-5 bullets. verdict: one sentence stating the conclusion if the comparison leads to one, otherwise an empty string.',
-    stat_focus: 'stat_value: the one number that best supports the point, with its unit. stat_label: 2-5 words. context: one sentence on why it matters.',
-    key_stats: '2-6 figures that together support the point. value: number with unit. label: 2-4 words. detail: one sentence on what drove it or why it matters.',
-    quote_highlight: 'quote_text: copied exactly from the sources, never paraphrased or invented. attribution: the person, role or document. commentary: one sentence on why it matters here.',
+    stat_focus: 'stat_value: the one number that best supports the point, with its unit. stat_label: 2-5 words. context: one sentence the sources give about it.',
+    key_stats: '2-6 figures that together support the point. value: number with unit. label: 2-4 words. detail: one sentence the sources give about it (what drove it only if they say).',
+    quote_highlight: 'quote_text: copied exactly from the sources, never paraphrased or invented. attribution: the person, role or document. commentary: one sentence on what it shows, from the sources.',
     checklist: '3-8 steps in order. step: starts with a verb. detail: how to do it.',
     closing: 'title: signals the wrap-up. takeaways: 3-5, one per key message of the deck, each one sentence. call_to_action: one sentence, or an empty string.',
     section_divider: 'title: 2-5 words naming the part. subtitle: one sentence on what it covers.',
@@ -141,7 +141,7 @@ const DOC = {
 
   writeGuide: {
     heading: 'title: max 10 words. subtitle: one sentence on the document\'s purpose for the reader. summary: 2-4 sentences on what it covers and why it matters.',
-    body: '2-5 paragraphs. subheading: 3-6 words, a different one for each paragraph (or empty to continue the one before). text: 3-6 sentences with specifics from the sources. key_takeaway: one sentence.',
+    body: '2-5 paragraphs. subheading: 3-6 words, a different one for each paragraph (or empty to continue the one before). text: 2-4 sentences, each a fact from the sources; when the sources run out, stop rather than add interpretation (what something "reflects", "drives" or "positions"). key_takeaway: one sentence: the section\'s main fact as the sources state it.',
     procedure: 'introduction: when and why to follow it (1-2 sentences). 3-10 steps: step_number, action (verb first), detail (1-2 sentences), caution (a specific warning, or an empty string). notes: anything else the reader needs.',
     key_points: 'introduction: 1-2 sentences. 3-8 points: label (2-5 words), description (1-3 sentences with specifics). notes: optional context.',
     reference_table: 'introduction: what the table holds and how to use it. 2-6 columns; rows of short cells matching the columns. notes: abbreviations or special values.',

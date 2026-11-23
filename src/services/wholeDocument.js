@@ -8,6 +8,7 @@ import * as provider from './providers/ollama.js';
 import { getAllPassagesDb, getSectionSummariesDb, getDocumentOverviewsDb } from '../db/chunksQueries.js';
 import { stripFigureMarkers } from './figures.js';
 import AppError from '../utils/AppError.js';
+import { unsupportedNumbers, checkStatements, keepFlags } from './factCheck.js';
 
 const { generateModel } = config.ollama;
 
@@ -300,41 +301,7 @@ async function writeSections(group, request, material, notes) {
   });
 }
 
-// ── Checking numbers against the source ──
-
-const NUMBER_WORDS = ['zero', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine', 'ten',
-  'eleven', 'twelve', 'thirteen', 'fourteen', 'fifteen', 'sixteen', 'seventeen', 'eighteen', 'nineteen', 'twenty'];
-
-function numbersIn(text) {
-  const out = new Set();
-  const plain = String(text)
-    .replace(/\(p\.\s*\d+(?:\s*[-–,]\s*\d+)*\)/g, ' ') // page references
-    .replace(/\[p\.\s*\d+\]/g, ' ')
-    .replace(/^\s*\d{1,2}[.)]\s+/gm, ' '); // list numbering
-  for (const m of plain.matchAll(/\d[\d,]*(?:\.\d+)?/g)) {
-    const n = m[0].replace(/,$/, '').replace(/,/g, '');
-    out.add(n.includes('.') ? n.replace(/\.?0+$/, '') : n.replace(/^0+(?=\d)/, ''));
-  }
-  return out;
-}
-
-function sourceNumbers(text) {
-  const nums = numbersIn(text);
-  // The same figure in thousands or millions ("2,177" EUR k written as 2,177,000).
-  for (const n of [...nums]) {
-    const v = Number(n);
-    if (Number.isFinite(v)) { nums.add(String(Math.round(v * 1000))); nums.add(String(Math.round(v * 1e6))); }
-  }
-  const lower = String(text).toLowerCase();
-  NUMBER_WORDS.forEach((w, i) => { if (new RegExp(`\\b${w}\\b`).test(lower)) nums.add(String(i)); });
-  return nums;
-}
-
-/** Numbers in written text that its source never states: added up, counted or guessed. */
-export function unsupportedNumbers(written, source) {
-  const known = sourceNumbers(source);
-  return [...numbersIn(written)].filter((n) => !known.has(n));
-}
+// ── Checking points against the source ──
 
 /**
  * Drops points whose numbers the section's text (and its notes) never states. The model sums and counts on its
@@ -350,58 +317,28 @@ function withoutUnsupported(w, source) {
   return { ...w, text: renumbered.join('\n'), dropped: lines.length - kept.length };
 }
 
-// ── Fact-checking points against the source ──
-
-const VERIFY_RULES =
-  `You fact-check a summary of document sections against their text. For each point, first copy the shortest ` +
-  `exact phrase or table cells from the text that state it (evidence, at most 12 words), then decide. A point ` +
-  `that restates a sentence or a ` +
-  `table row correctly is supported. A point is NOT supported when no sentence or row states it: it counts rows ` +
-  `or items the text does not count, adds up or averages figures, calls something the highest, lowest, only, ` +
-  `most or largest when the text does not say so, links a cause the text does not link, or gets a number, name ` +
-  `or date wrong.`;
-
 function pointsOf(text) {
   return text.split('\n').map((l) => l.trim()).filter(Boolean);
 }
 
-/**
- * Drops points the section's text doesn't state. The model writes counts and comparisons over tables despite the
- * rules ("15 lost-time incidents", "the only A-rated supplier", "highest defect rate") but, shown one point and
- * the text, it rejects them: 8-9 of 9 such errors, while keeping most points that restate the text. A section is
- * never emptied: if every point fails, those with evidence stay.
- */
+/** Drops points their section's text doesn't state (factCheck.js); one call per batch of sections. */
 async function verifyPoints(written, material, notes) {
-  const items = [];
-  const blocks = written.map((w, i) => {
-    const points = pointsOf(w.text);
-    points.forEach((p, k) => items.push({ w, i, k, id: `S${i + 1}.P${k + 1}`, text: p }));
+  const groups = written.map((w) => {
     const n = notes.get(w.section);
-    return `### S${i + 1}. ${w.title}\n${n ? `Notes (also part of the text): ${n.join(' ')}\n` : ''}${material(w.section)}`;
-  }).join('\n\n');
-  if (!items.length) return written;
-  const result = await chatJson(
-    VERIFY_RULES,
-    `Sections:\n\n${blocks}\n\nPoints to check:\n${items.map((it) => `${it.id}. ${it.text}`).join('\n')}\n\n` +
-    `For every point return id (as given), evidence (at most 12 words copied from its section's text; empty if none) and supported (true/false).`,
-    {
-      type: 'object',
-      properties: { points: { type: 'array', items: { type: 'object', properties: {
-        id: { type: 'string' }, evidence: { type: 'string' }, supported: { type: 'boolean' },
-      }, required: ['id', 'evidence', 'supported'] } } },
-      required: ['points'],
-    },
-  ).catch(() => null);
-  if (!result) return written;
-  const verdicts = new Map((result.points || []).map((v) => [String(v.id).trim(), v]));
+    return {
+      label: w.title,
+      source: `${n ? `Notes (also part of the text): ${n.join(' ')}\n` : ''}${material(w.section)}`,
+      statements: pointsOf(w.text),
+    };
+  });
+  const verdicts = await checkStatements(groups);
   return written.map((w, i) => {
-    const mine = items.filter((it) => it.i === i).map((it) => ({ ...it, v: verdicts.get(it.id) }));
-    if (!mine.length) return w;
-    let kept = mine.filter((it) => it.v?.supported !== false);
-    if (!kept.length) kept = mine.filter((it) => it.v?.evidence?.trim());
-    if (!kept.length) return w;
+    const points = groups[i].statements;
+    if (!points.length) return w;
+    const keep = keepFlags(verdicts[i]);
     let k = 0;
-    const text = kept.map((it) => (/^\d{1,2}\.\s/.test(it.text) ? it.text.replace(/^\d{1,2}\./, `${++k}.`) : it.text)).join('\n');
+    const text = points.filter((_, j) => keep[j])
+      .map((p) => (/^\d{1,2}\.\s/.test(p) ? p.replace(/^\d{1,2}\./, `${++k}.`) : p)).join('\n');
     return { ...w, text };
   });
 }
