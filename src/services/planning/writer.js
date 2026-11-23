@@ -168,7 +168,40 @@ async function writeAs(generation, kind, index, type, { note, figure } = {}) {
     findMore: async (statement) => (await getSourcePassagesDb(await requestEmbedding(statement), 2, docIds, statement))
       .map((r) => `[p. ${r.page ?? '?'}]\n${stripFigureMarkers(r.content)}`).join('\n\n'),
   });
-  return { content, sources };
+  return { content: kind.noSourceTypes.includes(type) ? content : await titleThatFits(content, kind), sources };
+}
+
+const TITLE_FORMAT = {
+  type: 'object',
+  properties: { fits: { type: 'boolean' }, title: { type: 'string' } },
+  required: ['fits', 'title'],
+};
+const MAX_TITLE_WORDS = 10;
+
+/**
+ * Keeps a title true to what the item ended up saying. Titles are planned before writing, and the fact check can
+ * remove what a title promised ("Board Oversight & Executive Pay" over a slide with no pay left on it).
+ */
+async function titleThatFits(content, kind) {
+  const title = String(content?.title || '').trim();
+  const body = textOf({ ...content, title: '', speaker_notes: '', notes: '' }).trim();
+  if (!title || !body) return content;
+  try {
+    const result = await chatStructured([
+      { role: 'system', content: `You check the title of one ${kind.noun}. Return only JSON.` },
+      {
+        role: 'user',
+        content: `Title: ${title}\n\n${kind.noun} content:\n${body.slice(0, 3000)}\n\n` +
+          `fits: true when every topic the title names is covered by the content. If not, title: a new title of ` +
+          `at most ${MAX_TITLE_WORDS} words naming what the content covers, in the same style; otherwise the same title.`,
+      },
+    ], generateModel, TITLE_FORMAT, { think: false });
+    const better = String(result.title || '').trim();
+    if (result.fits !== false || !better || better.split(/\s+/).length > MAX_TITLE_WORDS) return content;
+    return { ...content, title: better };
+  } catch {
+    return content;
+  }
 }
 
 // One-line fields (a subtitle) sometimes come back with a list appended: "Intro. - Point one- Point two".

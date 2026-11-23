@@ -2,7 +2,7 @@
 // with claims of its own ("this directly contributed to the 24.6% gross margin", "below industry averages",
 // "Brandt succeeds Vercoe") and works out figures the sources never give ("growth exceeds FY2024's 8.2%");
 // factCheck.js finds them, and they are cut here. Titles, labels and table cells are left alone.
-import { unsupportedNumbers, numbersIn, checkStatements, keepFlags, sentencesOf } from '../factCheck.js';
+import { unsupportedNumbers, checkStatements, keepFlags, sentencesOf } from '../factCheck.js';
 
 // Passages from elsewhere in the document added as evidence, at most (characters).
 const MAX_EXTRA_CHARS = 12000;
@@ -10,13 +10,14 @@ const MAX_EXTRA_CHARS = 12000;
 const REFERS_BACK_RE = /^(this|these|that|those|it|its|they|such|the (improvement|increase|decrease|decline|shortfall|change|result|growth))\b/i;
 
 // Prose checked sentence by sentence against the sources.
+// Speaker notes too: checked for numbers only, they carried "exceeds industry benchmarks" and "Heron is now
+// operational"; the checker passes their transitions and audience questions as making no claim.
 const CHECKED = new Set(['text', 'detail', 'description', 'introduction', 'summary', 'key_takeaway', 'supporting',
-  'context', 'commentary', 'verdict', 'caption', 'caution', 'statement']);
+  'context', 'commentary', 'verdict', 'caption', 'caution', 'statement', 'speaker_notes', 'notes']);
 // Lists of one-line statements, checked item by item.
 const CHECKED_LISTS = new Set(['takeaways', 'recap_points', 'column_a_bullets', 'column_b_bullets', 'bullets', 'checklist']);
-// Speaker notes, next steps and calls to action also hold transitions, questions and advice the brief asks for:
-// only their numbers are checked.
-const NUMBERS_ONLY = new Set(['speaker_notes', 'notes', 'next_steps', 'call_to_action', 'subtitle']);
+// Next steps and calls to action are advice the brief asks for: only their numbers are checked.
+const NUMBERS_ONLY = new Set(['next_steps', 'call_to_action', 'subtitle']);
 // An entry of these lists is dropped when its prose is: a bullet or point without its detail says nothing.
 const DROP_WHEN_EMPTY = { paragraphs: 'text', bullets: 'detail', points: 'description', items: 'description' };
 
@@ -57,20 +58,21 @@ export async function checkWritten(content, source, { documentPassages = [], fin
   // An item is written from a few passages but also from its plan, which drew on the whole document: a figure
   // missing from its passages may be on another page (the workforce numbers of a "People" section). The
   // passages that hold such figures are added to the source, so the check judges them on evidence.
+  // Only a passage holding all of a sentence's missing figures counts: small numbers ("down 19", "27%") turn up
+  // somewhere in any long document, but a miscalculated one rarely sits beside the others it was used with.
   let extra = '';
   for (const p of pieces) {
     const missing = unsupportedNumbers(p.text, source + extra);
     if (!missing.length) continue;
-    const holder = documentPassages
-      .map((d) => ({ d, hits: missing.filter((n) => numbersIn(d.content).has(n)).length }))
-      .filter((x) => x.hits).sort((a, b) => b.hits - a.hits)[0];
-    if (holder && extra.length < MAX_EXTRA_CHARS) extra += `\n\n[p. ${holder.d.page ?? '?'}]\n${holder.d.content}`;
+    const holder = documentPassages.find((d) => !unsupportedNumbers(missing.join(' '), d.content).length);
+    if (holder && extra.length < MAX_EXTRA_CHARS) extra += `\n\n[p. ${holder.page ?? '?'}]\n${holder.content}`;
   }
   source += extra;
   if (process.env.CHECK_DEBUG) console.error(`[check] source ${source.length} chars (${extra.length} added from the document)`);
   // Numbers first (exact, free); the model checks the rest.
   for (const p of pieces) p.keep = !unsupportedNumbers(p.text, source).length;
-  const toAsk = pieces.filter((p) => p.keep && p.model);
+  // A question to the audience states nothing; the checker rejected them anyway.
+  const toAsk = pieces.filter((p) => p.keep && p.model && !/\?\s*$/.test(p.text));
   if (toAsk.length) {
     const [verdicts] = await checkStatements([{ source, statements: toAsk.map((p) => p.text) }], { findMore });
     keepFlags(verdicts).forEach((k, i) => { toAsk[i].keep = k; toAsk[i].verdict = verdicts[i]; });

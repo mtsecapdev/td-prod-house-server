@@ -32,10 +32,14 @@ export function numbersIn(text) {
 
 function sourceNumbers(text) {
   const nums = numbersIn(text);
-  // The same figure in thousands or millions ("2,177" EUR k written as 2,177,000).
+  // The same figure in other units: "2,177" EUR k written as 2,177,000 or 2.177 million, and back.
   for (const n of [...nums]) {
     const v = Number(n);
-    if (Number.isFinite(v)) { nums.add(String(Math.round(v * 1000))); nums.add(String(Math.round(v * 1e6))); }
+    if (!Number.isFinite(v)) continue;
+    for (const scaled of [v * 1000, v * 1e6, v / 1000, v / 1e6]) {
+      const str = String(Number(scaled.toFixed(6)));
+      if (/[1-9]/.test(str)) nums.add(str);
+    }
   }
   const lower = String(text).toLowerCase();
   NUMBER_WORDS.forEach((w, i) => { if (new RegExp(`\\b${w}\\b`).test(lower)) nums.add(String(i)); });
@@ -58,7 +62,8 @@ const VERIFY_RULES =
   `averages or compares figures, calls something the highest, lowest, only, most or largest when the source ` +
   `does not say so, links a cause or effect the source does not link, connects people, products or events the ` +
   `source does not connect, claims a trend or comparison with no figure for it, or gets a number, name or date ` +
-  `wrong.`;
+  `wrong. A statement that makes no factual claim (a transition such as "Next, we look at...", a question to ` +
+  `the audience, a pointer to another slide or section) is supported.`;
 
 function samePercent(text) {
   return String(text).replace(/(\d)\s*per ?cent\b/gi, '$1%');
