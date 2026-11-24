@@ -12,6 +12,7 @@
     "table": "node --env-file=.env ./src/db/createSchemas.js",
     "ingest": "node --env-file=.env ./src/scripts/ingest.js",
     "create-admin": "node --env-file=.env ./src/scripts/createAdmin.js",
+    "delete-unowned": "node --env-file=.env ./src/scripts/deleteUnowned.js",
     "reembed": "node --env-file=.env ./src/scripts/reembed.js",
     "rerender-diagrams": "node --env-file=.env ./src/scripts/rerenderDiagrams.js",
     "migrate": "node --env-file=.env ./src/db/migrate.js",
