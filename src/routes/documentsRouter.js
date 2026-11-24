@@ -1,7 +1,9 @@
 import { Router } from 'express';
 import documentsController from '../controllers/documentsController.js';
+import { ownedBy } from '../middleware/auth.js';
 
 const documentsRouter = Router();
+documentsRouter.param('id', ownedBy('documents', 'Document'));
 
 documentsRouter.get('/', documentsController.listDocuments);
 documentsRouter.post(

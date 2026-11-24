@@ -56,8 +56,9 @@ export async function imageBrief(messages, request, target) {
 }
 
 /** Creates the image and starts generating it. target: { generation, index } to place it on a slide/section. */
-export async function startImage({ brief, conversationId, documentIds = [], target = null }) {
+export async function startImage({ brief, conversationId, documentIds = [], target = null, ownerId }) {
   const id = await insertGenerationDb({
+    ownerId,
     type: 'image',
     brief: JSON.stringify({ ...brief, ...(target ? { target: { generation_id: target.generation.id, index: target.index } } : {}) }),
     sourceDocumentIds: documentIds,

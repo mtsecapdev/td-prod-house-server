@@ -1,3 +1,4 @@
+import AppError from '../utils/AppError.js';
 import { access } from 'node:fs/promises';
 import responseFactory from '../utils/responseFactory.js';
 import { getGenerationByIdDb, generationName } from '../db/generationsQueries.js';
@@ -6,7 +7,7 @@ import { renderOfficeFile, notReadyMessage, officeExt, OFFICE_MIME } from '../se
 
 async function listAssets(req, res) {
   const { q, kind } = req.query;
-  const assets = await getAllAssetsDb({ q, kind });
+  const assets = await getAllAssetsDb({ q, kind, ownerId: req.user.id });
   res.json(responseFactory.createJsonResponse({ assets }));
 }
 
@@ -16,7 +17,8 @@ async function saveAsset(req, res) {
     return res.status(400).json(responseFactory.createJsonResponse(null, { message: 'generationId is required' }));
   }
 
-  const generation = await getGenerationByIdDb(generationId);
+  const generation = await getGenerationByIdDb(Number(generationId) || 0).catch(() => null);
+  if (!generation || generation.owner_id !== req.user.id) throw new AppError('Deck or document not found', 404);
 
   if (generation.type === 'image') {
     const filePath = generation.outline?.file_path;
@@ -25,7 +27,7 @@ async function saveAsset(req, res) {
     }
     const assetTitle = title || generation.brief?.topic || 'Untitled image';
     const assetId = await insertAssetDb({
-      generationId: generation.id, kind: 'image', filePath, mime: 'image/png', title: assetTitle,
+      generationId: generation.id, ownerId: req.user.id, kind: 'image', filePath, mime: 'image/png', title: assetTitle,
     });
     return res.status(201).json(responseFactory.createJsonResponse({ id: assetId, title: assetTitle }));
   }
@@ -45,7 +47,7 @@ async function saveAsset(req, res) {
   const kind = generation.type;
   const assetTitle = title || generationName(generation);
   const assetId = await insertAssetDb({
-    generationId: generation.id,
+    generationId: generation.id, ownerId: req.user.id,
     kind,
     filePath: outputPath,
     mime: OFFICE_MIME[ext],

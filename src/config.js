@@ -27,6 +27,8 @@ const config = {
     // Diagram render service (docker compose: renderer). Mermaid in, PNG out.
     endpoint: process.env.RENDER_SERVICE_ENDPOINT || 'http://127.0.0.1:5002',
   },
+  // Send the session cookie over https only. Set SECURE_COOKIES=true on a server behind TLS.
+  secureCookies: process.env.SECURE_COOKIES === 'true',
   rag: {
     topK: Number(process.env.K_CHUNKS ?? 10),
   },

@@ -46,9 +46,9 @@ export async function startOutlineJob(generation) {
 }
 
 /** Creates a deck/document from a brief and starts planning it. Returns the generation. */
-export async function createPlan({ type, brief, documentIds = [], conversationId = null }) {
+export async function createPlan({ type, brief, documentIds = [], conversationId = null, ownerId }) {
   const id = await insertGenerationDb({
-    type, brief: JSON.stringify(normalizeBrief(brief)), sourceDocumentIds: documentIds, conversationId,
+    type, brief: JSON.stringify(normalizeBrief(brief)), sourceDocumentIds: documentIds, conversationId, ownerId,
   });
   await startOutlineJob(await getGenerationByIdDb(id));
   return getGenerationByIdDb(id);

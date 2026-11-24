@@ -2,7 +2,6 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import pool from '../db/pool.js';
-import pgvector from 'pgvector/pg';
 import config from '../config.js';
 import { extractMarkdownFromFile } from '../services/fileProcessor.js';
 import { saveFigures } from '../services/figures.js';
@@ -12,7 +11,6 @@ import {
   getDocumentByHashDb,
   insertDocumentDb,
   updateDocumentStatusDb,
-  deleteDocumentDb,
 } from '../db/documentsQueries.js';
 import { insertChunkDb } from '../db/chunksQueries.js';
 import { generateSummaryChunks } from '../services/summarizer.js';
@@ -45,17 +43,17 @@ async function discoverFiles(dir) {
   return files;
 }
 
-async function ingestFile(filePath) {
+async function ingestFile(filePath, ownerId) {
   const filename = path.basename(filePath);
   const fileHash = await hashFile(filePath);
 
-  const existing = await getDocumentByHashDb(fileHash);
+  const existing = await getDocumentByHashDb(fileHash, ownerId);
   if (existing) {
     console.log(`  Skipped (unchanged): ${filename}`);
     return { status: 'skipped', filename };
   }
 
-  const docId = await insertDocumentDb(filename, { filePath, fileHash, status: 'processing' });
+  const docId = await insertDocumentDb(filename, { ownerId, filePath, fileHash, status: 'processing' });
   console.log(`  Processing: ${filename} (doc ${docId})`);
 
   try {
@@ -87,7 +85,24 @@ async function ingestFile(filePath) {
   }
 }
 
+// Documents belong to someone: npm run ingest -- --owner <username>
+async function ownerFromArgs() {
+  const at = process.argv.indexOf('--owner');
+  const username = at > -1 ? process.argv[at + 1] : null;
+  if (!username) {
+    console.error('Usage: npm run ingest -- --owner <username>   (the account the documents will belong to)');
+    process.exit(1);
+  }
+  const res = await pool.query('SELECT id FROM users WHERE lower(username) = lower($1)', [username]);
+  if (!res.rowCount) {
+    console.error(`No account named "${username}"`);
+    process.exit(1);
+  }
+  return res.rows[0].id;
+}
+
 async function main() {
+  const ownerId = await ownerFromArgs();
   const dir = config.sourcesDir;
   console.log(`Scanning: ${dir}`);
 
@@ -102,7 +117,7 @@ async function main() {
 
   const results = { ingested: 0, skipped: 0, failed: 0 };
   for (const file of files) {
-    const result = await ingestFile(file);
+    const result = await ingestFile(file, ownerId);
     results[result.status]++;
   }
 

@@ -1,10 +1,11 @@
 import AppError from '../utils/AppError.js';
 import pool from './pool.js';
 
-export async function getAllDocumentsDb() {
+export async function getAllDocumentsDb(ownerId) {
   try {
     const res = await pool.query(
-      'SELECT id, name, file_path, page_count, status, uploaded_at FROM documents ORDER BY uploaded_at DESC',
+      'SELECT id, name, file_path, page_count, status, uploaded_at FROM documents WHERE owner_id = $1 ORDER BY uploaded_at DESC',
+      [ownerId],
     );
     return res.rows;
   } catch (error) {
@@ -18,17 +19,18 @@ export async function getDocumentByIdDb(id) {
   return res.rows[0];
 }
 
-export async function getDocumentByHashDb(fileHash) {
-  const res = await pool.query('SELECT * FROM documents WHERE file_hash = $1', [fileHash]);
+export async function getDocumentByHashDb(fileHash, ownerId) {
+  const res = await pool.query('SELECT * FROM documents WHERE file_hash = $1 AND owner_id = $2', [fileHash, ownerId]);
   return res.rows[0] ?? null;
 }
 
-export async function insertDocumentDb(name, { filePath, fileHash, pageCount, status = 'processing' } = {}) {
+export async function insertDocumentDb(name, { ownerId, filePath, fileHash, pageCount, status = 'processing' } = {}) {
+  if (!ownerId) throw new AppError('A document needs an owner', 500);
   try {
     const res = await pool.query(
-      `INSERT INTO documents (name, file_path, file_hash, page_count, status)
-       VALUES ($1, $2, $3, $4, $5) RETURNING id`,
-      [name, filePath, fileHash, pageCount, status],
+      `INSERT INTO documents (name, file_path, file_hash, page_count, status, owner_id)
+       VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
+      [name, filePath, fileHash, pageCount, status, ownerId],
     );
     return res.rows[0].id;
   } catch (error) {

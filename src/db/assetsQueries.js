@@ -1,11 +1,12 @@
 import AppError from '../utils/AppError.js';
 import pool from './pool.js';
 
-export async function insertAssetDb({ generationId, kind, filePath, mime, title }) {
+export async function insertAssetDb({ generationId, kind, filePath, mime, title, ownerId }) {
+  if (!ownerId) throw new AppError('A Library copy needs an owner', 500);
   const res = await pool.query(
-    `INSERT INTO assets (generation_id, kind, file_path, mime, title)
-     VALUES ($1, $2, $3, $4, $5) RETURNING id`,
-    [generationId, kind, filePath, mime, title],
+    `INSERT INTO assets (generation_id, kind, file_path, mime, title, owner_id)
+     VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
+    [generationId, kind, filePath, mime, title, ownerId],
   );
   return res.rows[0].id;
 }
@@ -25,11 +26,11 @@ export async function getAssetByIdDb(id) {
 }
 
 /** Saved copies, newest first, with the conversation their deck/document/image was made in (if it still exists). */
-export async function getAllAssetsDb({ q, kind } = {}) {
+export async function getAllAssetsDb({ q, kind, ownerId } = {}) {
   let query = `SELECT a.*, g.conversation_id FROM assets a LEFT JOIN generations g ON g.id = a.generation_id
-               WHERE a.deleted_at IS NULL`;
-  const values = [];
-  let i = 1;
+               WHERE a.deleted_at IS NULL AND a.owner_id = $1`;
+  const values = [ownerId];
+  let i = 2;
 
   if (kind) {
     query += ` AND a.kind = $${i++}`;

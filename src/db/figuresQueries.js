@@ -39,9 +39,13 @@ export async function getFiguresByIdsDb(ids) {
  * Figures for the Assets page and pickers, newest documents first. q matches the caption or the text inside
  * the figure; documentIds limits to those documents.
  */
-export async function listFiguresDb({ q, documentIds } = {}) {
+export async function listFiguresDb({ q, documentIds, ownerId } = {}) {
   const where = [];
   const params = [];
+  if (ownerId) {
+    params.push(ownerId);
+    where.push(`d.owner_id = $${params.length}`);
+  }
   if (documentIds?.length) {
     params.push(documentIds);
     where.push(`f.document_id = ANY($${params.length})`);

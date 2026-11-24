@@ -1,7 +1,5 @@
 import express from 'express';
-import cors from 'cors';
 import config from './src/config.js';
-import indexRouter from './src/routes/indexRouter.js';
 import responseFactory from './src/utils/responseFactory.js';
 import documentsRouter from './src/routes/documentsRouter.js';
 import generationsRouter from './src/routes/generationsRouter.js';
@@ -9,16 +7,24 @@ import assetsRouter from './src/routes/assetsRouter.js';
 import conversationsRouter from './src/routes/conversationsRouter.js';
 import figuresRouter from './src/routes/figuresRouter.js';
 import { requestLogger } from './src/middleware/requestLogger.js';
+import { loadUser, requireUser } from './src/middleware/auth.js';
+import authRouter from './src/routes/authRouter.js';
+import usersRouter from './src/routes/usersRouter.js';
 
 const app = express();
 
 // MIDDLEWARE
-app.use(cors());
+// No CORS: the client reaches the API on its own origin (/api, forwarded by Vite in development and by the web
+// server in production), so the session cookie can be SameSite=Strict.
 app.use(express.json());
 app.use(requestLogger);
+app.use(loadUser);
 
 // ROUTES
-app.use('/', indexRouter);
+app.use('/auth', authRouter); // signing in, out, and changing one's own password
+// Everything else needs a signed-in user whose password is not a temporary one.
+app.use(requireUser);
+app.use('/users', usersRouter); // admin only
 app.use('/documents', documentsRouter);
 app.use('/generations', generationsRouter);
 app.use('/assets', assetsRouter);

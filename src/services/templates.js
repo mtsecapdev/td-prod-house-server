@@ -50,7 +50,7 @@ export async function getTemplate(id) {
 }
 
 /** Reads a company .pptx's theme, stores the file and its mapped colours/fonts, returns the new template. */
-export async function createBrandTemplate(buffer, name) {
+export async function createBrandTemplate(buffer, name, uploadedBy = null) {
   const dir = join(config.outputDir, 'brand');
   await mkdir(dir, { recursive: true });
   const pptxPath = join(dir, `${randomUUID()}.pptx`);
@@ -64,7 +64,7 @@ export async function createBrandTemplate(buffer, name) {
     await unlink(pptxPath).catch(() => {});
     throw new Error(`Could not read that template's theme: ${(err.stderr || err.message).split('\n').filter(Boolean).pop()}`);
   }
-  const id = await insertBrandTemplateDb({ name, pptxPath, colors: theme.colors, fonts: theme.fonts });
+  const id = await insertBrandTemplateDb({ name, pptxPath, colors: theme.colors, fonts: theme.fonts, uploadedBy });
   const { pptx_path: _p, ...template } = fromBrandRow({ id, name, pptx_path: pptxPath, colors: theme.colors, fonts: theme.fonts });
   return template;
 }

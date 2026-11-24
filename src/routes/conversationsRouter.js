@@ -1,7 +1,9 @@
 import { Router } from 'express';
+import { ownedBy } from '../middleware/auth.js';
 import conversationsController from '../controllers/conversationsController.js';
 
 const conversationsRouter = Router();
+conversationsRouter.param('id', ownedBy('conversations', 'Conversation'));
 
 conversationsRouter.get('/', conversationsController.listConversations);
 conversationsRouter.post('/', conversationsController.createConversation);

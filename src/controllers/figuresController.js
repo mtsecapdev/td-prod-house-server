@@ -7,6 +7,7 @@ import { writeZip } from '../utils/zip.js';
 import {
   listFiguresDb, getFigureByIdDb, deleteFiguresDb, figureUsageDb, getFiguresForDownloadDb,
 } from '../db/figuresQueries.js';
+import { ownFigureIds } from '../middleware/auth.js';
 
 const MAX_BULK = 500;
 
@@ -15,24 +16,26 @@ function toPublic(f) {
   return rest;
 }
 
-/** Ids from a JSON body ({ ids: [...] }) or a query string (?ids=1,2,3). */
-function idsFrom(value) {
+/** Ids from a JSON body ({ ids: [...] }) or a query string (?ids=1,2,3), kept to figures of the user's documents. */
+async function idsFrom(req, value) {
   const list = Array.isArray(value) ? value : String(value || '').split(',');
   const ids = [...new Set(list.map(Number).filter((n) => Number.isInteger(n) && n > 0))];
   if (!ids.length) throw new AppError('Choose at least one figure', 400);
   if (ids.length > MAX_BULK) throw new AppError(`At most ${MAX_BULK} figures at a time`, 400);
-  return ids;
+  const mine = await ownFigureIds(req.user.id, ids);
+  if (!mine.length) throw new AppError('Those figures no longer exist', 404);
+  return mine;
 }
 
 async function listFigures(req, res) {
   const documentIds = String(req.query.documentIds || '').split(',').map(Number).filter(Number.isInteger).filter(Boolean);
-  const figures = await listFiguresDb({ q: req.query.q, documentIds });
+  const figures = await listFiguresDb({ q: req.query.q, documentIds, ownerId: req.user.id });
   res.json(responseFactory.createJsonResponse({ figures: figures.map(toPublic) }));
 }
 
 async function serveImage(req, res) {
   const figure = await getFigureByIdDb(Number(req.params.id));
-  if (!figure) throw new AppError('Figure not found', 404);
+  if (!figure || !(await ownFigureIds(req.user.id, [figure.id])).length) throw new AppError('Figure not found', 404);
   res.set('Cache-Control', 'private, max-age=86400');
   res.sendFile(figure.file_path);
 }
@@ -54,7 +57,7 @@ function zipNames(figures) {
 
 // GET so the browser can download it as a plain link: /figures/download?ids=1,2,3
 async function downloadFigures(req, res) {
-  const figures = await getFiguresForDownloadDb(idsFrom(req.query.ids));
+  const figures = await getFiguresForDownloadDb(await idsFrom(req, req.query.ids));
   if (!figures.length) throw new AppError('Those figures no longer exist', 404);
   res.set('Content-Type', 'application/zip');
   res.set('Content-Disposition', `attachment; filename="figures-${figures.length}.zip"`);
@@ -63,13 +66,13 @@ async function downloadFigures(req, res) {
 }
 
 async function getUsage(req, res) {
-  res.json(responseFactory.createJsonResponse({ usage: await figureUsageDb(idsFrom(req.body?.ids)) }));
+  res.json(responseFactory.createJsonResponse({ usage: await figureUsageDb(await idsFrom(req, req.body?.ids)) }));
 }
 
 // Deleting figures that decks or documents use needs force: true; without it the response lists where they are
 // used so the client can warn first. Slides that used them then show "Figure removed".
 async function deleteFigures(req, res) {
-  const ids = idsFrom(req.body?.ids);
+  const ids = await idsFrom(req, req.body?.ids);
   const usage = await figureUsageDb(ids);
   if (usage.length && req.body?.force !== true) {
     return res.status(409).json(responseFactory.createJsonResponse({ usage }, {

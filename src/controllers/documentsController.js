@@ -43,7 +43,7 @@ const uploadDocumentsStream = [
     const filePath = path.join(config.uploadsDir, savedName);
     await fs.writeFile(filePath, buffer);
 
-    const docId = await insertDocumentDb(originalname, { filePath, fileHash, status: 'processing' });
+    const docId = await insertDocumentDb(originalname, { ownerId: req.user.id, filePath, fileHash, status: 'processing' });
 
     res.writeHead(200, {
       'Content-Type': 'text/event-stream',
@@ -109,7 +109,7 @@ const uploadDocumentsStream = [
 ];
 
 async function listDocuments(req, res) {
-  const docs = await getAllDocumentsDb();
+  const docs = await getAllDocumentsDb(req.user.id);
   res.json(responseFactory.createJsonResponse({ docs }));
 }
 

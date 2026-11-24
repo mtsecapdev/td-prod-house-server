@@ -1,8 +1,10 @@
 import { Router } from 'express';
 import generationsController from '../controllers/generationsController.js';
 import { uploadToMemory } from '../middleware/upload.js';
+import { ownedBy } from '../middleware/auth.js';
 
 const generationsRouter = Router();
+generationsRouter.param('id', ownedBy('generations', 'Deck or document'));
 
 generationsRouter.get('/', generationsController.listGenerations);
 generationsRouter.get('/templates', generationsController.getTemplates);

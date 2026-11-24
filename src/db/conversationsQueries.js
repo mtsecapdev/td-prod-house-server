@@ -1,14 +1,15 @@
 import pool from './pool.js';
 import AppError from '../utils/AppError.js';
 
-const COLUMNS = 'id, title, doc_ids, created_at, updated_at';
+const COLUMNS = 'id, title, doc_ids, owner_id, created_at, updated_at';
 
 /** Conversations, most recently active first, with the kinds of things made in each (deck, doc, image). */
-export async function listConversationsDb() {
+export async function listConversationsDb(ownerId) {
   const res = await pool.query(
     `SELECT c.id, c.title, c.doc_ids, c.created_at, c.updated_at,
             COALESCE((SELECT array_agg(DISTINCT g.type) FROM generations g WHERE g.conversation_id = c.id), '{}') AS made
-     FROM conversations c ORDER BY c.updated_at DESC`,
+     FROM conversations c WHERE c.owner_id = $1 ORDER BY c.updated_at DESC`,
+    [ownerId],
   );
   return res.rows;
 }
@@ -19,10 +20,11 @@ export async function getConversationDb(id) {
   return res.rows[0];
 }
 
-export async function createConversationDb(title, docIds) {
+export async function createConversationDb(title, docIds, ownerId) {
+  if (!ownerId) throw new AppError('A conversation needs an owner', 500);
   const res = await pool.query(
-    `INSERT INTO conversations (title, doc_ids) VALUES ($1, $2) RETURNING ${COLUMNS}`,
-    [title, docIds],
+    `INSERT INTO conversations (title, doc_ids, owner_id) VALUES ($1, $2, $3) RETURNING ${COLUMNS}`,
+    [title, docIds, ownerId],
   );
   return res.rows[0];
 }

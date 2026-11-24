@@ -19,8 +19,16 @@ import { editItem, insertItem } from '../services/planning/itemOps.js';
 import { planAgent, applyAgent, undoAgent } from '../services/planning/agent.js';
 import { startJob } from '../services/jobs.js';
 import { deleteDiagrams } from '../services/diagrams.js';
+import { ownDocumentIds } from '../middleware/auth.js';
 
 const HISTORY_MESSAGES = 10;
+
+/** A deck/document/image the signed-in user owns ("not found" otherwise). */
+async function ownGeneration(req, id) {
+  const generation = await getGenerationByIdDb(Number(id) || 0).catch(() => null);
+  if (!generation || generation.owner_id !== req.user.id) throw new AppError('Deck or document not found', 404);
+  return generation;
+}
 const TITLE_CHARS = 60;
 
 const titleFrom = (text) => {
@@ -29,7 +37,7 @@ const titleFrom = (text) => {
 };
 
 async function listConversations(req, res) {
-  res.json(responseFactory.createJsonResponse({ conversations: await listConversationsDb() }));
+  res.json(responseFactory.createJsonResponse({ conversations: await listConversationsDb(req.user.id) }));
 }
 
 async function getConversation(req, res) {
@@ -45,7 +53,7 @@ async function createConversation(req, res) {
   let documentIds = docIds;
   let generation = null;
   if (generationId) {
-    generation = presentGeneration(await getGenerationByIdDb(generationId));
+    generation = presentGeneration(await ownGeneration(req, generationId));
     kindOf(generation); // decks and documents only
     if (generation.conversation_id) {
       return res.json(responseFactory.createJsonResponse({ conversation: await getConversationDb(generation.conversation_id) }));
@@ -53,7 +61,7 @@ async function createConversation(req, res) {
     title = title || generation.name;
     documentIds = generation.source_document_ids || [];
   }
-  const conversation = await createConversationDb(titleFrom(title || 'New chat'), documentIds);
+  const conversation = await createConversationDb(titleFrom(title || 'New chat'), await ownDocumentIds(req.user.id, documentIds), req.user.id);
   if (generation) {
     await adoptGenerationDb(conversation.id, generation.id);
     await insertMessageDb(conversation.id, {
@@ -67,7 +75,8 @@ async function updateConversation(req, res) {
   const { title, docIds } = req.body || {};
   const conversation = await updateConversationDb(req.params.id, {
     title: title === undefined ? undefined : titleFrom(title),
-    docIds: Array.isArray(docIds) ? docIds.map(Number).filter(Boolean) : undefined,
+    // Only the user's own documents can be worked with.
+    docIds: Array.isArray(docIds) ? await ownDocumentIds(req.user.id, docIds) : undefined,
   });
   res.json(responseFactory.createJsonResponse({ conversation }));
 }
@@ -92,6 +101,10 @@ async function sendMessage(req, res) {
   const content = String(req.body?.content || '').trim();
   if (!content) throw new AppError('Write a message', 400);
   const target = req.body?.target?.generationId ? req.body.target : null;
+  // A change can only target a deck/document of this conversation.
+  if (target && (await ownGeneration(req, target.generationId)).conversation_id !== conversation.id) {
+    throw new AppError('That deck or document is not part of this conversation', 400);
+  }
 
   res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive' });
   res.flushHeaders();
@@ -221,14 +234,18 @@ async function makePlan(conversation, previous, type, request) {
   if (!conversation.doc_ids?.length && !brief.source_text) {
     throw new AppError('Choose the documents to work with first (📎 Documents).', 400);
   }
-  const generation = await createPlan({ type, brief, documentIds: conversation.doc_ids, conversationId: conversation.id });
+  const generation = await createPlan({
+    type, brief, documentIds: conversation.doc_ids, conversationId: conversation.id, ownerId: conversation.owner_id,
+  });
   return { kind: 'generation', data: { generation_id: generation.id, type } };
 }
 
 /** An image from the conversation (for one slide/section when target is set); generated in the background. */
 async function makeImage(conversation, previous, request, target) {
   const brief = await imageBrief(previous, request, target);
-  const generation = await startImage({ brief, conversationId: conversation.id, documentIds: conversation.doc_ids, target });
+  const generation = await startImage({
+    brief, conversationId: conversation.id, documentIds: conversation.doc_ids, target, ownerId: conversation.owner_id,
+  });
   return {
     kind: 'image',
     data: { generation_id: generation.id, ...(target ? { target: { generation_id: target.generation.id, index: target.index } } : {}) },

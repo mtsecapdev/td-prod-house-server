@@ -16,6 +16,8 @@ import { normalizeBrief, startOutlineJob } from '../services/planning/outlineJob
 import { runImageJob } from '../services/imageSkill.js';
 import { renderDiagram, ensureDiagramFile, deleteDiagrams, DiagramSyntaxError } from '../services/diagrams.js';
 import { listTemplates, createBrandTemplate, deleteBrandTemplate } from '../services/templates.js';
+import { getBrandTemplateDb } from '../db/brandTemplatesQueries.js';
+import { ownFigureIds } from '../middleware/auth.js';
 import { renderOfficeFile, notReadyMessage, officeExt, downloadName } from '../services/officeRenderer.js';
 
 async function getTemplates(req, res) {
@@ -27,12 +29,18 @@ async function uploadTemplate(req, res) {
   if (!req.file) throw new AppError('Choose a .pptx file', 400);
   if (!/\.pptx$/i.test(req.file.originalname)) throw new AppError('Templates must be PowerPoint .pptx files', 400);
   const name = String(req.body?.name || req.file.originalname.replace(/\.pptx$/i, '')).trim().slice(0, 60) || 'Company template';
-  const template = await createBrandTemplate(req.file.buffer, name);
+  const template = await createBrandTemplate(req.file.buffer, name, req.user.id);
   res.status(201).json(responseFactory.createJsonResponse({ template }));
 }
 
+// Templates are shared by everyone; the person who uploaded one (or an admin) can delete it.
 async function removeTemplate(req, res) {
-  const deleted = await deleteBrandTemplate(req.params.templateId);
+  const template = await getBrandTemplateDb(Number(req.params.templateId) || 0);
+  if (!template) throw new AppError('Template not found', 404);
+  if (template.uploaded_by !== req.user.id && req.user.role !== 'admin') {
+    throw new AppError('Only the person who added this template, or an admin, can delete it', 403);
+  }
+  const deleted = await deleteBrandTemplate(template.id);
   if (!deleted) throw new AppError('Template not found', 404);
   res.json(responseFactory.createJsonResponse({ deleted: true }));
 }
@@ -43,7 +51,7 @@ async function getGeneration(req, res) {
 }
 
 async function listGenerations(req, res) {
-  const generations = (await getAllGenerationsDb()).map(presentGeneration);
+  const generations = (await getAllGenerationsDb(req.user.id)).map(presentGeneration);
   res.json(responseFactory.createJsonResponse({ generations }));
 }
 
@@ -205,6 +213,7 @@ async function addFigure(req, res) {
   if (isJobLive(generation.job)) return busy(res, generation);
   const figureId = Number(req.body?.figureId);
   if (!figureId) throw new AppError('Choose a figure', 400);
+  if (!(await ownFigureIds(req.user.id, [figureId])).length) throw new AppError('Figure not found', 404);
   const kind = kindOf(generation);
   const items = generation.outline?.[kind.listKey] || [];
   // Without a position (e.g. "Use in..." from Assets), the figure goes before the closing slide/summary.

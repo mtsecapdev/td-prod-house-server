@@ -9,9 +9,9 @@
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
     "dev": "node --env-file=.env --watch app.js",
-    "seed": "node --env-file=.env ./src/db/seed.js",
     "table": "node --env-file=.env ./src/db/createSchemas.js",
     "ingest": "node --env-file=.env ./src/scripts/ingest.js",
+    "create-admin": "node --env-file=.env ./src/scripts/createAdmin.js",
     "reembed": "node --env-file=.env ./src/scripts/reembed.js",
     "rerender-diagrams": "node --env-file=.env ./src/scripts/rerenderDiagrams.js",
     "migrate": "node --env-file=.env ./src/db/migrate.js",
@@ -20,7 +20,6 @@
   },
   "dependencies": {
     "@langchain/textsplitters": "^1.0.1",
-    "cors": "^2.8.6",
     "express": "^5.2.1",
     "multer": "^2.2.0",
     "pg": "^8.22.0",
