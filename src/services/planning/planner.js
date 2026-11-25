@@ -133,10 +133,15 @@ async function planContent(generation, kind, material, count) {
     `Rules:\n` +
     `- Exactly ${count} ${kind.nounPlural}. The first is ${opening}; the last is ${closing}.\n` +
     `- One main idea per ${kind.noun}; no two cover the same ground. Cover everything the user asked for.\n` +
+    `- Never make a ${kind.noun} about the document itself (how to use the manual, its features or ` +
+    `conventions, prerequisites, course maps, revision history, contents, references): only its subject.\n` +
+    (kind.name === 'deck'
+      ? `- A slide is presented, not read: one idea a speaker can say in a sentence, shown with 2-4 short points ` +
+        `or one visual (a figure, a number, a sequence, a comparison). Detail belongs in the speaker notes.\n`
+      : '') +
     (generation.brief?.scope === 'full'
       ? `- The user wants the documents covered as a whole: cover every main section, in the documents' order ` +
-        `(merge small related sections into one ${kind.noun}; skip front and back matter such as prerequisites, ` +
-        `course maps and reference lists).\n`
+        `(merge small related sections into one ${kind.noun}).\n`
       : '') +
     `- Keep each fact with what its passage is about: a passage about one engine type, system, product or process ` +
     `is not evidence about another, even when the wording is similar.\n` +
@@ -182,122 +187,92 @@ export async function planOutline(generation) {
 
 // ── Figures from the documents ──
 
-const MAX_SUGGESTED_FIGURES = 2;
-const STOPWORDS = new Set('with from that this their which about into over under between overall other these those there where when what figure'.split(' '));
-
-function keywords(text) {
-  return new Set((String(text).toLowerCase().match(/[a-z][a-z0-9&-]{3,}/g) || []).filter((w) => !STOPWORDS.has(w)));
-}
-
-// Layouts that carry content a figure can't replace: numbers, quotes, a single statement, bookends.
-const KEEP_TYPES = new Set(['key_stats', 'stat_focus', 'quote_highlight', 'big_idea', 'section_divider', 'key_points']);
-const FIGURE_PAGE_DISTANCE = 3;
-// A word in more than this share of the documents' figures ("engine" in an engine manual) says nothing about
-// which figure a slide needs.
-const COMMON_WORD_SHARE = 0.2;
-const MIN_FIGURE_SCORE = 0.4;
-// A planned slide/section with this many points is a list: the figure goes beside it, not instead of it.
-const LIST_POINTS = 3;
+// Layouts a figure can't add to: numbers, quotes, a single statement, bookends, and those that are diagrams already.
+const KEEP_TYPES = new Set(['stat_focus', 'quote_highlight', 'big_idea', 'section_divider', 'key_points', 'process_flow',
+  'timeline', 'comparison_table', 'diagram', 'procedure', 'reference_table']);
+// Slide and figure texts are compared by meaning (the search model). Scores bunch together (0.6-0.8 on the
+// engine manual), so a figure needs to be from nearby pages, or a close match on meaning alone.
+const FIGURE_PAGE_DISTANCE = 2;
+const NEAR_FIGURE_SIMILARITY = 0.6;
+const FAR_FIGURE_SIMILARITY = 0.72;
+const NEAR_BONUS = 0.05;
 // Matches this strong are taken as they are; weaker ones are checked by the model.
-const SURE_FIGURE_SCORE = 0.75;
+const SURE_FIGURE_SCORE = 0.76;
+// A planned item with this many points is a list: the figure goes beside it, not instead of it.
+const LIST_POINTS = 3;
 
-const captionOf = (f) => f.caption.replace(/^fig(ure)?\.?\s*[A-Z]?\d+(?:[.-]\d+)*[a-z]?\s*[-–—:]?\s*/i, '');
+const cosine = (a, b) => {
+  let dot = 0, na = 0, nb = 0;
+  for (let i = 0; i < a.length; i++) { dot += a[i] * b[i]; na += a[i] * a[i]; nb += b[i] * b[i]; }
+  return dot / Math.sqrt(na * nb);
+};
 
 /**
- * Turns slides into Figure slides when a figure in their documents shows what they are about.
- * 1. Scores every (slide, figure) pair in code: a figure the slide names ("Figure 2-6") scores 1; otherwise the
- *    figure must sit within a few pages of the slide's sources, and the score is the share of its caption's
- *    distinctive words (its printed text, for uncaptioned figures) found in the slide, title matches counting
- *    more. Words common to many of the documents' figures are ignored.
- * 2. Each figure goes to the slide it fits best and each slide gets at most one (best pairs first).
- * 3. Strong pairs are taken; weaker ones are checked by the model (yes/no): the figure must show what the
- *    whole slide is about.
- * Earlier the model chose among candidates itself and moved figures to the wrong slides (the cooling-system
- * figure onto "Why engines need cooling", not "Cooling system components").
- * At most two per deck; number, quote and statement slides, the first and the last are left alone.
+ * Puts the documents' figures on the slides/sections they illustrate. The decks had none: matching on shared
+ * caption words missed obvious pairs ("Engine timing" and Figure 2-25), and at most two were allowed.
+ * 1. Every (item, figure) pair is scored by meaning: the item's title and points against the figure's caption
+ *    and the words printed in it; a figure the item names ("Figure 2-6") scores 1, a figure from nearby pages
+ *    gets a small bonus.
+ * 2. Best pairs first, each item gets at most one figure and each figure goes to one item.
+ * 3. Strong pairs are taken; weaker ones are checked by the model (does the figure show what the item is about?).
+ * A list keeps its points with the figure beside it; an item with little text becomes a Figure item.
  */
 async function suggestFigures(kind, items, documentIds) {
   const figures = await listFiguresDb({ documentIds });
   if (!figures.length) return items;
+  const candidates = items.map((it, i) => ({ it, i }))
+    .filter(({ it, i }) => i > 0 && i < items.length - 1 && !KEEP_TYPES.has(it[kind.typeKey]) && !it.figure_id);
+  if (!candidates.length) return items;
 
-  const wordsOf = new Map(figures.map((f) => [f.id, {
-    caption: keywords(captionOf(f)),
-    labels: keywords(f.labels.slice(0, 300)),
-  }]));
-  const share = new Map();
-  for (const { caption, labels } of wordsOf.values()) {
-    for (const w of new Set([...caption, ...labels])) share.set(w, (share.get(w) || 0) + 1 / figures.length);
-  }
-  const distinctive = (set) => [...set].filter((w) => (share.get(w) || 0) <= COMMON_WORD_SHARE);
+  const figureText = (f) => `${f.caption || ''}. ${String(f.labels || '').slice(0, 240)}`.trim();
+  const itemText = (it) => `${it.title}. ${(it.bullets || []).join(' ')}`;
+  const [figVecs, itemVecs] = await Promise.all([
+    requestEmbeddingBatch(figures.map(figureText)),
+    requestEmbeddingBatch(candidates.map(({ it }) => itemText(it))),
+  ]);
 
   const pairs = [];
-  items.forEach((it, i) => {
-    if (i === 0 || i === items.length - 1 || KEEP_TYPES.has(it[kind.typeKey])) return;
-    const text = `${it.title} ${(it.bullets || []).join(' ')}`;
-    const words = keywords(text);
-    const titleWords = keywords(it.title);
+  candidates.forEach(({ it, i }, c) => {
+    const text = itemText(it);
     const pages = (it.sources || []).map((s) => s.page).filter((p) => p != null);
-    for (const f of figures) {
+    figures.forEach((f, k) => {
       const n = figureNumber(f.caption);
-      const named = n && new RegExp(`\\bfig(?:ure)?\\.?\\s*${n.replace(/[.-]/g, '[.-]')}\\b`, 'i').test(text);
-      const near = f.page != null && pages.some((p) => Math.abs(p - f.page) <= FIGURE_PAGE_DISTANCE);
-      let score = 0;
-      if (named) score = 1;
-      else if (near) {
-        const { caption, labels } = wordsOf.get(f.id);
-        // The caption: its distinctive words found in the slide (title matches count more). One stray word in
-        // a bullet is not enough: it needs a title match or two words.
-        const capKey = distinctive(caption);
-        const capHits = capKey.filter((w) => words.has(w)).length;
-        const capTitle = capKey.filter((w) => titleWords.has(w)).length;
-        const captionScore = capKey.length && (capTitle || capHits >= 2) ? Math.min(1, (capHits + 0.5 * capTitle) / capKey.length) : 0;
-        // The text printed in it (part names), for figures whose caption is general or missing: two or more hits.
-        const labelKey = distinctive(labels);
-        const labelHits = labelKey.filter((w) => words.has(w)).length;
-        const labelScore = labelHits >= 2 ? 0.8 * Math.min(1, labelHits / Math.min(labelKey.length, 6)) : 0;
-        score = Math.max(captionScore, labelScore);
+      if (n && new RegExp(`\\bfig(?:ure)?\\.?\\s*${n.replace(/[.-]/g, '[.-]')}\\b`, 'i').test(text)) {
+        pairs.push({ i, f, score: 1 });
+        return;
       }
-      if (score >= MIN_FIGURE_SCORE) pairs.push({ i, f, score });
-    }
+      const near = f.page != null && pages.some((p) => Math.abs(p - f.page) <= FIGURE_PAGE_DISTANCE);
+      const sim = cosine(itemVecs[c], figVecs[k]);
+      if (sim >= (near ? NEAR_FIGURE_SIMILARITY : FAR_FIGURE_SIMILARITY)) pairs.push({ i, f, score: sim + (near ? NEAR_BONUS : 0) });
+    });
   });
 
-  // Best pairs first; a figure goes to one slide, a slide gets one figure.
   pairs.sort((a, b) => b.score - a.score);
   const chosen = [];
-  const usedSlides = new Set();
+  const usedItems = new Set();
   const usedFigures = new Set();
   for (const pair of pairs) {
-    if (usedSlides.has(pair.i) || usedFigures.has(pair.f.id)) continue;
+    if (usedItems.has(pair.i) || usedFigures.has(pair.f.id)) continue;
     chosen.push(pair);
-    usedSlides.add(pair.i);
+    usedItems.add(pair.i);
     usedFigures.add(pair.f.id);
   }
   const approved = new Set(chosen.flatMap((p, k) => (p.score >= SURE_FIGURE_SCORE ? [k] : [])));
   const unsure = chosen.map((p, k) => ({ ...p, k })).filter((p) => !approved.has(p.k));
   if (unsure.length) for (const k of await confirmFigures(kind, items, unsure)) approved.add(k);
 
-  let used = 0;
   chosen.forEach((p, k) => {
-    if (!approved.has(k) || used >= MAX_SUGGESTED_FIGURES) return;
+    if (!approved.has(k)) return;
     const item = items[p.i];
     const caption = p.f.caption || 'a figure from the document';
-    // A slide that lists several things keeps them, with the figure beside (decks: only Bullets leaves room);
-    // a Figure slide shows just the figure. "Fuel injection system types" became the inline-pump figure alone
-    // and the six types were lost.
     const isList = (item.bullets || []).length >= LIST_POINTS && p.score < 1;
-    if (isList && kind.name === 'deck' && item[kind.typeKey] !== 'bullets') return;
     items[p.i] = isList
       ? { ...item, figure_id: p.f.id, figure_beside: true, type_reason: `${item.type_reason ? `${item.type_reason}; ` : ''}with ${caption} beside` }
       : { ...item, [kind.typeKey]: 'figure', figure_id: p.f.id, type_reason: `Shows ${caption}` };
-    used++;
   });
   return items;
 }
 
-/**
- * Asks the model (thinking: without it the answer flipped between runs) which of these weaker pairings really
- * show the slide's subject. Returns the approved pairs' k.
- */
 async function confirmFigures(kind, items, pairs) {
 
   const prompt =

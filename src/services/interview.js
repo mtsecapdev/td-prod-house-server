@@ -85,6 +85,31 @@ async function coverageOptions(docIds) {
 // ── Starting ──
 
 /**
+ * Audiences and goals that fit these documents, offered as quick answers ("Explain the four-stroke cycle"
+ * rather than a stock "Follow the procedure correctly"). One short call; the stock ones stay if it fails.
+ */
+async function suggestionsFor(type, docIds, parts) {
+  if (!docIds?.length) return null;
+  const docs = await getDocumentOverviewsDb(docIds, 600);
+  const prompt =
+    `Someone is planning a ${KINDS[type].product} from these documents:\n` +
+    docs.map((d) => `- ${d.name}: ${String(d.overview || '').replace(/\s+/g, ' ')}`).join('\n') +
+    (parts.length ? `\nTheir parts: ${parts.slice(0, 20).join('; ')}` : '') +
+    `\n\nSuggest quick answers they could click. audience: 3 likely audiences for it, 2-5 words each (e.g. ` +
+    `"New maintenance technicians"). goal: 3 things the audience should know or be able to do afterwards, each ` +
+    `starting with a verb, 3-8 words, specific to these documents (e.g. "Explain the four-stroke cycle").`;
+  const list = { type: 'array', items: { type: 'string' }, minItems: 3, maxItems: 3 };
+  try {
+    const r = await generateStructured(prompt, config.ollama.generateModel,
+      { type: 'object', properties: { audience: list, goal: list }, required: ['audience', 'goal'] }, { think: false });
+    const clean = (xs) => (xs || []).map((x) => String(x).trim().replace(/[.]$/, '')).filter((x) => x && x.length <= 60).slice(0, 3);
+    return { audience: clean(r.audience), goal: clean(r.goal) };
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Starts the interview for a deck ('deck') or training document ('doc'). Returns the first assistant message
  * ({ kind, content, data }): the first question not already answered in the conversation.
  */
@@ -98,13 +123,14 @@ export async function startInterview({ type, request, previous, docIds }) {
     throw Object.assign(new Error('Choose the documents to work with first (📎 Documents).'), { statusCode: 400 });
   }
   const options = await coverageOptions(docIds);
+  const suggest = await suggestionsFor(type, docIds, options);
   const slots = {};
   if (known.audience) slots.audience = { value: known.audience };
   if (known.named_topics?.length) slots.coverage = { value: known.named_topics.join('; ') };
   if (known.asked_count) slots.length = { value: `${known.asked_count}`, count: known.asked_count };
   if (known.instructions) slots.extras = { value: known.instructions };
   const state = {
-    active: true, type, request, slots, tries: 0, options, sectionCount,
+    active: true, type, request, slots, tries: 0, options, sectionCount, suggest,
     topic: known.topic, tone: known.tone, pinned_chunk_ids: known.pinned_chunk_ids, source_text: known.source_text,
   };
   return nextStep(state);
@@ -115,6 +141,8 @@ function nextStep(state, { followUp = null, note = '' } = {}) {
   const slot = SLOTS.find((s) => !state.slots[s]);
   if (!slot) return summary({ ...state, asking: null, tries: 0 }, note);
   const q = question(slot, state.type);
+  const fromDocs = state.suggest?.[slot];
+  if (fromDocs?.length) q.suggestions = fromDocs;
   const asking = { ...state, asking: slot, tries: followUp ? state.tries : 0 };
   const options = slot === 'coverage' ? [EVERYTHING, ...state.options] : null;
   return {

@@ -6,15 +6,16 @@ import config from '../../config.js';
 import { chatStructured } from '../llm.js';
 
 // Max characters per field, by layout. Paths: "title", "bullets[].detail", "columns[]", "rows[][]".
-// Sized for the slide renderer's boxes at their default font sizes.
+// Sized for the slide renderer's boxes at their default font sizes (presented slides: short points; detail
+// belongs in the speaker notes).
 export const DECK_LIMITS = {
   title: { title: 60, subtitle: 180 },
-  bullets: { title: 70, 'bullets[].heading': 40, 'bullets[].detail': 150 },
+  bullets: { title: 60, 'bullets[].heading': 36, 'bullets[].detail': 110 },
   two_column: { title: 70, column_a_heading: 40, column_b_heading: 40, 'column_a_bullets[]': 110, 'column_b_bullets[]': 110, verdict: 140 },
-  stat_focus: { title: 70, stat_value: 14, stat_label: 40, context: 180 },
+  stat_focus: { title: 60, stat_value: 14, stat_label: 40, context: 150 },
   key_stats: { title: 70, 'stats[].value': 14, 'stats[].label': 30, 'stats[].detail': 110 },
   quote_highlight: { title: 70, quote_text: 240, attribution: 80, commentary: 180 },
-  checklist: { title: 70, 'items[].step': 50, 'items[].detail': 130 },
+  checklist: { title: 60, 'items[].step': 45, 'items[].detail': 100 },
   closing: { title: 60, 'takeaways[]': 130, call_to_action: 140 },
   section_divider: { title: 50, subtitle: 140 },
   big_idea: { statement: 110, supporting: 180 },

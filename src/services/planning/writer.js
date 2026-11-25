@@ -293,8 +293,9 @@ export async function writeItem(generation, index, options = {}) {
   // Pictures the user placed stay through rewrites and layout changes; a figure item shows its figure first.
   const pictures = [...(item?.content?.pictures || [])];
   const { figure, ...rest } = written;
-  // A figure planned beside a list goes on as a picture (decks: on a Bullets slide, which leaves room for it).
-  if (!figure && item?.figure_beside && item.figure_id && (kindOf(generation).name === 'doc' || written.type === 'bullets')) {
+  // A figure planned beside a list goes on as a picture (decks: on a layout with a picture panel).
+  const kind = kindOf(generation);
+  if (!figure && item?.figure_beside && item.figure_id && (kind.name === 'doc' || kind.besideTypes.includes(written.type))) {
     const beside = await getFigureByIdDb(item.figure_id);
     if (beside && !pictures.some((p) => Number(p.figure_id) === beside.id)) pictures.push(pictureOf(beside));
   }

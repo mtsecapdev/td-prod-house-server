@@ -27,6 +27,8 @@ const DECK = {
   noSourceTypes: ['title', 'closing', 'section_divider'],
   // Assigned by the app (figure insertion, planning suggestions), never by the layout chooser or remix.
   appOnlyTypes: ['figure'],
+  // Layouts that show a figure in a panel beside their text (scripts/render_pptx.py PANEL_LAYOUTS).
+  besideTypes: ['bullets', 'checklist', 'stat_focus', 'big_idea', 'quote_highlight', 'two_column', 'key_stats', 'icon_grid'],
 
   // Shown to the outline model. Describes what each layout is FOR, so it can match content to layout;
   // none is framed as an exception to bullets.
@@ -69,7 +71,7 @@ const DECK = {
   // How to fill each layout. Ranges, not fixed counts: the content decides.
   writeGuide: {
     title: 'title: max 8 words naming the subject. subtitle: one sentence on what the audience will be able to do afterwards.',
-    bullets: '2-6 bullets. heading: 2-5 words. detail: one sentence with the specific fact, reason or action.',
+    bullets: '2-4 bullets (up to 6 only when the points are very short). icon: the one from the list that best pictures the point. heading: 2-5 words. detail: one short sentence with the specific fact, reason or action.',
     two_column: 'Two columns that genuinely contrast, each with a heading and 2-5 bullets. verdict: one sentence stating the conclusion if the comparison leads to one, otherwise an empty string.',
     stat_focus: 'stat_value: the one number that best supports the point, with its unit. stat_label: 2-5 words. context: one sentence the sources give about it.',
     key_stats: '2-6 figures that together support the point. value: number with unit. label: 2-4 words. detail: one sentence the sources give about it (what drove it only if they say).',
@@ -80,7 +82,7 @@ const DECK = {
     big_idea: 'statement: max 15 words, quotable. supporting: one sentence of evidence.',
     timeline: '3-7 events in date order. date, label (2-5 words), detail (one sentence).',
     process_flow: '3-7 steps where each feeds the next. label: verb first, 2-4 words. detail: one sentence.',
-    icon_grid: '3-6 items. icon: one keyword (shield, clock, users). label: 2-4 words. description: one sentence.',
+    icon_grid: '3-6 items. icon: the one from the list that best pictures the item. label: 2-4 words. description: one short sentence.',
     comparison_table: '2-5 columns and 2-7 rows. Cells are short phrases. The table should reveal a pattern.',
     diagram: `caption: one sentence telling the audience what the diagram shows. The slide is wide (16:9): prefer left-to-right flowcharts with at most 8 nodes.\n${mermaidGuide({ direction: 'LR' })}`,
     figure: 'The slide shows a figure from the documents (its caption and the text printed in it are given; the caption from the document is shown under it). title: what the audience should see in it (max 10 words). caption: only for a figure the document gave no caption: a few plain words saying what the picture shows (e.g. "Cover of the handbook"); never a figure number or a name the sources do not give it. speaker_notes: walk through the figure using its text.',

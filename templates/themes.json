@@ -13,7 +13,7 @@
         "border": "#E2E8F0", "canvas": "#F0F4F8", "surface": "#FFFFFF",
         "positive": "#10B981", "warning": "#F59E0B"
       },
-      "fonts": { "heading": "Calibri", "body": "Calibri" }
+      "fonts": { "heading": "Segoe UI", "body": "Segoe UI" }
     },
     {
       "id": "evergreen",

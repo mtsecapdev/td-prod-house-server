@@ -1,4 +1,12 @@
+import { readdirSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { DIAGRAM_TYPES } from './diagrams.js';
+
+// The icons a point can carry: the images the renderer has (scripts/icons, built by scripts/build_icons.mjs).
+export const ICON_NAMES = readdirSync(join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'scripts', 'icons'))
+  .filter((f) => f.endsWith('.png')).map((f) => f.slice(0, -4)).sort();
+const iconField = { type: 'string', enum: ICON_NAMES };
 
 export const titleSlideSchema = {
   type: 'object',
@@ -18,10 +26,11 @@ export const bulletsSlideSchema = {
       items: {
         type: 'object',
         properties: {
+          icon:    iconField,
           heading: { type: 'string' },
           detail:  { type: 'string' },
         },
-        required: ['heading', 'detail'],
+        required: ['icon', 'heading', 'detail'],
       },
     },
     speaker_notes: { type: 'string' },
@@ -156,11 +165,11 @@ export const iconGridSlideSchema = {
       items: {
         type: 'object',
         properties: {
-          icon:        { type: 'string' },
+          icon:        iconField,
           label:       { type: 'string' },
           description: { type: 'string' },
         },
-        required: ['label', 'description'],
+        required: ['icon', 'label', 'description'],
       },
     },
     speaker_notes: { type: 'string' },
