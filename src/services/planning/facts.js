@@ -29,7 +29,7 @@ export function quoteFound(quote, text) {
 }
 
 /**
- * The planned points that hold up, as facts: { point, quote, chunk_id, page }. raw: [{ point, quote, source }];
+ * The planned points that hold up, as facts: { point, quote, chunk_id, document_id, page }. raw: [{ point, quote, source }];
  * source is a passage id (0: the user's own text). passagesById: Map of the passages the planner was shown.
  */
 export function verifiedFacts(raw, passagesById, ownText = '') {
@@ -49,7 +49,7 @@ export function verifiedFacts(raw, passagesById, ownText = '') {
     }
     if (unsupportedNumbers(point, quote).length) continue;
     seen.add(point.toLowerCase());
-    facts.push({ point, quote, chunk_id: passage?.id ?? null, page: passage?.page ?? null });
+    facts.push({ point, quote, chunk_id: passage?.id ?? null, document_id: passage?.document_id ?? null, page: passage?.page ?? null });
   }
   return facts;
 }
