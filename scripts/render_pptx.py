@@ -5,7 +5,14 @@ Usage:
     python render_pptx.py <input.json> <output.pptx> [template.pptx]
 
 Input JSON shape (the generation's outline object):
-    { "slides": [ { "layout": "title|bullets|...", "content": { ... } }, ... ] }
+    { "slides": [ { "layout": "title|bullets|...", "content": { ... } }, ... ], "theme": { ... } }
+
+One design system for every layout: wide margins, a short accent bar over the title, one text colour and one
+accent, white space instead of boxes and stripes. A slide with a picture gets a full-height panel on the right
+and its text moves to the left column. Points can carry an icon (scripts/icons, white on an accent circle, so
+one set serves every theme). Everything stays editable in PowerPoint: text boxes, shapes, real tables.
+The editor's preview (td-prod-house-client src/pages/Review.jsx, components/figures/pictureLayout.js) mirrors
+these measures: 1 inch here is 72 px there, and a point is a pixel.
 """
 
 import json
@@ -14,36 +21,54 @@ import sys
 from pathlib import Path
 
 from pptx import Presentation
-from pptx.util import Inches, Pt, Emu
+from pptx.util import Inches, Pt
 from pptx.dml.color import RGBColor
-from pptx.enum.text import PP_ALIGN, MSO_ANCHOR
-from pptx.enum.shapes import MSO_SHAPE
+from pptx.enum.text import PP_ALIGN
+from pptx.enum.shapes import MSO_SHAPE, MSO_CONNECTOR
 from pptx.oxml.ns import qn
 
-# ── Design tokens ──
-NAVY       = RGBColor(0x0F, 0x2B, 0x48)
+# ── Design tokens (a theme from templates/themes.json replaces the colours and fonts) ──
+NAVY       = RGBColor(0x0F, 0x2B, 0x48)   # primary: titles, dark slides
 NAVY_MID   = RGBColor(0x16, 0x3A, 0x60)
 NAVY_LIGHT = RGBColor(0x1E, 0x4A, 0x7A)
-COBALT     = RGBColor(0x25, 0x63, 0xEB)
+COBALT     = RGBColor(0x25, 0x63, 0xEB)   # accent: one per slide, sparingly
 COBALT_LT  = RGBColor(0x60, 0xA5, 0xFA)
-SLATE      = RGBColor(0x47, 0x55, 0x69)
-SLATE_LT   = RGBColor(0x94, 0xA3, 0xB8)
+SLATE      = RGBColor(0x47, 0x55, 0x69)   # body text
+SLATE_LT   = RGBColor(0x94, 0xA3, 0xB8)   # quiet text: captions, slide numbers
 BORDER     = RGBColor(0xE2, 0xE8, 0xF0)
-CANVAS     = RGBColor(0xF0, 0xF4, 0xF8)
+CANVAS     = RGBColor(0xF0, 0xF4, 0xF8)   # panels and cards
 WHITE      = RGBColor(0xFF, 0xFF, 0xFF)
 GREEN      = RGBColor(0x10, 0xB9, 0x81)
 AMBER      = RGBColor(0xF5, 0x9E, 0x0B)
 
+FONT_HEADING = 'Segoe UI'
+FONT_BODY    = 'Segoe UI'
+
 SLIDE_WIDTH  = Inches(13.333)
 SLIDE_HEIGHT = Inches(7.5)
 
-FONT_HEADING = 'Calibri'
-FONT_BODY    = 'Calibri'
+# ── Grid (inches) ──
+M = 0.75                 # side margins
+ACCENT_Y = 0.62          # the short accent bar over the title
+TITLE_Y = 0.78
+TITLE_H = 1.05
+BODY_TOP = 2.05
+BODY_BOTTOM = 6.75
+PANEL_X = 7.55           # where the picture panel starts when a slide has one
+PANEL_PAD = 0.45
+CAPTION_H = 0.55
+
+ICONS = Path(__file__).parent / 'icons'
 
 
 def hex_color(value):
     value = value.lstrip('#')
     return RGBColor(int(value[0:2], 16), int(value[2:4], 16), int(value[4:6], 16))
+
+
+def blend(color, other, t):
+    """color moved t of the way towards other (t=0.85 towards white: a light tint)."""
+    return RGBColor(*(round(a + (b - a) * t) for a, b in zip(color, other)))
 
 
 def apply_theme(theme):
@@ -63,7 +88,7 @@ def apply_theme(theme):
     FONT_BODY = theme['fonts']['body']
 
 
-# ── Helpers ──
+# ── Primitives ──
 
 def set_slide_bg(slide, color):
     fill = slide.background.fill
@@ -88,92 +113,93 @@ def fitted_size(text, width, height, size, min_ratio=0.6):
     return s
 
 
-def add_textbox(slide, left, top, width, height, text, font_size=18,
-                bold=False, color=None, alignment=PP_ALIGN.LEFT,
-                font_name=None, italic=False, anchor=None):
-    color = color or NAVY  # resolved at call time so the template applies
+def add_textbox(slide, left, top, width, height, text, font_size=18, bold=False, color=None,
+                alignment=PP_ALIGN.LEFT, font_name=None, italic=False, anchor=None, spacing=1.12):
+    color = color or NAVY  # resolved at call time so the theme applies
     font_size = fitted_size(text, width, height, font_size)
-    txBox = slide.shapes.add_textbox(left, top, width, height)
-    tf = txBox.text_frame
+    box = slide.shapes.add_textbox(int(left), int(top), int(width), int(height))
+    tf = box.text_frame
     tf.word_wrap = True
     if anchor:
-        tf.paragraphs[0].alignment = alignment
-        tf_elem = tf._txBody
-        body_pr = tf_elem.find(qn('a:bodyPr'))
+        body_pr = tf._txBody.find(qn('a:bodyPr'))
         if body_pr is not None:
             body_pr.set('anchor', anchor)
     p = tf.paragraphs[0]
     p.text = text or ''
-    p.font.size = Pt(font_size)
-    p.font.bold = bold
-    p.font.italic = italic
-    p.font.color.rgb = color
-    p.font.name = font_name or FONT_BODY
     p.alignment = alignment
-    return txBox
+    p.line_spacing = spacing
+    f = p.font
+    f.size, f.bold, f.italic, f.name = Pt(font_size), bold, italic, font_name or FONT_BODY
+    f.color.rgb = color
+    return box
 
 
-def add_rich_textbox(slide, left, top, width, height, runs, alignment=PP_ALIGN.LEFT):
-    txBox = slide.shapes.add_textbox(left, top, width, height)
-    tf = txBox.text_frame
-    tf.word_wrap = True
-    p = tf.paragraphs[0]
-    p.alignment = alignment
-    for i, run_spec in enumerate(runs):
-        if i == 0:
-            r = p.runs[0] if p.runs else p.add_run()
-        else:
-            r = p.add_run()
-        r.text = run_spec.get('text', '')
-        r.font.size = Pt(run_spec.get('size', 14))
-        r.font.bold = run_spec.get('bold', False)
-        r.font.italic = run_spec.get('italic', False)
-        r.font.color.rgb = run_spec.get('color', NAVY)
-        r.font.name = run_spec.get('font', FONT_BODY)
-    return txBox
-
-
-def add_rect(slide, left, top, width, height, fill_color, line=False):
-    shape = slide.shapes.add_shape(MSO_SHAPE.RECTANGLE, left, top, width, height)
-    shape.fill.solid()
-    shape.fill.fore_color.rgb = fill_color
-    if not line:
-        shape.line.fill.background()
-    return shape
-
-
-def add_rounded_rect(slide, left, top, width, height, fill_color):
-    shape = slide.shapes.add_shape(MSO_SHAPE.ROUNDED_RECTANGLE, left, top, width, height)
-    shape.fill.solid()
-    shape.fill.fore_color.rgb = fill_color
+def _no_line(shape):
+    """No outline, and none of the default shape style (its effects add a drop shadow): flat shapes."""
     shape.line.fill.background()
-    shape.adjustments[0] = 0.04
+    style = shape._element.find(qn('p:style'))
+    if style is not None:
+        shape._element.remove(style)
     return shape
+
+
+def add_rect(slide, left, top, width, height, fill_color):
+    shape = slide.shapes.add_shape(MSO_SHAPE.RECTANGLE, int(left), int(top), int(width), int(height))
+    shape.fill.solid()
+    shape.fill.fore_color.rgb = fill_color
+    return _no_line(shape)
+
+
+def add_rounded_rect(slide, left, top, width, height, fill_color, radius=0.08):
+    shape = slide.shapes.add_shape(MSO_SHAPE.ROUNDED_RECTANGLE, int(left), int(top), int(width), int(height))
+    shape.fill.solid()
+    shape.fill.fore_color.rgb = fill_color
+    # radius in inches, whatever the box size
+    shape.adjustments[0] = min(0.5, Inches(radius) / max(1, min(int(width), int(height))))
+    return _no_line(shape)
 
 
 def add_oval(slide, left, top, width, height, fill_color, transparency=0):
-    shape = slide.shapes.add_shape(MSO_SHAPE.OVAL, left, top, width, height)
+    shape = slide.shapes.add_shape(MSO_SHAPE.OVAL, int(left), int(top), int(width), int(height))
     shape.fill.solid()
     shape.fill.fore_color.rgb = fill_color
-    shape.line.fill.background()
     if transparency > 0:
-        sp_pr = shape._element.find(qn('p:spPr'))
-        solid_fill = sp_pr.find(qn('a:solidFill'))
-        if solid_fill is not None:
-            srgb = solid_fill.find(qn('a:srgbClr'))
-            if srgb is not None:
-                alpha = srgb.makeelement(qn('a:alpha'), {})
-                alpha.set('val', str(int((1 - transparency) * 100000)))
-                srgb.append(alpha)
-    return shape
+        srgb = shape._element.find(qn('p:spPr')).find(qn('a:solidFill')).find(qn('a:srgbClr'))
+        alpha = srgb.makeelement(qn('a:alpha'), {})
+        alpha.set('val', str(int((1 - transparency) * 100000)))
+        srgb.append(alpha)
+    return _no_line(shape)
 
 
-def add_slide_number(slide, slide_idx, total):
-    add_textbox(slide, SLIDE_WIDTH - Inches(1.2), SLIDE_HEIGHT - Inches(0.5),
-                Inches(1), Inches(0.35),
-                f'{slide_idx}/{total}', font_size=9, color=SLATE_LT,
-                alignment=PP_ALIGN.RIGHT)
+def add_line(slide, x1, y1, x2, y2, color, width_pt=1.5):
+    line = slide.shapes.add_connector(MSO_CONNECTOR.STRAIGHT, int(x1), int(y1), int(x2), int(y2))
+    line.line.color.rgb = color
+    line.line.width = Pt(width_pt)
+    return line
 
+
+def add_icon(slide, name, left, top, size, fill=None):
+    """An icon from scripts/icons on a filled circle; without an image for `name`, just the circle's number or
+    nothing (callers pass a fallback through `name` only when it is a real icon)."""
+    add_oval(slide, left, top, size, size, fill or COBALT)
+    path = ICONS / f'{name}.png' if name else None
+    if path and path.exists():
+        inset = int(size) * 0.24
+        slide.shapes.add_picture(str(path), int(left + inset), int(top + inset), int(size - 2 * inset), int(size - 2 * inset))
+        return True
+    return False
+
+
+def add_marker(slide, icon, number, left, top, size):
+    """A point's marker: its icon on an accent circle, else its number in the accent colour."""
+    if icon and (ICONS / f'{icon}.png').exists():
+        add_icon(slide, icon, left, top, size)
+    else:
+        add_textbox(slide, left - Inches(0.05), top - Inches(0.02), Inches(0.9), size, f'{number:02d}',
+                    font_size=18, bold=True, color=COBALT, font_name=FONT_HEADING, anchor='ctr')
+
+
+# ── Pictures ──
 
 def png_size(path):
     """(width, height) in pixels, read from the PNG header."""
@@ -222,6 +248,7 @@ def image_settings(a):
             return None
 
     crop = a.get('crop') or {}
+
     def edge(k):
         try:
             return min(0.95, max(0.0, float(crop.get(k, 0))))
@@ -239,739 +266,32 @@ def image_settings(a):
     }
 
 
-def _add_notes(slide, content):
-    notes = content.get('speaker_notes', '')
-    if notes:
-        notes_slide = slide.notes_slide
-        notes_slide.notes_text_frame.text = notes
-
-
-# ══════════════════════════════════════════════
-#  LAYOUT RENDERERS
-# ══════════════════════════════════════════════
-
-def render_title(slide, content, **kw):
-    set_slide_bg(slide, NAVY)
-
-    # Decorative geometric shapes
-    add_oval(slide, SLIDE_WIDTH - Inches(4), Inches(-2),
-             Inches(6), Inches(6), COBALT, transparency=0.92)
-    add_oval(slide, Inches(-2), SLIDE_HEIGHT - Inches(3),
-             Inches(5), Inches(5), NAVY_LIGHT, transparency=0.88)
-
-    # Top accent line
-    add_rect(slide, Inches(0), Inches(0), SLIDE_WIDTH, Inches(0.06), COBALT)
-
-    # Bottom accent bar
-    add_rect(slide, Inches(0), SLIDE_HEIGHT - Inches(0.06),
-             SLIDE_WIDTH, Inches(0.06), COBALT)
-
-    # Title
-    add_textbox(slide, Inches(1.5), Inches(2.0), Inches(10), Inches(2.2),
-                content.get('title', ''), font_size=48, bold=True, color=WHITE,
-                font_name=FONT_HEADING)
-
-    # Divider
-    add_rect(slide, Inches(1.5), Inches(4.4), Inches(1.2), Inches(0.06), COBALT)
-
-    # Subtitle
-    add_textbox(slide, Inches(1.5), Inches(4.8), Inches(9), Inches(1.5),
-                content.get('subtitle', ''), font_size=22, color=SLATE_LT)
-
-
-def render_bullets(slide, content, slide_idx=0, total=0):
-    set_slide_bg(slide, WHITE)
-
-    # Left accent panel
-    add_rect(slide, Inches(0), Inches(0), Inches(0.5), SLIDE_HEIGHT, NAVY)
-
-    # Title area with canvas background
-    add_rect(slide, Inches(0.5), Inches(0), SLIDE_WIDTH - Inches(0.5), Inches(1.5), CANVAS)
-
-    # Title
-    add_textbox(slide, Inches(1.2), Inches(0.35), Inches(10.5), Inches(0.9),
-                content.get('title', ''), font_size=30, bold=True, color=NAVY,
-                font_name=FONT_HEADING)
-
-    # Bottom border of title area
-    add_rect(slide, Inches(0.5), Inches(1.48), SLIDE_WIDTH - Inches(0.5), Inches(0.04), COBALT)
-
-    bullets = content.get('bullets', [])
-    num_bullets = len(bullets)
-    available = 5.3
-    per_bullet = min(available / max(num_bullets, 1), 1.3)
-    # With a picture on the slide the points take the left half; the picture sits in SIDE_BOX on the right.
-    beside = bool(content.get('pictures'))
-    text_w = Inches(5.3) if beside else Inches(10)
-    row_w = int(SLIDE_WIDTH * SIDE_BOX[0]) - Inches(0.6) if beside else SLIDE_WIDTH - Inches(0.5)
-
-    y = Inches(1.8)
-    for i, bullet in enumerate(bullets):
-        heading = bullet.get('heading', '')
-        detail = bullet.get('detail', '')
-
-        # Alternating row tint
-        if i % 2 == 0:
-            add_rect(slide, Inches(0.5), y - Inches(0.05),
-                     row_w, Inches(per_bullet),
-                     CANVAS)
-
-        # Numbered circle badge
-        badge_size = Inches(0.45)
-        add_oval(slide, Inches(1.0), y + Inches(0.02),
-                 badge_size, badge_size, COBALT)
-        add_textbox(slide, Inches(1.0), y + Inches(0.04),
-                    badge_size, badge_size,
-                    str(i + 1), font_size=14, bold=True, color=WHITE,
-                    alignment=PP_ALIGN.CENTER, anchor='ctr')
-
-        # Heading
-        add_textbox(slide, Inches(1.7), y, text_w, Inches(0.4),
-                    heading, font_size=17, bold=True, color=NAVY)
-
-        # Detail
-        detail_h = Inches(max(per_bullet - 0.5, 0.4))
-        add_textbox(slide, Inches(1.7), y + Inches(0.38), text_w, detail_h,
-                    detail, font_size=13, color=SLATE)
-
-        y += Inches(per_bullet)
-
-    add_slide_number(slide, slide_idx, total)
-    _add_notes(slide, content)
-
-
-def render_two_column(slide, content, slide_idx=0, total=0):
-    set_slide_bg(slide, CANVAS)
-
-    # Title bar
-    add_rect(slide, Inches(0), Inches(0), SLIDE_WIDTH, Inches(1.5), WHITE)
-    add_textbox(slide, Inches(0.8), Inches(0.35), Inches(11), Inches(0.9),
-                content.get('title', ''), font_size=30, bold=True, color=NAVY,
-                font_name=FONT_HEADING)
-    add_rect(slide, Inches(0), Inches(1.48), SLIDE_WIDTH, Inches(0.04), BORDER)
-
-    # Column cards (shorter when a verdict line sits underneath)
-    verdict = (content.get('verdict') or '').strip()
-    card_top = Inches(1.9)
-    card_h = Inches(4.3) if verdict else Inches(5.1)
-    card_w = Inches(5.6)
-    gap = Inches(0.5)
-    left_x = Inches(0.8)
-    right_x = left_x + card_w + gap
-
-    # Column A card
-    add_rounded_rect(slide, left_x, card_top, card_w, card_h, WHITE)
-    add_rect(slide, left_x, card_top, card_w, Inches(0.06), COBALT)
-    add_textbox(slide, left_x + Inches(0.4), card_top + Inches(0.3), card_w - Inches(0.8), Inches(0.5),
-                content.get('column_a_heading', ''), font_size=18, bold=True, color=COBALT)
-
-    a_bullets = content.get('column_a_bullets', [])
-    y = card_top + Inches(1.0)
-    per_item = min(3.8 / max(len(a_bullets), 1), 0.9)
-    for b in a_bullets:
-        add_textbox(slide, left_x + Inches(0.6), y, card_w - Inches(1.0), Inches(per_item),
-                    f'•  {b}', font_size=13, color=SLATE)
-        y += Inches(per_item)
-
-    # Column B card
-    add_rounded_rect(slide, right_x, card_top, card_w, card_h, WHITE)
-    add_rect(slide, right_x, card_top, card_w, Inches(0.06), NAVY)
-    add_textbox(slide, right_x + Inches(0.4), card_top + Inches(0.3), card_w - Inches(0.8), Inches(0.5),
-                content.get('column_b_heading', ''), font_size=18, bold=True, color=NAVY)
-
-    b_bullets = content.get('column_b_bullets', [])
-    y = card_top + Inches(1.0)
-    per_item = min(3.8 / max(len(b_bullets), 1), 0.9)
-    for b in b_bullets:
-        add_textbox(slide, right_x + Inches(0.6), y, card_w - Inches(1.0), Inches(per_item),
-                    f'•  {b}', font_size=13, color=SLATE)
-        y += Inches(per_item)
-
-    if verdict:
-        add_rich_textbox(slide, left_x, card_top + card_h + Inches(0.25), card_w * 2 + gap, Inches(0.6), [
-            {'text': 'Verdict:  ', 'size': 15, 'bold': True, 'color': COBALT},
-            {'text': verdict, 'size': 15, 'color': NAVY},
-        ])
-
-    add_slide_number(slide, slide_idx, total)
-    _add_notes(slide, content)
-
-
-def render_stat_focus(slide, content, slide_idx=0, total=0):
-    set_slide_bg(slide, NAVY)
-
-    # Decorative geometry
-    add_oval(slide, SLIDE_WIDTH - Inches(3.5), Inches(-1.5),
-             Inches(5), Inches(5), COBALT, transparency=0.9)
-    add_oval(slide, Inches(-2), SLIDE_HEIGHT - Inches(3.5),
-             Inches(4.5), Inches(4.5), NAVY_LIGHT, transparency=0.85)
-
-    # Title
-    add_textbox(slide, Inches(1.2), Inches(0.6), Inches(10), Inches(0.8),
-                content.get('title', ''), font_size=24, bold=True, color=SLATE_LT,
-                font_name=FONT_HEADING)
-
-    # Central stat card
-    card_w = Inches(7)
-    card_h = Inches(3.5)
-    card_x = (SLIDE_WIDTH - card_w) // 2
-    card_y = Inches(1.8)
-    add_rounded_rect(slide, card_x, card_y, card_w, card_h, WHITE)
-
-    # Stat value
-    add_textbox(slide, card_x, card_y + Inches(0.3), card_w, Inches(1.6),
-                content.get('stat_value', ''), font_size=80, bold=True, color=COBALT,
-                alignment=PP_ALIGN.CENTER, font_name=FONT_HEADING, anchor='ctr')
-
-    # Divider
-    div_w = Inches(1)
-    add_rect(slide, (SLIDE_WIDTH - div_w) // 2, card_y + Inches(2.0),
-             div_w, Inches(0.05), COBALT)
-
-    # Label
-    add_textbox(slide, card_x, card_y + Inches(2.2), card_w, Inches(0.6),
-                (content.get('stat_label', '') or '').upper(), font_size=16, bold=True,
-                color=SLATE, alignment=PP_ALIGN.CENTER)
-
-    # Context below card
-    add_textbox(slide, Inches(2.5), card_y + card_h + Inches(0.3), Inches(8), Inches(1),
-                content.get('context', ''), font_size=16, color=SLATE_LT,
-                alignment=PP_ALIGN.CENTER)
-
-    add_slide_number(slide, slide_idx, total)
-    _add_notes(slide, content)
-
-
-def render_quote_highlight(slide, content, slide_idx=0, total=0):
-    set_slide_bg(slide, CANVAS)
-
-    # Dark left panel
-    panel_w = Inches(4.5)
-    add_rect(slide, Inches(0), Inches(0), panel_w, SLIDE_HEIGHT, NAVY)
-
-    # Title on the dark panel
-    add_textbox(slide, Inches(0.6), Inches(0.8), panel_w - Inches(1.0), Inches(1.2),
-                content.get('title', ''), font_size=26, bold=True, color=WHITE,
-                font_name=FONT_HEADING)
-
-    # Large decorative quote mark on dark panel
-    add_textbox(slide, Inches(0.4), Inches(2.2), Inches(2), Inches(2),
-                '“', font_size=120, bold=True, color=COBALT_LT,
-                font_name=FONT_HEADING)
-
-    # Attribution on dark panel
-    add_textbox(slide, Inches(0.6), SLIDE_HEIGHT - Inches(1.5), panel_w - Inches(1.0), Inches(0.6),
-                f'— {content.get("attribution", "")}', font_size=14,
-                bold=True, color=COBALT_LT)
-
-    # Quote card on the right
-    card_x = panel_w + Inches(0.6)
-    card_w = SLIDE_WIDTH - panel_w - Inches(1.2)
-    card_y = Inches(1.0)
-    card_h = Inches(4.0)
-    add_rounded_rect(slide, card_x, card_y, card_w, card_h, WHITE)
-
-    # Cobalt top border on card
-    add_rect(slide, card_x, card_y, card_w, Inches(0.06), COBALT)
-
-    # Quote text
-    add_textbox(slide, card_x + Inches(0.6), card_y + Inches(0.5),
-                card_w - Inches(1.2), card_h - Inches(1.0),
-                content.get('quote_text', ''), font_size=20, italic=True, color=NAVY)
-
-    # Commentary below card
-    add_textbox(slide, card_x, card_y + card_h + Inches(0.4),
-                card_w, Inches(1.5),
-                content.get('commentary', ''), font_size=14, color=SLATE)
-
-    add_slide_number(slide, slide_idx, total)
-    _add_notes(slide, content)
-
-
-def render_checklist(slide, content, slide_idx=0, total=0):
-    set_slide_bg(slide, WHITE)
-
-    # Full-width title bar
-    add_rect(slide, Inches(0), Inches(0), SLIDE_WIDTH, Inches(1.5), NAVY)
-    add_textbox(slide, Inches(1.0), Inches(0.35), Inches(11), Inches(0.9),
-                content.get('title', ''), font_size=30, bold=True, color=WHITE,
-                font_name=FONT_HEADING)
-
-    items = content.get('items', [])
-    num_items = len(items)
-    available = 5.3
-    per_item = min(available / max(num_items, 1), 1.3)
-
-    # Vertical connector line
-    line_x = Inches(1.45)
-    y_start = Inches(1.9)
-    line_h = Inches(per_item * (num_items - 1) + 0.2) if num_items > 1 else Inches(0)
-    if num_items > 1:
-        add_rect(slide, line_x, y_start + Inches(0.25), Inches(0.04), line_h, BORDER)
-
-    y = y_start
-    for i, item in enumerate(items):
-        # Circle badge with number
-        badge_size = Inches(0.5)
-        add_oval(slide, Inches(1.2), y, badge_size, badge_size, NAVY)
-        add_textbox(slide, Inches(1.2), y + Inches(0.02),
-                    badge_size, badge_size,
-                    str(i + 1), font_size=15, bold=True, color=WHITE,
-                    alignment=PP_ALIGN.CENTER, anchor='ctr')
-
-        # Step card
-        card_x = Inches(2.0)
-        card_w = Inches(10.5)
-        card_h = Inches(max(per_item - 0.15, 0.6))
-        add_rounded_rect(slide, card_x, y - Inches(0.05), card_w, card_h, CANVAS)
-
-        # Step name
-        add_textbox(slide, card_x + Inches(0.3), y, card_w - Inches(0.6), Inches(0.4),
-                    item.get('step', ''), font_size=16, bold=True, color=NAVY)
-
-        # Detail
-        detail_h = Inches(max(per_item - 0.6, 0.3))
-        add_textbox(slide, card_x + Inches(0.3), y + Inches(0.38), card_w - Inches(0.6), detail_h,
-                    item.get('detail', ''), font_size=12, color=SLATE)
-
-        y += Inches(per_item)
-
-    add_slide_number(slide, slide_idx, total)
-    _add_notes(slide, content)
-
-
-def render_closing(slide, content, **kw):
-    set_slide_bg(slide, NAVY)
-
-    # Decorative elements (mirror title slide)
-    add_oval(slide, SLIDE_WIDTH - Inches(4), Inches(-2),
-             Inches(6), Inches(6), COBALT, transparency=0.92)
-    add_oval(slide, Inches(-2), SLIDE_HEIGHT - Inches(3),
-             Inches(5), Inches(5), NAVY_LIGHT, transparency=0.88)
-
-    # Top accent line
-    add_rect(slide, Inches(0), Inches(0), SLIDE_WIDTH, Inches(0.06), COBALT)
-
-    # Title
-    add_textbox(slide, Inches(1.5), Inches(0.8), Inches(10), Inches(1.0),
-                content.get('title', 'Key Takeaways'), font_size=36, bold=True, color=WHITE,
-                font_name=FONT_HEADING)
-
-    # Divider
-    add_rect(slide, Inches(1.5), Inches(1.9), Inches(1.2), Inches(0.06), COBALT)
-
-    # Takeaway items
-    takeaways = content.get('takeaways', [])
-    y = Inches(2.3)
-    per_item = min(3.8 / max(len(takeaways), 1), 0.85)
-
-    for i, takeaway in enumerate(takeaways):
-        # Checkmark / number badge
-        badge_size = Inches(0.4)
-        add_oval(slide, Inches(1.5), y + Inches(0.02), badge_size, badge_size, COBALT)
-        add_textbox(slide, Inches(1.5), y + Inches(0.04),
-                    badge_size, badge_size,
-                    '✓', font_size=14, bold=True, color=WHITE,
-                    alignment=PP_ALIGN.CENTER, anchor='ctr')
-
-        # Takeaway text
-        add_textbox(slide, Inches(2.2), y, Inches(9.5), Inches(per_item),
-                    takeaway, font_size=17, color=WHITE)
-
-        y += Inches(per_item)
-
-    # Call to action
-    cta = content.get('call_to_action', '')
-    if cta:
-        cta_y = max(y + Inches(0.3), Inches(5.5))
-        add_rect(slide, Inches(1.5), cta_y, Inches(10), Inches(0.04), COBALT_LT)
-        add_textbox(slide, Inches(1.5), cta_y + Inches(0.2), Inches(10), Inches(0.8),
-                    cta, font_size=18, bold=True, color=COBALT_LT)
-
-    # Bottom accent bar
-    add_rect(slide, Inches(0), SLIDE_HEIGHT - Inches(0.06),
-             SLIDE_WIDTH, Inches(0.06), COBALT)
-
-    _add_notes(slide, content)
-
-
-def render_section_divider(slide, content, slide_idx=0, total=0):
-    set_slide_bg(slide, NAVY_MID)
-
-    # Horizontal accent stripe
-    add_rect(slide, Inches(0), Inches(3.2), SLIDE_WIDTH, Inches(0.08), COBALT)
-
-    # Decorative circle
-    add_oval(slide, SLIDE_WIDTH - Inches(5), Inches(0.5),
-             Inches(7), Inches(7), NAVY_LIGHT, transparency=0.88)
-
-    # Section title — large, centered
-    add_textbox(slide, Inches(1.5), Inches(2.0), Inches(10), Inches(1.2),
-                content.get('title', ''), font_size=44, bold=True, color=WHITE,
-                font_name=FONT_HEADING, alignment=PP_ALIGN.LEFT)
-
-    # Subtitle below stripe
-    add_textbox(slide, Inches(1.5), Inches(3.6), Inches(9), Inches(1.0),
-                content.get('subtitle', ''), font_size=20, color=SLATE_LT)
-
-    add_slide_number(slide, slide_idx, total)
-
-
-def render_big_idea(slide, content, slide_idx=0, total=0):
-    set_slide_bg(slide, WHITE)
-
-    # Large cobalt accent block on left
-    add_rect(slide, Inches(0), Inches(0), Inches(1.0), SLIDE_HEIGHT, COBALT)
-
-    # Decorative quote mark
-    add_textbox(slide, Inches(1.5), Inches(0.8), Inches(2), Inches(2),
-                '"', font_size=140, bold=True, color=BORDER,
-                font_name=FONT_HEADING)
-
-    # Statement — the big idea, centered vertically
-    add_textbox(slide, Inches(2.0), Inches(2.0), Inches(9.5), Inches(2.5),
-                content.get('statement', ''), font_size=38, bold=True, color=NAVY,
-                font_name=FONT_HEADING)
-
-    # Divider
-    add_rect(slide, Inches(2.0), Inches(4.7), Inches(1.5), Inches(0.06), COBALT)
-
-    # Supporting text
-    add_textbox(slide, Inches(2.0), Inches(5.1), Inches(9.5), Inches(1.2),
-                content.get('supporting', ''), font_size=18, color=SLATE)
-
-    add_slide_number(slide, slide_idx, total)
-    _add_notes(slide, content)
-
-
-def render_timeline(slide, content, slide_idx=0, total=0):
-    set_slide_bg(slide, CANVAS)
-
-    # Title bar
-    add_rect(slide, Inches(0), Inches(0), SLIDE_WIDTH, Inches(1.5), WHITE)
-    add_textbox(slide, Inches(0.8), Inches(0.35), Inches(11), Inches(0.9),
-                content.get('title', ''), font_size=30, bold=True, color=NAVY,
-                font_name=FONT_HEADING)
-    add_rect(slide, Inches(0), Inches(1.48), SLIDE_WIDTH, Inches(0.04), COBALT)
-
-    events = content.get('events', [])
-    num = len(events)
-    if num == 0:
-        add_slide_number(slide, slide_idx, total)
-        _add_notes(slide, content)
-        return
-
-    # Horizontal timeline bar
-    bar_y = Inches(3.4)
-    margin = Inches(1.2)
-    usable_w = SLIDE_WIDTH - margin * 2
-    add_rect(slide, margin, bar_y, usable_w, Inches(0.06), NAVY)
-
-    per_event = int(usable_w) // max(num, 1)
-
-    for i, event in enumerate(events):
-        cx = int(margin) + per_event * i + per_event // 2
-
-        # Dot on timeline
-        dot = Inches(0.35)
-        add_oval(slide, cx - int(dot) // 2, int(bar_y) - int(dot) // 2,
-                 dot, dot, COBALT)
-
-        # Date label above
-        add_textbox(slide, cx - Inches(1.5), bar_y - Inches(1.0),
-                    Inches(3), Inches(0.5),
-                    event.get('date', ''), font_size=12, bold=True, color=COBALT,
-                    alignment=PP_ALIGN.CENTER)
-
-        # Event label above date
-        add_textbox(slide, cx - Inches(1.5), bar_y - Inches(1.5),
-                    Inches(3), Inches(0.5),
-                    event.get('label', ''), font_size=14, bold=True, color=NAVY,
-                    alignment=PP_ALIGN.CENTER)
-
-        # Detail below bar
-        add_textbox(slide, cx - Inches(1.5), bar_y + Inches(0.4),
-                    Inches(3), Inches(1.5),
-                    event.get('detail', ''), font_size=11, color=SLATE,
-                    alignment=PP_ALIGN.CENTER)
-
-    add_slide_number(slide, slide_idx, total)
-    _add_notes(slide, content)
-
-
-def render_process_flow(slide, content, slide_idx=0, total=0):
-    set_slide_bg(slide, WHITE)
-
-    # Title bar
-    add_rect(slide, Inches(0), Inches(0), SLIDE_WIDTH, Inches(1.5), NAVY)
-    add_textbox(slide, Inches(1.0), Inches(0.35), Inches(11), Inches(0.9),
-                content.get('title', ''), font_size=30, bold=True, color=WHITE,
-                font_name=FONT_HEADING)
-
-    steps = content.get('steps', [])
-    num = len(steps)
-    if num == 0:
-        add_slide_number(slide, slide_idx, total)
-        _add_notes(slide, content)
-        return
-
-    margin = Inches(0.8)
-    gap = Inches(0.3)
-    usable = SLIDE_WIDTH - margin * 2 - gap * max(num - 1, 0)
-    card_w = int(usable) // max(num, 1)
-    card_h = Inches(4.5)
-    card_y = Inches(2.0)
-
-    for i, step in enumerate(steps):
-        x = int(margin) + i * (card_w + int(gap))
-
-        # Card
-        add_rounded_rect(slide, x, card_y, card_w, card_h, CANVAS)
-
-        # Step number badge
-        badge = Inches(0.55)
-        badge_x = x + (card_w - int(badge)) // 2
-        add_oval(slide, badge_x, card_y + Inches(0.3), badge, badge, COBALT)
-        add_textbox(slide, badge_x, card_y + Inches(0.32),
-                    badge, badge,
-                    str(i + 1), font_size=18, bold=True, color=WHITE,
-                    alignment=PP_ALIGN.CENTER, anchor='ctr')
-
-        # Label
-        add_textbox(slide, x + Inches(0.2), card_y + Inches(1.1),
-                    card_w - Inches(0.4), Inches(0.6),
-                    step.get('label', ''), font_size=14, bold=True, color=NAVY,
-                    alignment=PP_ALIGN.CENTER)
-
-        # Detail
-        add_textbox(slide, x + Inches(0.2), card_y + Inches(1.8),
-                    card_w - Inches(0.4), Inches(2.2),
-                    step.get('detail', ''), font_size=11, color=SLATE,
-                    alignment=PP_ALIGN.CENTER)
-
-        # Arrow between cards
-        if i < num - 1:
-            arrow_x = x + card_w + int(gap) // 2 - Inches(0.15)
-            add_textbox(slide, arrow_x, card_y + Inches(1.8),
-                        Inches(0.4), Inches(0.5),
-                        '→', font_size=24, bold=True, color=COBALT,
-                        alignment=PP_ALIGN.CENTER)
-
-    add_slide_number(slide, slide_idx, total)
-    _add_notes(slide, content)
-
-
-def render_icon_grid(slide, content, slide_idx=0, total=0):
-    set_slide_bg(slide, CANVAS)
-
-    # Title bar
-    add_rect(slide, Inches(0), Inches(0), SLIDE_WIDTH, Inches(1.5), WHITE)
-    add_textbox(slide, Inches(0.8), Inches(0.35), Inches(11), Inches(0.9),
-                content.get('title', ''), font_size=30, bold=True, color=NAVY,
-                font_name=FONT_HEADING)
-    add_rect(slide, Inches(0), Inches(1.48), SLIDE_WIDTH, Inches(0.04), COBALT)
-
-    items = content.get('items', [])
-    num = len(items)
-    if num == 0:
-        add_slide_number(slide, slide_idx, total)
-        _add_notes(slide, content)
-        return
-
-    # Grid: 2 or 3 columns
-    cols = 3 if num > 4 else 2
-    rows_count = (num + cols - 1) // cols
-
-    margin = Inches(0.8)
-    gap_x = Inches(0.4)
-    gap_y = Inches(0.4)
-    card_w = (int(SLIDE_WIDTH) - int(margin) * 2 - int(gap_x) * (cols - 1)) // cols
-    available_h = int(SLIDE_HEIGHT) - int(Inches(2.0)) - int(Inches(0.5))
-    card_h = min((available_h - int(gap_y) * (rows_count - 1)) // max(rows_count, 1), int(Inches(2.5)))
-
-    grid_top = Inches(1.8)
-
-    for idx, item in enumerate(items):
-        col = idx % cols
-        row = idx // cols
-        x = int(margin) + col * (card_w + int(gap_x))
-        y = int(grid_top) + row * (card_h + int(gap_y))
-
-        # Card
-        add_rounded_rect(slide, x, y, card_w, card_h, WHITE)
-
-        # Icon circle
-        icon_size = Inches(0.6)
-        icon_x = x + Inches(0.3)
-        icon_y = y + Inches(0.3)
-        add_oval(slide, icon_x, icon_y, icon_size, icon_size, COBALT)
-        icon_text = (item.get('icon', '') or '●')[:1].upper()
-        add_textbox(slide, icon_x, icon_y + Inches(0.02),
-                    icon_size, icon_size,
-                    icon_text, font_size=16, bold=True, color=WHITE,
-                    alignment=PP_ALIGN.CENTER, anchor='ctr')
-
-        # Label
-        add_textbox(slide, x + Inches(0.3), icon_y + icon_size + Inches(0.15),
-                    card_w - Inches(0.6), Inches(0.4),
-                    item.get('label', ''), font_size=14, bold=True, color=NAVY)
-
-        # Description
-        add_textbox(slide, x + Inches(0.3), icon_y + icon_size + Inches(0.55),
-                    card_w - Inches(0.6), Inches(card_h / Inches(1) - 1.5),
-                    item.get('description', ''), font_size=11, color=SLATE)
-
-    add_slide_number(slide, slide_idx, total)
-    _add_notes(slide, content)
-
-
-def render_comparison_table(slide, content, slide_idx=0, total=0):
-    set_slide_bg(slide, WHITE)
-
-    # Title bar
-    add_rect(slide, Inches(0), Inches(0), SLIDE_WIDTH, Inches(1.5), NAVY)
-    add_textbox(slide, Inches(1.0), Inches(0.35), Inches(11), Inches(0.9),
-                content.get('title', ''), font_size=30, bold=True, color=WHITE,
-                font_name=FONT_HEADING)
-
-    columns = content.get('columns', [])
-    rows = content.get('rows', [])
-    num_cols = len(columns)
-    num_rows = len(rows)
-
-    if num_cols == 0:
-        add_slide_number(slide, slide_idx, total)
-        _add_notes(slide, content)
-        return
-
-    margin = Inches(0.8)
-    table_w = int(SLIDE_WIDTH) - int(margin) * 2
-    col_w = table_w // max(num_cols, 1)
-    row_h = Inches(0.7)
-    header_h = Inches(0.7)
-    table_top = Inches(2.0)
-
-    # Header row
-    for ci, col_name in enumerate(columns):
-        x = int(margin) + ci * col_w
-        add_rect(slide, x, table_top, col_w, header_h, COBALT)
-        add_textbox(slide, x + Inches(0.15), table_top + Inches(0.1),
-                    col_w - Inches(0.3), header_h - Inches(0.2),
-                    col_name, font_size=14, bold=True, color=WHITE,
-                    alignment=PP_ALIGN.CENTER, anchor='ctr')
-
-    # Data rows
-    for ri, row in enumerate(rows):
-        y = int(table_top) + int(header_h) + ri * int(row_h)
-        bg = CANVAS if ri % 2 == 0 else WHITE
-        for ci in range(num_cols):
-            x = int(margin) + ci * col_w
-            cell_text = row[ci] if ci < len(row) else ''
-            add_rect(slide, x, y, col_w, row_h, bg)
-            # Cell border
-            add_rect(slide, x, y + int(row_h) - Inches(0.02), col_w, Inches(0.02), BORDER)
-            add_textbox(slide, x + Inches(0.15), y + Inches(0.08),
-                        col_w - Inches(0.3), row_h - Inches(0.16),
-                        cell_text, font_size=12, color=NAVY,
-                        alignment=PP_ALIGN.CENTER, anchor='ctr')
-
-    add_slide_number(slide, slide_idx, total)
-    _add_notes(slide, content)
-
-
-def _title_bar(slide, title):
-    add_rect(slide, Inches(0), Inches(0), SLIDE_WIDTH, Inches(1.5), WHITE)
-    add_textbox(slide, Inches(0.8), Inches(0.35), Inches(11.5), Inches(0.9),
-                title, font_size=30, bold=True, color=NAVY, font_name=FONT_HEADING)
-    add_rect(slide, Inches(0), Inches(1.48), SLIDE_WIDTH, Inches(0.04), BORDER)
-
-
-def render_key_stats(slide, content, slide_idx=0, total=0):
-    set_slide_bg(slide, CANVAS)
-    _title_bar(slide, content.get('title', ''))
-
-    stats = content.get('stats', [])[:6]
-    n = len(stats)
-    if n:
-        cols = n if n <= 3 else (2 if n == 4 else 3)
-        rows = (n + cols - 1) // cols
-        margin, gap = Inches(0.8), Inches(0.35)
-        area_top, area_h = Inches(1.95), Inches(5.0)
-        card_w = (int(SLIDE_WIDTH) - 2 * int(margin) - (cols - 1) * int(gap)) // cols
-        card_h = (int(area_h) - (rows - 1) * int(gap)) // rows
-        value_size = 40 if rows == 1 else 32
-
-        for i, stat in enumerate(stats):
-            r, c = divmod(i, cols)
-            # Centre a short last row
-            in_row = cols if r < rows - 1 else n - cols * (rows - 1)
-            row_offset = (cols - in_row) * (card_w + int(gap)) // 2
-            x = int(margin) + row_offset + c * (card_w + int(gap))
-            y = int(area_top) + r * (card_h + int(gap))
-
-            add_rounded_rect(slide, x, y, card_w, card_h, WHITE)
-            add_rect(slide, x, y, card_w, Inches(0.06), COBALT)
-            add_textbox(slide, x + Inches(0.3), y + Inches(0.3), card_w - Inches(0.6), Inches(0.9),
-                        stat.get('value', ''), font_size=value_size, bold=True, color=COBALT,
-                        font_name=FONT_HEADING)
-            add_textbox(slide, x + Inches(0.3), y + Inches(1.2), card_w - Inches(0.6), Inches(0.4),
-                        (stat.get('label', '') or '').upper(), font_size=12, bold=True, color=NAVY)
-            add_textbox(slide, x + Inches(0.3), y + Inches(1.6), card_w - Inches(0.6), card_h - Inches(1.75),
-                        stat.get('detail', ''), font_size=12, color=SLATE)
-
-    add_slide_number(slide, slide_idx, total)
-    _add_notes(slide, content)
-
-
-def render_diagram(slide, content, slide_idx=0, total=0):
-    set_slide_bg(slide, WHITE)
-    _title_bar(slide, content.get('title', ''))
-
-    caption = (content.get('caption') or '').strip()
-    box_top = Inches(1.75)
-    box_h = Inches(4.85) if caption else Inches(5.35)
-    box_left, box_w = Inches(0.8), SLIDE_WIDTH - Inches(1.6)
-
-    path = content.get('diagram_path')
-    if path and Path(path).exists():
-        img = image_settings(content.get('image'))
-        if None not in (img['x'], img['y'], img['w']):
-            add_picture_at(slide, path, img['x'], img['y'], img['w'], img['crop'])
-        else:
-            add_picture_fit(slide, path, box_left, box_top, box_w, box_h, img['crop'])
-    else:
-        add_textbox(slide, box_left, box_top, box_w, box_h, 'Diagram not available',
-                    font_size=16, color=SLATE_LT, alignment=PP_ALIGN.CENTER, anchor='ctr')
-
-    if caption:
-        add_textbox(slide, box_left, box_top + box_h + Inches(0.15), box_w, Inches(0.5),
-                    caption, font_size=14, italic=True, color=SLATE, alignment=PP_ALIGN.CENTER)
-
-    add_slide_number(slide, slide_idx, total)
-    _add_notes(slide, content)
-
-
-def render_figure(slide, content, slide_idx=0, total=0):
-    """A slide built around a figure: the title; the picture itself is drawn by render_pictures."""
-    set_slide_bg(slide, WHITE)
-    _title_bar(slide, content.get('title', ''))
-    add_slide_number(slide, slide_idx, total)
-    _add_notes(slide, content)
-
-
-# Where a picture goes before the user moves it (fractions of the slide: x, y, w, h). The editor uses the same.
-FIGURE_BOX = (0.06, 0.2333, 0.88, 0.5867)   # a Figure slide: the space under the title, leaving room for the caption
-SIDE_BOX = (0.55, 0.25, 0.39, 0.55)         # a picture added to any other slide
-CAPTION_GAP, CAPTION_H, CAPTION_PT = Inches(0.06), Inches(0.45), 12
+# Where a picture goes before the user moves it (fractions of the slide: x, y, w, h). The editor uses the same
+# (components/figures/pictureLayout.js). A Figure slide: the band under the title. Any other slide: the panel on
+# the right, leaving room for the caption under the picture.
+FIGURE_BOX = (M / 13.333, (BODY_TOP - 0.05) / 7.5, (13.333 - 2 * M) / 13.333, (7.5 - BODY_TOP - 0.05 - CAPTION_H - 0.35) / 7.5)
+SIDE_BOX = ((PANEL_X + PANEL_PAD) / 13.333, PANEL_PAD / 7.5, (13.333 - PANEL_X - 2 * PANEL_PAD) / 13.333,
+            (7.5 - 2 * PANEL_PAD - CAPTION_H) / 7.5)
+CAPTION_PT = 11
+# Layouts that give their pictures the side panel; the others are visual already, or (figure) fill the slide.
+PANEL_LAYOUTS = {'bullets', 'checklist', 'stat_focus', 'big_idea', 'quote_highlight', 'two_column', 'key_stats', 'icon_grid'}
+
+
+def has_panel(content, layout):
+    return layout in PANEL_LAYOUTS and bool(content.get('pictures'))
+
+
+def draw_panel(slide):
+    add_rect(slide, Inches(PANEL_X), 0, SLIDE_WIDTH - Inches(PANEL_X), SLIDE_HEIGHT, CANVAS)
 
 
 def render_pictures(slide, content, layout):
     """Pictures placed on the slide, each with its caption under it, where the user put them in the editor."""
     for n, pic in enumerate(content.get('pictures') or []):
         img = image_settings(pic)
-        l, t, r, b = img['crop']
         path = pic.get('path')
         exists = bool(path) and Path(path).exists()
+        l, t, r, b = img['crop']
         if exists:
             w_px, h_px = png_size(path)
             aspect = (h_px * (1 - t - b)) / (w_px * (1 - l - r))
@@ -990,12 +310,447 @@ def render_pictures(slide, content, layout):
         if exists:
             _cropped(slide.shapes.add_picture(path, left, top, width, height), img['crop'])
         else:
-            add_textbox(slide, left, top, width, height, 'Image removed' if pic.get('image_id') else 'Figure removed', font_size=16, color=SLATE_LT,
-                        alignment=PP_ALIGN.CENTER, anchor='ctr')
+            add_textbox(slide, left, top, width, height, 'Image removed' if pic.get('image_id') else 'Figure removed',
+                        font_size=16, color=SLATE_LT, alignment=PP_ALIGN.CENTER, anchor='ctr')
         caption = (pic.get('caption') or '').strip()
         if caption:
-            add_textbox(slide, left, top + height + CAPTION_GAP, width, CAPTION_H, caption,
-                        font_size=CAPTION_PT, italic=True, color=SLATE, alignment=PP_ALIGN.CENTER)
+            cap_w = max(width, Inches(3.2))
+            add_textbox(slide, left + (width - cap_w) // 2, top + height + Inches(0.08), cap_w, Inches(CAPTION_H), caption,
+                        font_size=CAPTION_PT, color=SLATE, alignment=PP_ALIGN.CENTER)
+
+
+# ── Shared slide parts ──
+
+def text_width(content, layout):
+    """The width text may use (inches): the whole slide, or the left column beside a picture panel."""
+    return (PANEL_X - M - 0.45) if has_panel(content, layout) else (13.333 - 2 * M)
+
+
+def title_block(slide, title, width):
+    """The short accent bar and the title over every content slide."""
+    add_rect(slide, Inches(M), Inches(ACCENT_Y), Inches(0.55), Inches(0.06), COBALT)
+    add_textbox(slide, Inches(M) - Inches(0.05), Inches(TITLE_Y), Inches(width), Inches(TITLE_H), title or '',
+                font_size=30, bold=True, color=NAVY, font_name=FONT_HEADING, spacing=1.0)
+
+
+def footer(slide, slide_idx, total, dark=False):
+    if not total:
+        return
+    add_textbox(slide, SLIDE_WIDTH - Inches(1.45), SLIDE_HEIGHT - Inches(0.55), Inches(0.9), Inches(0.35),
+                f'{slide_idx:02d}', font_size=10, color=(SLATE_LT if not dark else COBALT_LT), alignment=PP_ALIGN.RIGHT)
+
+
+def _add_notes(slide, content):
+    notes = content.get('speaker_notes', '')
+    if notes:
+        slide.notes_slide.notes_text_frame.text = notes
+
+
+def content_slide(slide, content, layout, slide_idx, total, title=None):
+    """White slide, the picture panel when it has pictures, the title, the footer, the notes. Returns the text
+    width (inches)."""
+    set_slide_bg(slide, WHITE)
+    if has_panel(content, layout):
+        draw_panel(slide)
+    width = text_width(content, layout)
+    title_block(slide, content.get('title', '') if title is None else title, width)
+    footer(slide, slide_idx, total)
+    _add_notes(slide, content)
+    return width
+
+
+def dark_slide(slide):
+    """Title, section and closing slides: the primary colour with two soft accent circles bleeding off the edge."""
+    set_slide_bg(slide, NAVY)
+    add_oval(slide, SLIDE_WIDTH - Inches(5.2), Inches(-2.4), Inches(8), Inches(8), COBALT, transparency=0.82)
+    add_oval(slide, SLIDE_WIDTH - Inches(2.6), Inches(3.9), Inches(5), Inches(5), COBALT_LT, transparency=0.9)
+
+
+def body_top(height):
+    """Where a content block `height` inches tall starts so it sits a little above the middle of the body."""
+    return BODY_TOP + max(0.0, (BODY_BOTTOM - BODY_TOP - height) * 0.4)
+
+
+def grid(n, width, top, height, cols, gap=0.35):
+    """Cell boxes (x, y, w, h in inches) for n items in `cols` columns filling width x height from (M, top)."""
+    rows = -(-n // cols)
+    w = (width - gap * (cols - 1)) / cols
+    h = (height - gap * (rows - 1)) / rows
+    return [(M + (i % cols) * (w + gap), top + (i // cols) * (h + gap), w, h) for i in range(n)]
+
+
+def text_lines(text, width_in, pt):
+    """Estimated number of lines `text` takes in a box `width_in` inches wide at `pt` points."""
+    per_line = max(1, int((width_in * 72 - 14) / (pt * 0.52)))
+    return sum(max(1, -(-len(par) // per_line)) for par in str(text or '').split('\n'))
+
+
+CARD_PAD, CARD_ICON = 0.38, 0.62
+
+
+def card_height(w, heading, detail, heading_pt=20, detail_pt=15):
+    """The height a point card needs for its text (inches)."""
+    inner = w - 2 * CARD_PAD
+    return (2 * CARD_PAD + CARD_ICON + 0.3 + text_lines(heading, inner, heading_pt) * heading_pt * 1.25 / 72 + 0.15
+            + (text_lines(detail, inner, detail_pt) * detail_pt * 1.3 / 72 if detail else 0))
+
+
+def point_card(slide, x, y, w, h, icon, number, heading, detail, heading_pt=20, detail_pt=15):
+    """A point as a card: marker on top, heading, detail."""
+    add_rounded_rect(slide, Inches(x), Inches(y), Inches(w), Inches(h), CANVAS)
+    pad = CARD_PAD
+    add_marker(slide, icon, number, Inches(x + pad), Inches(y + pad), Inches(CARD_ICON))
+    head_h = text_lines(heading, w - 2 * pad, heading_pt) * heading_pt * 1.25 / 72 + 0.1
+    top = y + pad + CARD_ICON + 0.25
+    add_textbox(slide, Inches(x + pad - 0.05), Inches(top), Inches(w - 2 * pad + 0.1), Inches(head_h), heading,
+                font_size=heading_pt, bold=True, color=NAVY, font_name=FONT_HEADING, spacing=1.0)
+    add_textbox(slide, Inches(x + pad - 0.05), Inches(top + head_h + 0.05), Inches(w - 2 * pad + 0.1),
+                Inches(max(0.5, y + h - pad - top - head_h)), detail, font_size=detail_pt, color=SLATE)
+
+
+def point_row(slide, x, y, w, h, icon, number, heading, detail, heading_pt=18, detail_pt=14, marker=0.5):
+    """A point as a row: marker on the left, heading and detail beside it."""
+    add_marker(slide, icon, number, Inches(x), Inches(y + 0.02), Inches(marker))
+    tx = x + marker + 0.25
+    add_textbox(slide, Inches(tx), Inches(y - 0.04), Inches(w - marker - 0.25), Inches(0.5), heading,
+                font_size=heading_pt, bold=True, color=NAVY, font_name=FONT_HEADING, spacing=1.0)
+    if detail:
+        add_textbox(slide, Inches(tx), Inches(y + 0.4), Inches(w - marker - 0.25), Inches(max(0.4, h - 0.45)), detail,
+                    font_size=detail_pt, color=SLATE)
+
+
+# ══════════════════════════════════════════════
+#  LAYOUT RENDERERS
+# ══════════════════════════════════════════════
+
+def render_title(slide, content, slide_idx=0, total=0):
+    dark_slide(slide)
+    add_rect(slide, Inches(M + 0.05), Inches(2.35), Inches(0.7), Inches(0.08), COBALT_LT)
+    add_textbox(slide, Inches(M), Inches(2.6), Inches(8.6), Inches(2.3), content.get('title', ''),
+                font_size=46, bold=True, color=WHITE, font_name=FONT_HEADING, spacing=1.0)
+    add_textbox(slide, Inches(M), Inches(4.95), Inches(7.8), Inches(1.4), content.get('subtitle', ''),
+                font_size=20, color=blend(WHITE, NAVY, 0.25))
+    _add_notes(slide, content)
+
+
+def render_section_divider(slide, content, slide_idx=0, total=0):
+    dark_slide(slide)
+    add_rect(slide, Inches(M + 0.05), Inches(2.75), Inches(0.7), Inches(0.08), COBALT_LT)
+    add_textbox(slide, Inches(M), Inches(3.0), Inches(8.6), Inches(1.6), content.get('title', ''),
+                font_size=40, bold=True, color=WHITE, font_name=FONT_HEADING, spacing=1.0)
+    add_textbox(slide, Inches(M), Inches(4.65), Inches(7.8), Inches(1.2), content.get('subtitle', ''),
+                font_size=20, color=blend(WHITE, NAVY, 0.25))
+    footer(slide, slide_idx, total, dark=True)
+
+
+def render_closing(slide, content, slide_idx=0, total=0):
+    dark_slide(slide)
+    add_textbox(slide, Inches(M), Inches(0.75), Inches(6), Inches(0.4), 'KEY TAKEAWAYS', font_size=13, bold=True,
+                color=COBALT_LT)
+    add_textbox(slide, Inches(M) - Inches(0.05), Inches(1.15), Inches(10), Inches(1.0), content.get('title', 'Key takeaways'),
+                font_size=34, bold=True, color=WHITE, font_name=FONT_HEADING, spacing=1.0)
+    takeaways = content.get('takeaways', [])[:5]
+    cta = (content.get('call_to_action') or '').strip()
+    area = (5.65 if cta else 6.6) - 2.45
+    per = min(area / max(len(takeaways), 1), 0.95)
+    y = 2.45
+    for t in takeaways:
+        add_icon(slide, 'check', Inches(M), Inches(y + 0.02), Inches(0.42), COBALT)
+        add_textbox(slide, Inches(M + 0.65), Inches(y - 0.03), Inches(9.2), Inches(per), t, font_size=19, color=WHITE)
+        y += per
+    if cta:
+        add_rounded_rect(slide, Inches(M), Inches(5.85), Inches(9.8), Inches(0.75), COBALT, radius=0.12)
+        add_textbox(slide, Inches(M + 0.3), Inches(5.85), Inches(9.3), Inches(0.75), cta, font_size=17, bold=True,
+                    color=WHITE, anchor='ctr')
+    _add_notes(slide, content)
+
+
+def render_bullets(slide, content, slide_idx=0, total=0):
+    width = content_slide(slide, content, 'bullets', slide_idx, total)
+    bullets = content.get('bullets', [])[:6]
+    n = len(bullets)
+    if not n:
+        return
+    body_h = BODY_BOTTOM - BODY_TOP
+    if has_panel(content, 'bullets') or n >= 5:
+        # A list: beside a picture, or too many points for cards.
+        cols = 2 if (n >= 5 and not has_panel(content, 'bullets')) else 1
+        cells = grid(n, width, BODY_TOP, body_h if cols == 1 else body_h, cols, gap=0.35)
+        rows = -(-n // cols)
+        row_h = min(body_h / rows, 1.35)
+        top = body_top(rows * row_h - 0.25)
+        for i, (b, (x, _, w, _)) in enumerate(zip(bullets, cells)):
+            y = top + (i // cols) * row_h
+            point_row(slide, x, y, w, row_h, b.get('icon'), i + 1, b.get('heading', ''), b.get('detail', ''))
+        return
+    # 1-4 points: cards, side by side (4: two by two, each a row inside).
+    if n == 4:
+        h4 = min(body_h, 2 * 1.75 + 0.35)
+        for i, (b, (x, y, w, h)) in enumerate(zip(bullets, grid(4, width, body_top(h4), h4, 2))):
+            add_rounded_rect(slide, Inches(x), Inches(y), Inches(w), Inches(h), CANVAS)
+            point_row(slide, x + 0.35, y + 0.4, w - 0.7, h - 0.6, b.get('icon'), i + 1, b.get('heading', ''),
+                      b.get('detail', ''), heading_pt=19, detail_pt=14, marker=0.6)
+        return
+    w = (width - 0.35 * (n - 1)) / n
+    card_h = min(body_h, max(card_height(w, b.get('heading', ''), b.get('detail', '')) for b in bullets))
+    for i, (b, (x, y, w, h)) in enumerate(zip(bullets, grid(n, width, body_top(card_h), card_h, n))):
+        point_card(slide, x, y, w, h, b.get('icon'), i + 1, b.get('heading', ''), b.get('detail', ''))
+
+
+def render_icon_grid(slide, content, slide_idx=0, total=0):
+    width = content_slide(slide, content, 'icon_grid', slide_idx, total)
+    items = content.get('items', [])[:6]
+    n = len(items)
+    if not n:
+        return
+    cols = n if n <= 3 else (2 if n == 4 or has_panel(content, 'icon_grid') else 3)
+    rows = -(-n // cols)
+    w = (width - 0.35 * (cols - 1)) / cols
+    one_row = max(card_height(w, it.get('label', ''), it.get('description', '')) for it in items)
+    height = min(BODY_BOTTOM - BODY_TOP, 2.0 * rows + 0.35 * (rows - 1) if rows > 1 else one_row)
+    for i, (it, (x, y, w, h)) in enumerate(zip(items, grid(n, width, body_top(height), height, cols))):
+        if rows == 1:
+            point_card(slide, x, y, w, h, it.get('icon'), i + 1, it.get('label', ''), it.get('description', ''))
+        else:
+            add_rounded_rect(slide, Inches(x), Inches(y), Inches(w), Inches(h), CANVAS)
+            point_row(slide, x + 0.3, y + 0.3, w - 0.6, h - 0.45, it.get('icon'), i + 1, it.get('label', ''),
+                      it.get('description', ''), heading_pt=17, detail_pt=13, marker=0.55)
+
+
+def render_checklist(slide, content, slide_idx=0, total=0):
+    width = content_slide(slide, content, 'checklist', slide_idx, total)
+    items = content.get('items', [])[:8]
+    n = len(items)
+    if not n:
+        return
+    cols = 2 if n > 5 and not has_panel(content, 'checklist') else 1
+    col_w = (width - 0.5 * (cols - 1)) / cols
+    rows = -(-n // cols)
+    row_h = min((BODY_BOTTOM - BODY_TOP) / rows, 1.2)
+    top = body_top(rows * row_h - 0.3)
+    for i, it in enumerate(items):
+        x = M + (i // rows) * (col_w + 0.5)
+        y = top + (i % rows) * row_h
+        add_icon(slide, 'check', Inches(x), Inches(y + 0.02), Inches(0.44))
+        add_textbox(slide, Inches(x + 0.65), Inches(y - 0.04), Inches(col_w - 0.65), Inches(0.5), it.get('step', ''),
+                    font_size=18, bold=True, color=NAVY, font_name=FONT_HEADING, spacing=1.0)
+        if it.get('detail'):
+            add_textbox(slide, Inches(x + 0.65), Inches(y + 0.4), Inches(col_w - 0.65), Inches(max(0.4, row_h - 0.5)),
+                        it.get('detail', ''), font_size=14, color=SLATE)
+
+
+def render_process_flow(slide, content, slide_idx=0, total=0):
+    width = content_slide(slide, content, 'process_flow', slide_idx, total)
+    steps = content.get('steps', [])[:7]
+    n = len(steps)
+    if not n:
+        return
+    col_w = width / n
+    circle = 0.72
+    cy = body_top(3.4)
+    # The line runs through the circles, from the first to the last.
+    add_line(slide, Inches(M + col_w / 2), Inches(cy + circle / 2), Inches(M + col_w * (n - 0.5)), Inches(cy + circle / 2),
+             BORDER, width_pt=2.5)
+    for i, s in enumerate(steps):
+        cx = M + col_w * i + col_w / 2
+        add_oval(slide, Inches(cx - circle / 2), Inches(cy), Inches(circle), Inches(circle), COBALT)
+        add_textbox(slide, Inches(cx - circle / 2), Inches(cy), Inches(circle), Inches(circle), str(i + 1), font_size=20,
+                    bold=True, color=WHITE, alignment=PP_ALIGN.CENTER, anchor='ctr', font_name=FONT_HEADING)
+        add_textbox(slide, Inches(cx - col_w / 2 + 0.1), Inches(cy + circle + 0.3), Inches(col_w - 0.2), Inches(0.85),
+                    s.get('label', ''), font_size=18 if n <= 5 else 16, bold=True, color=NAVY, alignment=PP_ALIGN.CENTER,
+                    font_name=FONT_HEADING, spacing=1.0)
+        add_textbox(slide, Inches(cx - col_w / 2 + 0.15), Inches(cy + circle + 1.2), Inches(col_w - 0.3), Inches(2.4),
+                    s.get('detail', ''), font_size=14 if n <= 5 else 13, color=SLATE, alignment=PP_ALIGN.CENTER)
+
+
+def render_timeline(slide, content, slide_idx=0, total=0):
+    width = content_slide(slide, content, 'timeline', slide_idx, total)
+    events = content.get('events', [])[:7]
+    n = len(events)
+    if not n:
+        return
+    col_w = width / n
+    line_y = body_top(3.5) + 1.0
+    add_line(slide, Inches(M), Inches(line_y), Inches(M + width), Inches(line_y), BORDER, width_pt=2.5)
+    for i, e in enumerate(events):
+        cx = M + col_w * i + col_w / 2
+        add_textbox(slide, Inches(cx - col_w / 2 + 0.1), Inches(line_y - 0.95), Inches(col_w - 0.2), Inches(0.6),
+                    e.get('date', ''), font_size=17, bold=True, color=COBALT, alignment=PP_ALIGN.CENTER, font_name=FONT_HEADING)
+        add_oval(slide, Inches(cx - 0.14), Inches(line_y - 0.14), Inches(0.28), Inches(0.28), COBALT)
+        add_textbox(slide, Inches(cx - col_w / 2 + 0.1), Inches(line_y + 0.35), Inches(col_w - 0.2), Inches(0.85),
+                    e.get('label', ''), font_size=17, bold=True, color=NAVY, alignment=PP_ALIGN.CENTER,
+                    font_name=FONT_HEADING, spacing=1.0)
+        add_textbox(slide, Inches(cx - col_w / 2 + 0.15), Inches(line_y + 1.2), Inches(col_w - 0.3), Inches(2.1),
+                    e.get('detail', ''), font_size=13, color=SLATE, alignment=PP_ALIGN.CENTER)
+
+
+def render_key_stats(slide, content, slide_idx=0, total=0):
+    width = content_slide(slide, content, 'key_stats', slide_idx, total)
+    stats = content.get('stats', [])[:6]
+    n = len(stats)
+    if not n:
+        return
+    cols = n if n <= 3 else (2 if n == 4 or has_panel(content, 'key_stats') else 3)
+    rows = -(-n // cols)
+    height = min(BODY_BOTTOM - BODY_TOP, 3.4 if rows == 1 else 4.7)
+    for s, (x, y, w, h) in zip(stats, grid(n, width, body_top(height), height, cols)):
+        add_rounded_rect(slide, Inches(x), Inches(y), Inches(w), Inches(h), CANVAS)
+        pad = 0.35
+        add_textbox(slide, Inches(x + pad - 0.05), Inches(y + pad - 0.05), Inches(w - 2 * pad + 0.1), Inches(1.0),
+                    s.get('value', ''), font_size=44 if rows == 1 else 34, bold=True, color=COBALT, font_name=FONT_HEADING,
+                    spacing=1.0)
+        add_textbox(slide, Inches(x + pad - 0.05), Inches(y + pad + (1.05 if rows == 1 else 0.8)), Inches(w - 2 * pad + 0.1),
+                    Inches(0.5), s.get('label', ''), font_size=16, bold=True, color=NAVY, font_name=FONT_HEADING)
+        add_textbox(slide, Inches(x + pad - 0.05), Inches(y + pad + (1.55 if rows == 1 else 1.25)), Inches(w - 2 * pad + 0.1),
+                    Inches(max(0.4, h - pad * 2 - 1.5)), s.get('detail', ''), font_size=13, color=SLATE)
+
+
+def render_stat_focus(slide, content, slide_idx=0, total=0):
+    width = content_slide(slide, content, 'stat_focus', slide_idx, total)
+    add_textbox(slide, Inches(M - 0.08), Inches(BODY_TOP), Inches(width), Inches(1.9), content.get('stat_value', ''),
+                font_size=110, bold=True, color=COBALT, font_name=FONT_HEADING, spacing=0.9)
+    add_textbox(slide, Inches(M), Inches(BODY_TOP + 2.0), Inches(width), Inches(0.6), content.get('stat_label', ''),
+                font_size=24, bold=True, color=NAVY, font_name=FONT_HEADING)
+    add_textbox(slide, Inches(M), Inches(BODY_TOP + 2.7), Inches(min(width, 8.5)), Inches(1.8), content.get('context', ''),
+                font_size=18, color=SLATE)
+
+
+def render_big_idea(slide, content, slide_idx=0, total=0):
+    set_slide_bg(slide, WHITE)
+    panel = has_panel(content, 'big_idea')
+    if panel:
+        draw_panel(slide)
+    width = text_width(content, 'big_idea')
+    add_rect(slide, Inches(M), Inches(1.9), Inches(0.1), Inches(2.6), COBALT)
+    add_textbox(slide, Inches(M + 0.4), Inches(1.75), Inches(width - 0.4), Inches(3.0), content.get('statement', ''),
+                font_size=40 if not panel else 34, bold=True, color=NAVY, font_name=FONT_HEADING, spacing=1.0, anchor='ctr')
+    add_textbox(slide, Inches(M + 0.4), Inches(5.0), Inches(min(width - 0.4, 9)), Inches(1.6), content.get('supporting', ''),
+                font_size=19, color=SLATE)
+    footer(slide, slide_idx, total)
+    _add_notes(slide, content)
+
+
+def render_quote_highlight(slide, content, slide_idx=0, total=0):
+    width = content_slide(slide, content, 'quote_highlight', slide_idx, total)
+    add_textbox(slide, Inches(M - 0.1), Inches(BODY_TOP - 0.45), Inches(1.6), Inches(1.6), '“', font_size=120,
+                bold=True, color=blend(COBALT, WHITE, 0.55), font_name='Georgia')
+    add_textbox(slide, Inches(M + 0.15), Inches(BODY_TOP + 0.55), Inches(width - 0.15), Inches(2.4), content.get('quote_text', ''),
+                font_size=26, italic=True, color=NAVY, font_name=FONT_HEADING)
+    add_textbox(slide, Inches(M + 0.15), Inches(BODY_TOP + 3.05), Inches(width - 0.15), Inches(0.5),
+                f"— {content.get('attribution', '')}", font_size=16, bold=True, color=COBALT)
+    add_textbox(slide, Inches(M + 0.15), Inches(BODY_TOP + 3.65), Inches(min(width - 0.15, 9)), Inches(1.0),
+                content.get('commentary', ''), font_size=15, color=SLATE)
+
+
+def render_two_column(slide, content, slide_idx=0, total=0):
+    width = content_slide(slide, content, 'two_column', slide_idx, total)
+    verdict = (content.get('verdict') or '').strip()
+    height = (BODY_BOTTOM - BODY_TOP) - (1.0 if verdict else 0)
+    cells = grid(2, width, BODY_TOP, height, 2, gap=0.4)
+    for (x, y, w, h), (head, items) in zip(cells, [
+        (content.get('column_a_heading', ''), content.get('column_a_bullets', [])),
+        (content.get('column_b_heading', ''), content.get('column_b_bullets', [])),
+    ]):
+        add_rounded_rect(slide, Inches(x), Inches(y), Inches(w), Inches(h), CANVAS)
+        add_textbox(slide, Inches(x + 0.35), Inches(y + 0.3), Inches(w - 0.7), Inches(0.6), head, font_size=21, bold=True,
+                    color=NAVY, font_name=FONT_HEADING)
+        add_rect(slide, Inches(x + 0.4), Inches(y + 0.95), Inches(0.45), Inches(0.05), COBALT)
+        items = items[:5]
+        per = min((h - 1.3) / max(len(items), 1), 0.85)
+        for k, t in enumerate(items):
+            iy = y + 1.25 + k * per
+            add_oval(slide, Inches(x + 0.42), Inches(iy + 0.13), Inches(0.1), Inches(0.1), COBALT)
+            add_textbox(slide, Inches(x + 0.65), Inches(iy), Inches(w - 1.0), Inches(per), t, font_size=16, color=SLATE)
+    if verdict:
+        add_rounded_rect(slide, Inches(M), Inches(BODY_BOTTOM - 0.75), Inches(width), Inches(0.75), blend(COBALT, WHITE, 0.88))
+        add_textbox(slide, Inches(M + 0.3), Inches(BODY_BOTTOM - 0.75), Inches(width - 0.6), Inches(0.75), verdict,
+                    font_size=16, bold=True, color=NAVY, anchor='ctr')
+
+
+def _cell_border(cell, edge, color=None):
+    """One edge of a table cell: a thin line in `color`, or none."""
+    tc_pr = cell._tc.get_or_add_tcPr()
+    tag = {'top': 'a:lnT', 'bottom': 'a:lnB', 'left': 'a:lnL', 'right': 'a:lnR'}[edge]
+    for old in tc_pr.findall(qn(tag)):
+        tc_pr.remove(old)
+    ln = tc_pr.makeelement(qn(tag), {'w': str(Pt(1) if color else 0), 'cmpd': 'sng'})
+    if color:
+        fill = ln.makeelement(qn('a:solidFill'), {})
+        clr = fill.makeelement(qn('a:srgbClr'), {'val': str(color)})
+        fill.append(clr)
+        ln.append(fill)
+    else:
+        ln.append(ln.makeelement(qn('a:noFill'), {}))
+    tc_pr.append(ln)
+
+
+def render_comparison_table(slide, content, slide_idx=0, total=0):
+    width = content_slide(slide, content, 'comparison_table', slide_idx, total)
+    columns = content.get('columns', [])
+    rows = content.get('rows', [])[:8]
+    if not columns:
+        return
+    n_rows = len(rows) + 1
+    row_h = min(0.72, (BODY_BOTTOM - BODY_TOP) / n_rows)
+    shape = slide.shapes.add_table(n_rows, len(columns), Inches(M), Inches(body_top(row_h * n_rows)), Inches(width),
+                                   Inches(row_h * n_rows))
+    table = shape.table
+    # No built-in style: our own header and thin rules only.
+    style = shape._element.graphic.graphicData.tbl.tblPr.find(qn('a:tableStyleId'))
+    if style is not None:
+        style.text = '{2D5ABB26-0587-4C30-8999-92F81FD0307C}'
+    table.first_row = True
+    table.horz_banding = False
+    size = 17 if len(columns) <= 3 else 15
+    for r in range(n_rows):
+        table.rows[r].height = Inches(row_h)
+        for c in range(len(columns)):
+            cell = table.cell(r, c)
+            text = columns[c] if r == 0 else (rows[r - 1][c] if c < len(rows[r - 1]) else '')
+            cell.fill.solid()
+            cell.fill.fore_color.rgb = NAVY if r == 0 else WHITE
+            cell.margin_left = cell.margin_right = Inches(0.15)
+            cell.vertical_anchor = 1  # middle
+            tf = cell.text_frame
+            tf.text = str(text or '')
+            p = tf.paragraphs[0]
+            p.font.size = Pt(size if r else size - 1)
+            p.font.bold = r == 0 or c == 0
+            p.font.name = FONT_HEADING if (r == 0 or c == 0) else FONT_BODY
+            p.font.color.rgb = WHITE if r == 0 else (NAVY if c == 0 else SLATE)
+            for edge in ('top', 'left', 'right'):
+                _cell_border(cell, edge, None)
+            _cell_border(cell, 'bottom', BORDER if r else None)
+
+
+def render_diagram(slide, content, slide_idx=0, total=0):
+    content_slide(slide, content, 'diagram', slide_idx, total)
+    caption = (content.get('caption') or '').strip()
+    box_top = BODY_TOP - 0.1
+    box_h = (BODY_BOTTOM - box_top) - (0.5 if caption else 0)
+    box_left, box_w = Inches(M), SLIDE_WIDTH - Inches(2 * M)
+    path = content.get('diagram_path')
+    if path and Path(path).exists():
+        img = image_settings(content.get('image'))
+        if None not in (img['x'], img['y'], img['w']):
+            add_picture_at(slide, path, img['x'], img['y'], img['w'], img['crop'])
+        else:
+            add_picture_fit(slide, path, box_left, Inches(box_top), box_w, Inches(box_h), img['crop'])
+    else:
+        add_textbox(slide, box_left, Inches(box_top), box_w, Inches(box_h), 'Diagram not available',
+                    font_size=16, color=SLATE_LT, alignment=PP_ALIGN.CENTER, anchor='ctr')
+    if caption:
+        add_textbox(slide, box_left, Inches(box_top + box_h + 0.05), box_w, Inches(0.45), caption,
+                    font_size=13, color=SLATE, alignment=PP_ALIGN.CENTER)
+
+
+def render_figure(slide, content, slide_idx=0, total=0):
+    """A slide built around a figure: the title over a soft band; the picture itself is drawn by render_pictures."""
+    set_slide_bg(slide, WHITE)
+    add_rect(slide, 0, Inches(BODY_TOP - 0.3), SLIDE_WIDTH, SLIDE_HEIGHT - Inches(BODY_TOP - 0.3), CANVAS)
+    title_block(slide, content.get('title', ''), 13.333 - 2 * M)
+    footer(slide, slide_idx, total)
+    _add_notes(slide, content)
 
 
 # ── Registry ──
@@ -1045,7 +800,6 @@ def render_deck(outline, output_path, template_path=None):
 
     prs.slide_width = SLIDE_WIDTH
     prs.slide_height = SLIDE_HEIGHT
-
     blank_layout = blank_layout_of(prs)
 
     apply_theme(outline.get('theme'))
@@ -1055,13 +809,10 @@ def render_deck(outline, output_path, template_path=None):
     for i, slide_data in enumerate(slides_data):
         layout = slide_data.get('layout', 'bullets')
         content = slide_data.get('content', {})
-
         if not content:
             continue
-
         slide = prs.slides.add_slide(blank_layout)
-        renderer = RENDERERS.get(layout, render_bullets)
-        renderer(slide, content, slide_idx=i + 1, total=total)
+        RENDERERS.get(layout, render_bullets)(slide, content, slide_idx=i + 1, total=total)
         render_pictures(slide, content, layout)
 
     prs.save(output_path)
