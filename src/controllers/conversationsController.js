@@ -9,17 +9,17 @@ import {
 import { listMessagesDb, insertMessageDb, getMessageDb, updateMessageDataDb } from '../db/messagesQueries.js';
 import { getGenerationByIdDb, isJobLive, presentGeneration } from '../db/generationsQueries.js';
 import { answerQuestion } from '../services/answer.js';
-import { SKILLS, briefFromConversation } from '../services/skills.js';
+import { SKILLS } from '../services/skills.js';
 import { imageBrief, startImage } from '../services/imageSkill.js';
 import { routeMessage, namedItem } from '../services/router.js';
 import { createPlan } from '../services/planning/outlineJob.js';
 import { kindOf } from '../services/planning/kinds.js';
-import { countSectionsDb } from '../db/chunksQueries.js';
 import { editItem, insertItem } from '../services/planning/itemOps.js';
 import { planAgent, applyAgent, undoAgent } from '../services/planning/agent.js';
 import { startJob } from '../services/jobs.js';
 import { deleteDiagrams } from '../services/diagrams.js';
 import { ownDocumentIds } from '../middleware/auth.js';
+import { startInterview, answerInterview, skipRest, reask, briefFromInterview } from '../services/interview.js';
 
 const HISTORY_MESSAGES = 10;
 
@@ -120,19 +120,27 @@ async function sendMessage(req, res) {
   let reply;
   let sent = userMessage;
   const onPhase = (phase) => send({ phase });
+  // While the planning interview is asking a question, a message is the answer.
+  const interview = !target && activeInterview(previous);
   try {
-    // A plain message may ask for a deck/document/image; while editing, it may be a question instead.
-    const intent = await routeMessage(content, { editing: Boolean(target) });
-    if (intent === 'deck' || intent === 'doc' || intent === 'image') {
-      sent = await updateMessageDataDb(userMessage.id, { skill: intent });
-      onPhase(intent === 'image' ? 'imaging' : 'skill');
-      reply = intent === 'image'
-        ? await makeImage(conversation, previous, content, target ? await imageTarget(target, content) : null)
-        : await makePlan(conversation, previous, intent, content);
-    } else if (intent === 'edit' && target) {
-      reply = await changeGeneration(target, content, onPhase);
+    if (interview?.kind === 'interview') {
+      onPhase('interview');
+      reply = await answerInterview(interview.data.interview, content, req.body?.picked ?? null);
+      await closeInterview(interview);
     } else {
-      reply = await answer(conversation, previous, content, onPhase);
+      // A plain message may ask for a deck/document/image; while editing, it may be a question instead.
+      const intent = await routeMessage(content, { editing: Boolean(target) });
+      if (intent === 'deck' || intent === 'doc' || intent === 'image') {
+        sent = await updateMessageDataDb(userMessage.id, { skill: intent });
+        onPhase(intent === 'image' ? 'imaging' : 'skill');
+        reply = intent === 'image'
+          ? await makeImage(conversation, previous, content, target ? await imageTarget(target, content) : null)
+          : await startPlanning(conversation, previous, intent, content);
+      } else if (intent === 'edit' && target) {
+        reply = await changeGeneration(target, content, onPhase);
+      } else {
+        reply = await answer(conversation, previous, content, onPhase);
+      }
     }
   } catch (err) {
     reply = { kind: 'error', content: err.message };
@@ -220,24 +228,77 @@ async function runSkill(req, res) {
 
   const reply = type === 'image'
     ? await makeImage(conversation, previous, request, null)
-    : await makePlan(conversation, previous, type, request);
+    : await startPlanning(conversation, previous, type, request);
   const userMessage = await insertMessageDb(conversation.id, { role: 'user', content: request || SKILL_REQUESTS[type], data: { skill: type } });
   if (conversation.title === 'New chat' && request) await updateConversationDb(conversation.id, { title: titleFrom(request) });
   const assistantMessage = await insertMessageDb(conversation.id, { role: 'assistant', ...reply });
   res.status(201).json(responseFactory.createJsonResponse({ messages: [userMessage, assistantMessage] }));
 }
 
-/** A deck/document plan from the conversation; the reply is its card. */
-async function makePlan(conversation, previous, type, request) {
-  const sectionCount = conversation.doc_ids?.length ? await countSectionsDb(conversation.doc_ids) : 0;
-  const brief = await briefFromConversation(previous, type, request, { sectionCount });
+// ── Planning a deck/document: the interview, then the plan ──
+
+/** The planning interview in progress: the latest question or summary, if still active. */
+function activeInterview(messages) {
+  const last = messages.findLast((m) => m.role === 'assistant' && (m.kind === 'interview' || m.kind === 'brief'));
+  return last?.data?.interview?.active ? last : null;
+}
+
+async function closeInterview(message) {
+  if (message) await updateMessageDataDb(message.id, { interview: { ...message.data.interview, active: false } });
+}
+
+/** A deck/document was asked for: the planning interview starts (any earlier one is dropped). */
+async function startPlanning(conversation, previous, type, request) {
+  await closeInterview(activeInterview(previous));
+  return startInterview({ type, request, previous, docIds: conversation.doc_ids });
+}
+
+/** The current interview message of this conversation, or a 409. */
+async function currentInterview(conversation, kinds = ['interview', 'brief']) {
+  const message = activeInterview(await listMessagesDb(conversation.id));
+  if (!message || !kinds.includes(message.kind)) throw new AppError('No plan is being prepared here', 409);
+  return message;
+}
+
+async function replyWith(res, conversation, previousMessage, reply) {
+  await closeInterview(previousMessage);
+  const message = await insertMessageDb(conversation.id, { role: 'assistant', ...reply });
+  res.json(responseFactory.createJsonResponse({ messages: [message] }));
+}
+
+/** "Just make it": fills in the questions not answered yet and shows the summary. */
+async function skipInterview(req, res) {
+  const conversation = await getConversationDb(req.params.id);
+  const message = await currentInterview(conversation, ['interview']);
+  await replyWith(res, conversation, message, skipRest(message.data.interview));
+}
+
+/** Change one answer from the summary: that question is asked again. */
+async function changeInterview(req, res) {
+  const conversation = await getConversationDb(req.params.id);
+  const message = await currentInterview(conversation);
+  await replyWith(res, conversation, message, reask(message.data.interview, String(req.body?.slot || '')));
+}
+
+async function cancelInterview(req, res) {
+  const conversation = await getConversationDb(req.params.id);
+  const message = await currentInterview(conversation);
+  await replyWith(res, conversation, message, { kind: 'text', content: 'Okay, I won\'t make it. Ask again any time.' });
+}
+
+/** The summary was confirmed: the outline is planned (the plan card follows the job). */
+async function planFromInterview(req, res) {
+  const conversation = await getConversationDb(req.params.id);
+  const message = await currentInterview(conversation, ['brief']);
+  const state = message.data.interview;
+  const brief = await briefFromInterview(state, conversation.doc_ids);
   if (!conversation.doc_ids?.length && !brief.source_text) {
     throw new AppError('Choose the documents to work with first (📎 Documents).', 400);
   }
   const generation = await createPlan({
-    type, brief, documentIds: conversation.doc_ids, conversationId: conversation.id, ownerId: conversation.owner_id,
+    type: state.type, brief, documentIds: conversation.doc_ids, conversationId: conversation.id, ownerId: conversation.owner_id,
   });
-  return { kind: 'generation', data: { generation_id: generation.id, type } };
+  await replyWith(res, conversation, message, { kind: 'generation', data: { generation_id: generation.id, type: state.type } });
 }
 
 /** An image from the conversation (for one slide/section when target is set); generated in the background. */
@@ -282,4 +343,5 @@ async function undoPlan(req, res) {
 export default {
   listConversations, getConversation, createConversation, updateConversation, deleteConversation,
   sendMessage, runSkill, applyPlan, undoPlan,
+  skipInterview, changeInterview, cancelInterview, planFromInterview,
 };

@@ -116,5 +116,8 @@ export async function briefFromConversation(messages, type, request = '', { sect
     scope,
     pinned_chunk_ids: pinnedPassages(messages),
     ...(ownText ? { source_text: ownText.content } : {}),
+    // For the planning interview: what the user already said about coverage and length.
+    named_topics: (brief.named_topics || []).map((t) => String(t).trim()).filter(Boolean),
+    ...(asked ? { asked_count: asked } : {}),
   };
 }

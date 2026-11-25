@@ -194,6 +194,7 @@ export function styleGuide(kind, brief = {}) {
     kind.titleStyle[format],
     TEXT_AMOUNTS[brief.text_amount] || TEXT_AMOUNTS.concise,
     brief.audience ? `Audience: ${brief.audience}. Pitch terms and depth to them.` : '',
+    brief.goal ? `Goal: afterwards the audience should ${brief.goal.replace(/^to\s+/i, '')}. Everything should serve it.` : '',
     brief.tone ? `Tone: ${brief.tone}.` : '',
     brief.instructions ? `Instructions from the user (follow them): ${brief.instructions}` : '',
     'Grounding: every number, name, date and quote you write must appear in the sources given for this item ' +
@@ -211,6 +212,7 @@ export function briefBlock(generation) {
   return [
     `What the user asked for: ${b.topic}`,
     b.audience ? `Audience: ${b.audience}` : '',
+    b.goal ? `Goal (what the audience should know or be able to do afterwards): ${b.goal}` : '',
     b.format && kind.formats[b.format] ? `Format: ${b.format}` : '',
     b.instructions ? `Extra instructions: ${b.instructions}` : '',
     b.source_text ? `The user supplied their own text to build from (mode: ${b.text_mode || 'generate'}).` : '',

@@ -43,8 +43,8 @@ function sectionOf(heading, current) {
   if (!numbered) return null;
   const n = Number(numbered[1]);
   if (current?.number === n) return null;
-  // "3." or "3.0 Title" names the section; "3.2 Margins" only tells us we are in section 3.
-  const named = !numbered[2] || /^\.0$/.test(numbered[2]);
+  // "3.", "3.0" or "3.0.0 Title" names the section; "3.2 Margins" only tells us we are in section 3.
+  const named = !numbered[2] || /^(\.0)+$/.test(numbered[2]);
   return { key: `s${n}`, number: n, title: named ? heading : null };
 }
 
