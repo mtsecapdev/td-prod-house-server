@@ -1,33 +1,13 @@
-// Keeps written text inside what each layout can hold (the "smart layout" rule: content adapts to the
-// layout, never spills out of it). Item counts are capped in the JSON schemas (maxItems, enforced by
+// Keeps written text inside what each slide kind or section type can hold (content adapts to the layout,
+// never spills out of it). Item counts are capped in the JSON schemas (maxItems, enforced by
 // Ollama's grammar); character lengths are checked here after writing, and over-long fields are rewritten
 // shorter. Text is never truncated.
 import config from '../../config.js';
 import { chatStructured } from '../llm.js';
 
-// Max characters per field, by layout. Paths: "title", "bullets[].detail", "columns[]", "rows[][]".
-// Sized for the slide renderer's boxes at their default font sizes (presented slides: short points; detail
-// belongs in the speaker notes).
-export const DECK_LIMITS = {
-  title: { title: 60, subtitle: 180 },
-  bullets: { title: 60, 'bullets[].heading': 36, 'bullets[].detail': 110 },
-  two_column: { title: 70, column_a_heading: 40, column_b_heading: 40, 'column_a_bullets[]': 110, 'column_b_bullets[]': 110, verdict: 140 },
-  stat_focus: { title: 60, stat_value: 14, stat_label: 40, context: 150 },
-  key_stats: { title: 70, 'stats[].value': 14, 'stats[].label': 30, 'stats[].detail': 110 },
-  quote_highlight: { title: 70, quote_text: 240, attribution: 80, commentary: 180 },
-  checklist: { title: 60, 'items[].step': 45, 'items[].detail': 100 },
-  closing: { title: 60, 'takeaways[]': 130, call_to_action: 140 },
-  section_divider: { title: 50, subtitle: 140 },
-  big_idea: { statement: 110, supporting: 180 },
-  timeline: { title: 70, 'events[].date': 16, 'events[].label': 40, 'events[].detail': 110 },
-  process_flow: { title: 70, 'steps[].label': 30, 'steps[].detail': 110 },
-  icon_grid: { title: 70, 'items[].label': 30, 'items[].description': 110 },
-  comparison_table: { title: 70, 'columns[]': 28, 'rows[][]': 60 },
-  diagram: { title: 70, caption: 140 },
-  figure: { title: 70, caption: 120 },
-};
-
+// Max characters per field. Slides take theirs from the design spec (shared/slides/spec.js fieldLimits).
 // Documents flow across pages, so only headings and table cells are bounded.
+// Paths: "title", "points[].detail", "columns[]", "rows[][]".
 export const DOC_LIMITS = {
   heading: { title: 90, subtitle: 200 },
   body: { title: 90, 'paragraphs[].subheading': 60 },

@@ -1,4 +1,5 @@
 import express from 'express';
+import { fileURLToPath } from 'node:url';
 import config from './src/config.js';
 import responseFactory from './src/utils/responseFactory.js';
 import documentsRouter from './src/routes/documentsRouter.js';
@@ -21,6 +22,8 @@ app.use(requestLogger);
 app.use(loadUser);
 
 // ROUTES
+// The slide design spec, layout engine and icons, shared with the editor's preview (no user data).
+app.use('/shared', express.static(fileURLToPath(new URL('./shared', import.meta.url))));
 app.use('/auth', authRouter); // signing in, out, and changing one's own password
 // Everything else needs a signed-in user whose password is not a temporary one.
 app.use(requireUser);

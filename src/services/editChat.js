@@ -2,10 +2,11 @@ import config from '../config.js';
 import { chatStructured, requestEmbedding } from './llm.js';
 import { getSimilarChunksDb } from '../db/chunksQueries.js';
 import { getGenerationByIdDb, updateGenerationDb } from '../db/generationsQueries.js';
-import { LAYOUT_SCHEMAS } from './slideSchemas.js';
 import { SECTION_SCHEMAS } from './docSchemas.js';
 import { mermaidGuide, renderWithRepair, DiagramSyntaxError } from './diagrams.js';
-import { DECK_LIMITS, DOC_LIMITS, fitContent } from './planning/fit.js';
+import { DOC_LIMITS, fitContent } from './planning/fit.js';
+import { KINDS } from './planning/kinds.js';
+import { withIcons } from './planning/icons.js';
 
 // Set by the app, not the model: the pictures placed on an item (with captions, position and crop) and a
 // diagram's size/crop. Hidden from the model and carried over unchanged, so a chat edit never drops them.
@@ -20,9 +21,10 @@ export async function editSlide(generationId, slideIndex, instruction, history =
   const slide = outline.slides?.[slideIndex];
   if (!slide?.content) throw new Error(`Slide ${slideIndex} has no generated content`);
 
-  const layout = slide.layout || 'bullets';
-  const schema = LAYOUT_SCHEMAS[layout];
-  if (!schema) throw new Error(`Unknown layout: ${layout}`);
+  const deck = KINDS.deck;
+  const layout = slide.layout;
+  const schema = deck.schemas[layout];
+  if (!schema) throw new Error('This slide was made by an earlier version of the app; regenerate it first');
 
   // Sources for the edit, when the generation has documents (pasted-text decks may have none).
   const chunks = docIds?.length && instruction.trim()
@@ -40,38 +42,23 @@ export async function editSlide(generationId, slideIndex, instruction, history =
     .map((e) => `User said: "${e.instruction}"\nSlide before that edit:\n${JSON.stringify(e.before, null, 2)}`)
     .join('\n\n---\n\n');
 
-  const layoutGuide = {
-    title: 'Fields: "title" (slide title), "subtitle" (subtitle text).',
-    bullets: 'Fields: "title" (slide title), "bullets" (array of {heading, detail}), "speaker_notes". To remove a bullet, omit it from the array. To add one, add a new {heading, detail} entry.',
-    two_column: 'Fields: "title" (slide title), "column_a_heading", "column_a_bullets" (array of strings), "column_b_heading", "column_b_bullets" (array of strings), "verdict" (optional one-sentence conclusion, "" for none), "speaker_notes". To remove a column, set its heading to "" and its bullets to []. To remove specific bullets, omit them from the array.',
-    stat_focus: 'Fields: "title" (slide title), "stat_value" (the number/metric), "stat_label" (what it measures), "context" (why it matters), "speaker_notes".',
-    quote_highlight: 'Fields: "title" (slide title), "quote_text" (the quote), "attribution" (who said it), "commentary" (why it matters), "speaker_notes".',
-    checklist: 'Fields: "title" (slide title), "items" (array of {step, detail}), "speaker_notes". To remove a step, omit it from the array. To add one, add a new {step, detail} entry.',
-    closing: 'Fields: "title" (slide title), "takeaways" (array of strings), "call_to_action" (optional string), "speaker_notes".',
-    section_divider: 'Fields: "title" (section name, 2-5 words), "subtitle" (one sentence priming the audience).',
-    big_idea: 'Fields: "statement" (one bold sentence, max 15 words), "supporting" (one sentence of context/evidence), "speaker_notes".',
-    timeline: 'Fields: "title" (slide title), "events" (array of {date, label, detail}), "speaker_notes". To remove an event, omit it. To add one, insert in chronological position.',
-    process_flow: 'Fields: "title" (slide title), "steps" (array of {label, detail}), "speaker_notes". To remove a step, omit it. To add one, add a new {label, detail} entry in sequence.',
-    icon_grid: 'Fields: "title" (slide title), "items" (array of {icon, label, description}), "speaker_notes". icon is a single keyword. To remove an item, omit it. To add one, add a new entry.',
-    comparison_table: 'Fields: "title" (slide title), "columns" (array of header strings), "rows" (array of arrays matching column count), "speaker_notes". To add a row, add an array. To add a column, add to columns and extend each row.',
-    key_stats: 'Fields: "title" (slide title), "stats" (array of {value, label, detail}), "speaker_notes". To remove a stat, omit it. To add one, add a new entry using a number from the source.',
-    diagram: `Fields: "title" (slide title), "diagram_type" (flowchart, sequence or mindmap), "mermaid_code", "caption" (one sentence), "speaker_notes". To change the diagram, edit mermaid_code.\n${mermaidGuide({ direction: 'LR' })}`,
-    figure: 'Fields: "title" (slide title), "caption" (leave it ""), "speaker_notes". The picture and its caption are edited on the slide, not here.',
-  };
+  // Lists: an entry is removed by leaving it out and added by adding one.
+  const guide = layout === 'figure'
+    ? 'Fields: "title", "caption" (leave it ""), "speaker_notes". The picture and its caption are edited on the slide, not here.'
+    : `${deck.writeGuide[layout]}\nTo remove an entry from a list, leave it out; to add one, add an entry.`;
 
   const messages = [
     {
       role: 'system',
       content:
         `You are editing a single training slide based on a user instruction.\n` +
-        `The slide uses the "${layout}" layout.\n` +
-        `${layoutGuide[layout] || ''}\n\n` +
+        `It is a "${layout}" slide. Its fields:\n${guide}\n\n` +
         `IMPORTANT: You must return the COMPLETE updated slide JSON with ALL fields — not a diff or partial update.\n` +
         `Apply exactly what the user asks. If they say "remove" something, actually remove it (omit from arrays, or set to empty).\n` +
         `If they say "change" something, change it and keep everything else the same.\n` +
         `If the instruction references source material, use the provided excerpts.\n` +
         `If the user asks to restore or undo something, use the edit history to find the original content.\n` +
-        `You cannot change the slide layout type. If the user asks for a layout change, keep the current layout and note in speaker_notes that the layout should be changed on the Outline page.\n\n` +
+        `You cannot change the kind of slide. If the user asks for a different kind, keep this one; the kind is changed from the slide's toolbar.\n\n` +
         `Current slide content:\n${currentSlide}\n\n` +
         (editLog ? `Edit history for this slide:\n${editLog}\n\n` : '') +
         `Available source material:\n${context}`,
@@ -81,7 +68,8 @@ export async function editSlide(generationId, slideIndex, instruction, history =
   ];
 
   let updatedContent = await chatStructured(messages, config.ollama.generateModel, schema, { think: true });
-  updatedContent = await fitContent(DECK_LIMITS[layout], schema, updatedContent);
+  updatedContent = await fitContent(deck.limits[layout], schema, updatedContent);
+  updatedContent = await withIcons(layout, updatedContent, slide.content);
   if (layout === 'figure') delete updatedContent.caption; // the picture's caption lives with the picture
   if (layout === 'diagram') updatedContent = await renderEditedDiagram(generation, updatedContent, schema);
 

@@ -50,10 +50,26 @@ function sourceNumbers(text) {
   return nums;
 }
 
-/** Numbers in written text that its source never states. */
+/**
+ * Whether `n` is one of the known numbers rounded: "5.04" for 5.0389416, "5,038.94" for 5,038.9416. Only for
+ * numbers precise enough to mean that one figure (with decimals, or 3+ digits): a bare "5" is not taken as
+ * 5.0389 rounded.
+ */
+function isRounded(n, known) {
+  const decimals = n.includes('.') ? n.split('.')[1].length : 0;
+  if (!decimals && n.replace(/^-/, '').length < 3) return false;
+  const value = Number(n);
+  for (const k of known) {
+    const kd = k.includes('.') ? k.split('.')[1].length : 0;
+    if (kd > decimals && Number(Number(k).toFixed(decimals)) === value) return true;
+  }
+  return false;
+}
+
+/** Numbers in written text that its source never states (as written, or rounded from it). */
 export function unsupportedNumbers(written, source) {
   const known = sourceNumbers(source);
-  return [...numbersIn(written)].filter((n) => !known.has(n));
+  return [...numbersIn(written)].filter((n) => !known.has(n) && !isRounded(n, known));
 }
 
 // ── Statements ──

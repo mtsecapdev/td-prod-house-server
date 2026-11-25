@@ -1,9 +1,13 @@
 // What differs between a slide deck and a training document. The planner and writer are shared and read
-// everything kind-specific from here.
-import { LAYOUT_SCHEMAS, LAYOUT_TYPES } from '../slideSchemas.js';
+// everything kind-specific from here. Decks come from the slide design spec (shared/slides/spec.js), which the
+// layout engine and the editor read too.
+import { KINDS as SLIDE_KINDS, KIND_NAMES, DEFAULT_KIND, FIRST_KIND, LAST_KIND, writerSchema, fieldLimits, writeGuide } from '../../../shared/slides/spec.js';
 import { SECTION_SCHEMAS, SECTION_TYPES } from '../docSchemas.js';
-import { mermaidGuide } from '../diagrams.js';
-import { DECK_LIMITS, DOC_LIMITS } from './fit.js';
+import { mermaidGuide, DIAGRAM_TYPES } from '../diagrams.js';
+import { DOC_LIMITS } from './fit.js';
+
+const slideKinds = (test) => KIND_NAMES.filter((k) => test(SLIDE_KINDS[k]));
+const byKind = (fn) => Object.fromEntries(KIND_NAMES.map((k) => [k, fn(k)]));
 
 const DECK = {
   name: 'deck',
@@ -12,81 +16,46 @@ const DECK = {
   product: 'training slide deck',
   listKey: 'slides',
   typeKey: 'layout',
-  types: LAYOUT_TYPES,
-  schemas: LAYOUT_SCHEMAS,
-  limits: DECK_LIMITS,
-  defaultType: 'bullets',
-  firstType: 'title',
-  lastType: 'closing',
-  diagramFallback: 'process_flow',
+  types: KIND_NAMES,
+  schemas: byKind((k) => writerSchema(k, { diagramTypes: DIAGRAM_TYPES })),
+  limits: byKind((k) => fieldLimits(k)),
+  defaultType: DEFAULT_KIND,
+  firstType: FIRST_KIND,
+  lastType: LAST_KIND,
+  diagramFallback: 'steps',
   sourcesPerItem: 4,
   idPrefix: 's_',
   countRange: [3, 25],
   defaultCount: 8,
+  // Written from the facts the planner quoted (not whole passages): see writer.js.
+  writeFrom: 'facts',
   // Items that frame the deck rather than carry evidence: no sources searched for them.
-  noSourceTypes: ['title', 'closing', 'section_divider'],
-  // Assigned by the app (figure insertion, planning suggestions), never by the layout chooser or remix.
-  appOnlyTypes: ['figure'],
-  // Layouts that show a figure in a panel beside their text (scripts/render_pptx.py PANEL_LAYOUTS).
-  besideTypes: ['bullets', 'checklist', 'stat_focus', 'big_idea', 'quote_highlight', 'two_column', 'key_stats', 'icon_grid'],
+  noSourceTypes: slideKinds((k) => !k.sourced),
+  // Kinds that need something the planner or the user attaches (a figure), never offered as a change of kind.
+  appOnlyTypes: slideKinds((k) => k.figure),
+  // A long-deck kind: only in decks of this many slides or more.
+  minCount: byKind((k) => SLIDE_KINDS[k].minDeck || 0),
+  // Kinds a figure from the documents can sit beside (in a panel the layout engine makes room for).
+  pictureTypes: slideKinds((k) => k.picture),
 
-  // Shown to the outline model. Describes what each layout is FOR, so it can match content to layout;
-  // none is framed as an exception to bullets.
-  typeGuide: {
-    title: 'Opening slide: deck title and what the audience will get. First slide only.',
-    bullets: 'A few parallel points that explain or teach.',
-    two_column: 'Two things compared or contrasted: before/after, option A/B, do/don\'t.',
-    stat_focus: 'One number that matters more than any other on this topic.',
-    key_stats: 'Several related figures shown together: results, KPIs, scale.',
-    quote_highlight: 'A verbatim quote, rule or principle that appears in the sources.',
-    checklist: 'An ordered procedure the audience will carry out.',
-    section_divider: 'Opens a new part of a long deck (10+ slides only).',
-    big_idea: 'One statement the audience must remember. At most one or two per deck.',
-    timeline: 'Dated events or phases in order.',
-    process_flow: 'A linear process where each step feeds the next.',
-    icon_grid: 'Three to six parallel concepts or categories of equal weight.',
-    comparison_table: 'Several items compared on the same attributes.',
-    diagram: 'A process with decisions or branches, a hand-off between roles or systems, or a structure such as an org or system.',
-    figure: 'A figure taken from the source documents (assigned by the app).',
-    closing: 'Final slide: takeaways and what to do next. Last slide only.',
-  },
+  // Shown to the planner: what each kind is for.
+  typeGuide: byKind((k) => SLIDE_KINDS[k].use),
 
-  // What a slide's content can be, and the layout each maps to (see layouts.js). The model classifies content;
-  // code picks the layout and checks the evidence.
-  shapes: {
-    points: { layout: 'bullets', what: 'a set of points, reasons or facts (the usual case, even when they contain figures)' },
-    headline_numbers: { layout: 'key_stats', what: 'mostly figures: 3+ points that each state a headline number (results, KPIs, shares)' },
-    single_number: { layout: 'stat_focus', what: 'one headline figure that the whole slide is about' },
-    actions: { layout: 'checklist', what: 'actions the audience should take, each starting with a verb' },
-    sequence: { layout: 'process_flow', what: 'stages of a process, each leading to the next' },
-    dated_events: { layout: 'timeline', what: 'events or milestones tied to dates' },
-    comparison: { layout: 'comparison_table', what: 'the same measures given for several items or years (segments, sites, years)' },
-    contrast: { layout: 'two_column', what: 'two sides set against each other: before/after, option A/B' },
-    process_with_decisions: { layout: 'diagram', what: 'a process with decisions, branches or hand-offs between people or systems' },
-    quotation: { layout: 'quote_highlight', what: 'a statement quoted from a named person or a document' },
-    statement: { layout: 'big_idea', what: 'one message to remember, little else' },
-    parallel_concepts: { layout: 'icon_grid', what: '3-6 parallel categories or pillars of equal weight' },
-  },
-
-  // How to fill each layout. Ranges, not fixed counts: the content decides.
-  writeGuide: {
-    title: 'title: max 8 words naming the subject. subtitle: one sentence on what the audience will be able to do afterwards.',
-    bullets: '2-4 bullets (up to 6 only when the points are very short). icon: the one from the list that best pictures the point. heading: 2-5 words. detail: one short sentence with the specific fact, reason or action.',
-    two_column: 'Two columns that genuinely contrast, each with a heading and 2-5 bullets. verdict: one sentence stating the conclusion if the comparison leads to one, otherwise an empty string.',
-    stat_focus: 'stat_value: the one number that best supports the point, with its unit. stat_label: 2-5 words. context: one sentence the sources give about it.',
-    key_stats: '2-6 figures that together support the point. value: number with unit. label: 2-4 words. detail: one sentence the sources give about it (what drove it only if they say).',
-    quote_highlight: 'quote_text: copied exactly from the sources, never paraphrased or invented. attribution: the person, role or document. commentary: one sentence on what it shows, from the sources.',
-    checklist: '3-8 steps in order. step: starts with a verb. detail: how to do it.',
-    closing: 'title: signals the wrap-up. takeaways: 3-5, one per key message of the deck, each one sentence. call_to_action: one sentence, or an empty string.',
-    section_divider: 'title: 2-5 words naming the part. subtitle: one sentence on what it covers.',
-    big_idea: 'statement: max 15 words, quotable. supporting: one sentence of evidence.',
-    timeline: '3-7 events in date order. date, label (2-5 words), detail (one sentence).',
-    process_flow: '3-7 steps where each feeds the next. label: verb first, 2-4 words. detail: one sentence.',
-    icon_grid: '3-6 items. icon: the one from the list that best pictures the item. label: 2-4 words. description: one short sentence.',
-    comparison_table: '2-5 columns and 2-7 rows. Cells are short phrases. The table should reveal a pattern.',
-    diagram: `caption: one sentence telling the audience what the diagram shows. The slide is wide (16:9): prefer left-to-right flowcharts with at most 8 nodes.\n${mermaidGuide({ direction: 'LR' })}`,
-    figure: 'The slide shows a figure from the documents (its caption and the text printed in it are given; the caption from the document is shown under it). title: what the audience should see in it (max 10 words). caption: only for a figure the document gave no caption: a few plain words saying what the picture shows (e.g. "Cover of the handbook"); never a figure number or a name the sources do not give it. speaker_notes: walk through the figure using its text.',
-  },
+  // How to fill each kind (fields, then lengths).
+  writeGuide: byKind((k) => {
+    if (k === 'diagram') {
+      return `caption: one sentence telling the audience what the diagram shows. The slide is wide (16:9): prefer ` +
+        `left-to-right flowcharts with at most 8 nodes.\n${mermaidGuide({ direction: 'LR' })}`;
+    }
+    if (k === 'figure') {
+      return 'The slide shows a figure from the documents (its caption and the text printed in it are given; the ' +
+        'caption from the document is shown under it). title: what the audience should see in it. caption: only ' +
+        'for a figure the document gave no caption: a few plain words saying what the picture shows (e.g. "Cover ' +
+        'of the handbook"); never a figure number or a name the sources do not give it. speaker_notes: walk ' +
+        'through the figure using its text.';
+    }
+    return writeGuide(k);
+  }),
 
   formats: {
     presented: 'Presented live by a speaker. Slide text is short phrases the speaker talks over, not full paragraphs. speaker_notes are a script: what to say, the transition to the next slide, and where useful a question for the audience (4-8 sentences).',
@@ -95,9 +64,9 @@ const DECK = {
   },
   defaultFormat: 'presented',
   titleStyle: {
-    presented: 'Titles state the slide\'s point as a short assertion (max 10 words).',
-    read: 'Titles name the topic and the finding (max 12 words).',
-    both: 'Titles state the slide\'s point as a short assertion (max 10 words).',
+    presented: 'Titles state the slide\'s point as a short assertion of at most 10 words.',
+    read: 'Titles name the topic and the finding in at most 12 words.',
+    both: 'Titles state the slide\'s point as a short assertion of at most 10 words.',
   },
 };
 
@@ -121,6 +90,11 @@ const DOC = {
   defaultCount: 8,
   noSourceTypes: ['heading', 'summary'],
   appOnlyTypes: ['figure'],
+  // Written from whole passages, then fact-checked: sections are prose and need more than the planned facts.
+  writeFrom: 'passages',
+  minCount: {},
+  // A figure planned for a section is shown in it.
+  pictureTypes: ['body', 'procedure', 'key_points', 'reference_table', 'summary'],
 
   typeGuide: {
     heading: 'Title page: document title, purpose and a short executive summary. First section only.',
@@ -131,14 +105,6 @@ const DOC = {
     diagram: 'A figure: a process with decisions, a hand-off between roles or systems, or a structure.',
     figure: 'A figure taken from the source documents (assigned by the app).',
     summary: 'Recap and next steps. Last section only.',
-  },
-
-  shapes: {
-    points: { layout: 'body', what: 'explanation: ideas, reasons or context (the usual case)' },
-    actions: { layout: 'procedure', what: 'steps the reader carries out, in order' },
-    rules: { layout: 'key_points', what: 'rules, requirements or facts the reader must remember' },
-    data: { layout: 'reference_table', what: 'data to look up, or items compared on the same attributes' },
-    process_with_decisions: { layout: 'diagram', what: 'a process with decisions, branches or hand-offs between people or systems' },
   },
 
   writeGuide: {
@@ -159,9 +125,9 @@ const DOC = {
   },
   defaultFormat: 'learning',
   titleStyle: {
-    learning: 'Section titles name the topic plainly (max 10 words).',
-    reference: 'Section titles name exactly what can be looked up there (max 10 words).',
-    procedure: 'Section titles name the task (verb first where it is a procedure, max 10 words).',
+    learning: 'Section titles name the topic plainly in at most 10 words.',
+    reference: 'Section titles name exactly what can be looked up there, in at most 10 words.',
+    procedure: 'Section titles name the task in at most 10 words, verb first where it is a procedure.',
   },
 };
 

@@ -1,19 +1,18 @@
-// Planning for decks and documents: turns the user's request into an outline of N items (title + bullets +
-// layout), each tied to the passages it draws on.
+// Planning for decks and documents: turns the user's request into an outline of items (title, kind, the facts
+// it presents, a figure), each tied to the passages it draws on.
 //
-// It plans the way the document chat answers: from the documents' actual passages (exact figures included),
-// not from section summaries. Figures in the outline are allowed only when they appear in those passages, and
-// each item keeps the ids of the passages it used; they become its sources, so planning and writing work from
-// the same evidence. Content is planned first, as the chat would outline it; layouts are chosen in a second,
-// quick step, so layout rules never compete with what the slides say.
+// It plans from the documents' actual passages, the way the document chat answers. Every planned point comes
+// with the words in a passage that state it; points whose words aren't there are dropped in code (facts.js),
+// and items left with nothing to say are dropped, so a deck is as long as its material supports, up to the
+// length asked for, and never padded. The planner also picks each item's kind and, from the figures it sees in
+// the passages, the one that pictures it.
 import { randomBytes } from 'node:crypto';
 import config from '../../config.js';
 import { generateStructured, requestEmbedding, requestEmbeddingBatch } from '../llm.js';
 import { getAllPassagesDb, getChunksByIdsDb, getDocumentMapDb, getSourcePassagesDb } from '../../db/chunksQueries.js';
 import { kindOf, briefBlock, storylineBlock, itemCount } from './kinds.js';
-import { chooseLayouts, finishLayouts } from './layouts.js';
-import { stripFigureMarkers, readablePassage, figureNumber } from '../figures.js';
-import { listFiguresDb } from '../../db/figuresQueries.js';
+import { figuresInChunks, readablePassage } from '../figures.js';
+import { verifiedFacts } from './facts.js';
 
 const { generateModel } = config.ollama;
 const PREVIEW_CHARS = 220;
@@ -24,11 +23,12 @@ const ADD_ITEM_PASSAGES = 6;
 const MAX_PASTED_CHARS = 20000;
 // Slides marked by the user: a line containing only "---".
 const SPLIT_RE = /\n\s*-{3,}\s*\n/;
+const MAX_POINTS = 6;
 
 // The model sometimes labels titles with their role ("Deck Title: …", "Slide 3: …"); the label is not the title.
 const TITLE_LABEL_RE = /^(?:(?:deck|document|slide|section|page)\s*(?:title|\d+)?|title)\s*[:\-–]\s*/i;
 function cleanTitle(title) {
-  return title.replace(TITLE_LABEL_RE, '').trim() || title;
+  return String(title || '').replace(TITLE_LABEL_RE, '').trim() || String(title || '');
 }
 
 function newItemId(kind) {
@@ -39,18 +39,34 @@ export function pastedText(brief) {
   return (brief?.source_text || '').trim().slice(0, MAX_PASTED_CHARS);
 }
 
-function passageBlock(rows) {
-  return rows.map((r) => `[${r.id}] p.${r.page ?? '?'}${r.heading ? ` · ${r.heading}` : ''}\n${stripFigureMarkers(r.content).trim()}`).join('\n\n');
+// ── Material ──
+
+const MARKER_RE = /<!-- figure:([a-f0-9]{16}) -->\n?/g;
+
+/** Passages for the planner, each figure in them shown as "[Figure 188]" where it appears. */
+function passageBlock(rows, figureByKey) {
+  return rows.map((r) => {
+    const text = String(r.content).replace(MARKER_RE, (_, key) => {
+      const f = figureByKey.get(`${r.document_id}:${key}`);
+      return f ? `[Figure ${f.id}]\n` : '';
+    });
+    return `[${r.id}] p.${r.page ?? '?'}${r.heading ? ` · ${r.heading}` : ''}\n${text.trim()}`;
+  }).join('\n\n');
+}
+
+async function withFigures(rows) {
+  const figures = await figuresInChunks(rows);
+  return { figures, figureByKey: new Map(figures.map((f) => [`${f.document_id}:${f.key}`, f])) };
 }
 
 // What to plan from: the passages most relevant to the request (plus the documents' section list, so the
-// plan knows what else exists), or the user's own text.
+// plan knows what else exists), the whole documents, or the user's own text.
 async function planningMaterial(generation) {
   const pasted = pastedText(generation.brief);
-  if (pasted) return { block: `The user's own text, to build from:\n"""\n${pasted}\n"""`, passages: [] };
+  if (pasted) return { block: `The user's own text, to build from (source 0):\n"""\n${pasted}\n"""`, passages: [], figures: [], ownText: pasted };
   if (generation.brief?.scope === 'full') return wholeDocumentMaterial(generation);
 
-  const query = [generation.brief?.topic, generation.brief?.instructions].filter(Boolean).join('\n');
+  const query = [generation.brief?.topic, generation.brief?.goal, generation.brief?.instructions].filter(Boolean).join('\n');
   const embedding = await requestEmbedding(query);
   const docIds = generation.source_document_ids || [];
   const [found, map, pinnedRows] = await Promise.all([
@@ -63,10 +79,12 @@ async function planningMaterial(generation) {
   const pinnedIds = new Set(pinned.map((r) => r.id));
   const passages = [...pinned, ...found.filter((r) => !pinnedIds.has(r.id))].slice(0, PLAN_PASSAGES);
   const ordered = [...passages].sort((a, b) => a.document_id - b.document_id || a.id - b.id); // reading order
+  const { figures, figureByKey } = await withFigures(ordered);
   const sections = map.sections.map((s) => `- ${s.heading}${s.page != null ? ` (p. ${s.page})` : ''}`).join('\n');
   return {
-    block: `Sections of the documents:\n${sections}\n\nPassages (id, page, section):\n${passageBlock(ordered)}`,
+    block: `Sections of the documents:\n${sections}\n\nPassages (id, page, section):\n${passageBlock(ordered, figureByKey)}`,
     passages: ordered,
+    figures,
   };
 }
 
@@ -81,79 +99,161 @@ async function wholeDocumentMaterial(generation) {
   const step = Math.max(1, all.length / FULL_PASSAGES);
   const passages = [];
   for (let k = 0; k < all.length && passages.length < FULL_PASSAGES; k += step) passages.push(all[Math.floor(k)]);
-  const shortened = passages.map((r) => ({ ...r, content: stripFigureMarkers(r.content).slice(0, FULL_PASSAGE_CHARS) }));
+  // Shortened for the prompt; the facts are checked against what the planner was shown.
+  const shown = passages.map((r) => ({ ...r, content: r.content.slice(0, FULL_PASSAGE_CHARS) }));
+  const { figures, figureByKey } = await withFigures(shown);
   const sections = map.sections
     .map((s) => `- ${s.heading}${s.page != null ? ` (p. ${s.page})` : ''}: ${s.content.replace(/^Summary:[^\n]*\n?/, '').replace(/\s+/g, ' ').slice(0, 300)}`)
     .join('\n');
   return {
-    block: `The documents' sections, in order, with summaries:\n${sections}\n\nPassages (id, page, section), in reading order:\n${passageBlock(shortened)}`,
-    passages,
+    block: `The documents' sections, in order, with summaries:\n${sections}\n\nPassages (id, page, section), in reading order:\n${passageBlock(shown, figureByKey)}`,
+    passages: shown,
+    figures,
   };
 }
 
-// ── 1. Content ──
+// ── The plan ──
 
-function contentSchema(count) {
+function itemSchema(kind, figureIds, { maxPoints = MAX_POINTS } = {}) {
+  return {
+    type: 'object',
+    properties: {
+      title: { type: 'string' },
+      kind: { type: 'string', enum: kind.types },
+      points: {
+        type: 'array',
+        maxItems: maxPoints,
+        items: {
+          type: 'object',
+          properties: { point: { type: 'string' }, quote: { type: 'string' }, source: { type: 'integer' } },
+          required: ['point', 'quote', 'source'],
+        },
+      },
+      figure: { type: 'integer', enum: [0, ...figureIds] },
+    },
+    required: ['title', 'kind', 'points', 'figure'],
+  };
+}
+
+function planSchema(kind, count, figureIds) {
   return {
     type: 'object',
     properties: {
       audience: { type: 'string' },
       tone: { type: 'string' },
       thesis: { type: 'string' },
-      items: {
-        type: 'array',
-        minItems: count,
-        maxItems: count,
-        items: {
-          type: 'object',
-          properties: {
-            title: { type: 'string' },
-            bullets: { type: 'array', maxItems: 6, items: { type: 'string' } },
-            source_ids: { type: 'array', items: { type: 'integer' } },
-          },
-          required: ['title', 'bullets', 'source_ids'],
-        },
-      },
+      items: { type: 'array', minItems: Math.min(3, count), maxItems: count, items: itemSchema(kind, figureIds) },
     },
     required: ['audience', 'tone', 'thesis', 'items'],
   };
 }
 
+const kindList = (kind) => kind.types.map((t) => `- "${t}": ${kind.typeGuide[t]}`).join('\n');
+
+/** How every item's points are given, shared by all planning prompts. */
+function pointRules(kind) {
+  return `- points: the facts it presents (none for the first and last ${kind.noun}). For each: point (the fact as ` +
+    `it will be presented: short, with its exact figures), quote (the words in the passage that state it, copied ` +
+    `exactly, at most 40 words) and source (that passage's id; 0 for the user's own text). Only facts a passage ` +
+    `states: no figure, name or claim that is not in the quote.\n` +
+    `- figure: the number of a figure shown in the passages as "[Figure N]" that pictures what this ${kind.noun} ` +
+    `is about, or 0. A figure goes on one ${kind.noun} at most.\n`;
+}
+
 async function planContent(generation, kind, material, count) {
-  const opening = kind.name === 'deck' ? 'a title slide saying what the deck covers' : 'a title page with the document\'s purpose';
-  const closing = kind.name === 'deck' ? 'the takeaways and what to do next' : 'a summary and next steps';
+  const deck = kind.name === 'deck';
+  const opening = deck ? 'a title slide saying what the deck covers' : 'a title page with the document\'s purpose';
+  const closing = deck ? 'the takeaways and what to do next' : 'a summary and next steps';
   const prompt =
-    `You are outlining a ${kind.product} of exactly ${count} ${kind.nounPlural} for the user below, the way an ` +
-    `expert would outline it before writing.\n\n${briefBlock(generation)}\n\n${material.block}\n\n` +
+    `You are planning a ${kind.product} of at most ${count} ${kind.nounPlural} for the user below, the way an ` +
+    `expert would plan it before writing.\n\n${briefBlock(generation)}\n\n${material.block}\n\n` +
+    `Kinds of ${kind.noun}:\n${kindList(kind)}\n\n` +
     `For each ${kind.noun}:\n` +
-    `- title: specific to its content (max 10 words), never generic ("Introduction", "Key points").\n` +
-    `- bullets: 3-6 concrete points it will present: facts, figures, names, examples. Use exact figures from the ` +
-    `material where they help the point; never state a figure that is not in the material.\n` +
-    `- source_ids: the ids of the passages its bullets draw on (empty when it draws on none).\n\n` +
+    `- title: specific to its content, at most 10 words; never generic ("Introduction", "Key points").\n` +
+    `- kind: the kind that presents its facts best.\n` +
+    pointRules(kind) + '\n' +
     `Rules:\n` +
-    `- Exactly ${count} ${kind.nounPlural}. The first is ${opening}; the last is ${closing}.\n` +
-    `- One main idea per ${kind.noun}; no two cover the same ground. Cover everything the user asked for.\n` +
+    `- At most ${count} ${kind.nounPlural}: the first is ${opening}; the last is ${closing}. Use fewer when the ` +
+    `material is thin. Every ${kind.noun} must bring facts no other ${kind.noun} has: never repeat a fact, figure ` +
+    `or example, and never pad.\n` +
+    `- One main idea per ${kind.noun}. Cover everything the user asked for.\n` +
     `- Never make a ${kind.noun} about the document itself (how to use the manual, its features or ` +
     `conventions, prerequisites, course maps, revision history, contents, references): only its subject.\n` +
-    (kind.name === 'deck'
+    (deck
       ? `- A slide is presented, not read: one idea a speaker can say in a sentence, shown with 2-4 short points ` +
-        `or one visual (a figure, a number, a sequence, a comparison). Detail belongs in the speaker notes.\n`
+        `or one visual (a figure, numbers, steps, a comparison). Detail belongs in the speaker notes.\n`
       : '') +
     (generation.brief?.scope === 'full'
       ? `- The user wants the documents covered as a whole: cover every main section, in the documents' order ` +
         `(merge small related sections into one ${kind.noun}).\n`
       : '') +
     `- Keep each fact with what its passage is about: a passage about one engine type, system, product or process ` +
-    `is not evidence about another, even when the wording is similar.\n` +
-    `- Order them so the ${kind.product} builds an argument from situation to conclusion.\n` +
+    `is not evidence about another, even when the wording is similar. An example in a passage stays an example.\n` +
+    `- If the user asked for a particular kind (a table, a diagram, a timeline), include it where the facts allow.\n` +
+    `- Order them so the ${kind.product} builds from situation to conclusion.\n` +
     `Also return: audience (who it is for, a few words; the user's if given), tone (2-4 adjectives), and thesis ` +
-    `(the one sentence the ${kind.name === 'deck' ? 'audience' : 'reader'} should leave with).`;
-  return generateStructured(prompt, generateModel, contentSchema(count), { think: true });
+    `(the one sentence the ${deck ? 'audience' : 'reader'} should leave with).`;
+  const figureIds = material.figures.map((f) => f.id);
+  return generateStructured(prompt, generateModel, planSchema(kind, count, figureIds), { think: true });
 }
 
-// ── The whole plan ──
+// What a kind needs from its facts to work; without it the item becomes the default kind.
+const NEEDS = {
+  steps: (facts) => facts.length >= 2,
+  compare: (facts) => facts.length >= 2,
+  table: (facts) => facts.length >= 2,
+  diagram: (facts) => facts.length >= 2,
+  numbers: (facts) => facts.some((f) => /\d/.test(f.point)),
+  procedure: (facts) => facts.length >= 2,
+  key_points: (facts) => facts.length >= 2,
+  reference_table: (facts) => facts.length >= 2,
+};
 
-/** Builds the outline: content from the material, then layouts, then sources per item. */
+/**
+ * Raw planned items → outline items: facts checked, sources and figure attached, kinds made to fit their position
+ * and facts. Items in the middle with no fact left are dropped. `fixed`: keep every item (the user's own parts).
+ */
+function toItems(kind, rawItems, material, { fixed = false, bookends = true } = {}) {
+  const byId = new Map(material.passages.map((p) => [p.id, p]));
+  const figures = new Map(material.figures.map((f) => [f.id, f]));
+  const usedFigures = new Set();
+  const last = rawItems.length - 1;
+  const items = [];
+  rawItems.forEach((raw, i) => {
+    const ownText = raw.own_text || material.ownText || '';
+    const facts = verifiedFacts(raw.points, byId, ownText);
+    let type = kind.types.includes(raw.kind) ? raw.kind : kind.defaultType;
+    const bookend = bookends && (i === 0 || (i === last && rawItems.length > 2));
+    if (bookend) type = i === 0 ? kind.firstType : kind.lastType;
+    else if (type === kind.firstType || type === kind.lastType || rawItems.length < (kind.minCount[type] || 0)) type = kind.defaultType;
+
+    const figure = figures.get(Number(raw.figure));
+    const figureOk = figure && !usedFigures.has(figure.id) && !bookend;
+    if (kind.appOnlyTypes.includes(type) && !figureOk) type = kind.defaultType;
+    if (NEEDS[type] && !NEEDS[type](facts)) type = kind.defaultType;
+    if (!bookend && !fixed && !facts.length && type !== 'figure') return; // nothing to say: no padding
+
+    const sourceIds = [...new Set(facts.map((f) => f.chunk_id).filter(Boolean))];
+    const item = {
+      id: newItemId(kind),
+      title: cleanTitle(raw.title),
+      [kind.typeKey]: type,
+      bullets: facts.map((f) => f.point),
+      facts,
+      sources: sourceIds.slice(0, kind.sourcesPerItem + 2).map((id) => toSource(byId.get(id))),
+      content: null,
+      ...(raw.own_text ? { own_text: raw.own_text } : {}),
+    };
+    if (figureOk && (type === 'figure' || kind.pictureTypes.includes(type))) {
+      item.figure_id = figure.id;
+      usedFigures.add(figure.id);
+    }
+    items.push(item);
+  });
+  return items;
+}
+
+/** Builds the outline: the plan from the material, its facts checked, then sources for items that need them. */
 export async function planOutline(generation) {
   const kind = kindOf(generation);
   const pasted = pastedText(generation.brief);
@@ -162,20 +262,7 @@ export async function planOutline(generation) {
   const count = itemCount(kind, generation.brief);
   const material = await planningMaterial(generation);
   const plan = await planContent(generation, kind, material, count);
-
-  const byId = new Map(material.passages.map((p) => [p.id, p]));
-  let items = (plan.items || []).filter((raw) => raw.title).map((raw) => ({
-    id: newItemId(kind),
-    title: cleanTitle(raw.title),
-    // Passage ids belong in source_ids; the model sometimes leaves them in the text ("… [2463]").
-    bullets: (raw.bullets || []).map((b) => b.replace(/\s*\[(?:p\. )?\d+(?:\s*,\s*\d+)*\]/g, '').trim()).filter(Boolean),
-    // The passages this item was planned from become its sources.
-    sources: [...new Set(raw.source_ids || [])].filter((id) => byId.has(id))
-      .slice(0, kind.sourcesPerItem + 2).map((id) => toSource(byId.get(id))),
-    content: null,
-  }));
-  items = finishLayouts(kind, generation.brief, await chooseLayouts(generation, kind, items));
-  if (generation.source_document_ids?.length) items = await suggestFigures(kind, items, generation.source_document_ids);
+  const items = toItems(kind, plan.items || [], material);
   // Items the plan gave no passages (and that need evidence) get sources by search.
   await attachSources(generation, kind, items.filter((it) => !it.sources.length));
 
@@ -185,152 +272,31 @@ export async function planOutline(generation) {
   };
 }
 
-// ── Figures from the documents ──
-
-// Layouts a figure can't add to: numbers, quotes, a single statement, bookends, and those that are diagrams already.
-const KEEP_TYPES = new Set(['stat_focus', 'quote_highlight', 'big_idea', 'section_divider', 'key_points', 'process_flow',
-  'timeline', 'comparison_table', 'diagram', 'procedure', 'reference_table']);
-// Slide and figure texts are compared by meaning (the search model). Scores bunch together (0.6-0.8 on the
-// engine manual), so a figure needs to be from nearby pages, or a close match on meaning alone.
-const FIGURE_PAGE_DISTANCE = 2;
-const NEAR_FIGURE_SIMILARITY = 0.6;
-const FAR_FIGURE_SIMILARITY = 0.72;
-const NEAR_BONUS = 0.05;
-// Matches this strong are taken as they are; weaker ones are checked by the model.
-const SURE_FIGURE_SCORE = 0.76;
-// A planned item with this many points is a list: the figure goes beside it, not instead of it.
-const LIST_POINTS = 3;
-
-const cosine = (a, b) => {
-  let dot = 0, na = 0, nb = 0;
-  for (let i = 0; i < a.length; i++) { dot += a[i] * b[i]; na += a[i] * a[i]; nb += b[i] * b[i]; }
-  return dot / Math.sqrt(na * nb);
-};
-
-/**
- * Puts the documents' figures on the slides/sections they illustrate. The decks had none: matching on shared
- * caption words missed obvious pairs ("Engine timing" and Figure 2-25), and at most two were allowed.
- * 1. Every (item, figure) pair is scored by meaning: the item's title and points against the figure's caption
- *    and the words printed in it; a figure the item names ("Figure 2-6") scores 1, a figure from nearby pages
- *    gets a small bonus.
- * 2. Best pairs first, each item gets at most one figure and each figure goes to one item.
- * 3. Strong pairs are taken; weaker ones are checked by the model (does the figure show what the item is about?).
- * A list keeps its points with the figure beside it; an item with little text becomes a Figure item.
- */
-async function suggestFigures(kind, items, documentIds) {
-  const figures = await listFiguresDb({ documentIds });
-  if (!figures.length) return items;
-  const candidates = items.map((it, i) => ({ it, i }))
-    .filter(({ it, i }) => i > 0 && i < items.length - 1 && !KEEP_TYPES.has(it[kind.typeKey]) && !it.figure_id);
-  if (!candidates.length) return items;
-
-  const figureText = (f) => `${f.caption || ''}. ${String(f.labels || '').slice(0, 240)}`.trim();
-  const itemText = (it) => `${it.title}. ${(it.bullets || []).join(' ')}`;
-  const [figVecs, itemVecs] = await Promise.all([
-    requestEmbeddingBatch(figures.map(figureText)),
-    requestEmbeddingBatch(candidates.map(({ it }) => itemText(it))),
-  ]);
-
-  const pairs = [];
-  candidates.forEach(({ it, i }, c) => {
-    const text = itemText(it);
-    const pages = (it.sources || []).map((s) => s.page).filter((p) => p != null);
-    figures.forEach((f, k) => {
-      const n = figureNumber(f.caption);
-      if (n && new RegExp(`\\bfig(?:ure)?\\.?\\s*${n.replace(/[.-]/g, '[.-]')}\\b`, 'i').test(text)) {
-        pairs.push({ i, f, score: 1 });
-        return;
-      }
-      const near = f.page != null && pages.some((p) => Math.abs(p - f.page) <= FIGURE_PAGE_DISTANCE);
-      const sim = cosine(itemVecs[c], figVecs[k]);
-      if (sim >= (near ? NEAR_FIGURE_SIMILARITY : FAR_FIGURE_SIMILARITY)) pairs.push({ i, f, score: sim + (near ? NEAR_BONUS : 0) });
-    });
-  });
-
-  pairs.sort((a, b) => b.score - a.score);
-  const chosen = [];
-  const usedItems = new Set();
-  const usedFigures = new Set();
-  for (const pair of pairs) {
-    if (usedItems.has(pair.i) || usedFigures.has(pair.f.id)) continue;
-    chosen.push(pair);
-    usedItems.add(pair.i);
-    usedFigures.add(pair.f.id);
-  }
-  const approved = new Set(chosen.flatMap((p, k) => (p.score >= SURE_FIGURE_SCORE ? [k] : [])));
-  const unsure = chosen.map((p, k) => ({ ...p, k })).filter((p) => !approved.has(p.k));
-  if (unsure.length) for (const k of await confirmFigures(kind, items, unsure)) approved.add(k);
-
-  chosen.forEach((p, k) => {
-    if (!approved.has(k)) return;
-    const item = items[p.i];
-    const caption = p.f.caption || 'a figure from the document';
-    const isList = (item.bullets || []).length >= LIST_POINTS && p.score < 1;
-    items[p.i] = isList
-      ? { ...item, figure_id: p.f.id, figure_beside: true, type_reason: `${item.type_reason ? `${item.type_reason}; ` : ''}with ${caption} beside` }
-      : { ...item, [kind.typeKey]: 'figure', figure_id: p.f.id, type_reason: `Shows ${caption}` };
-  });
-  return items;
-}
-
-async function confirmFigures(kind, items, pairs) {
-
-  const prompt =
-    `Check each pairing of a ${kind.noun} with a figure from the source documents. Answer yes only if the figure ` +
-    `shows what the whole ${kind.noun} is about, so presenting the figure on it helps; answer no if it is only ` +
-    `loosely related, shows something else, or the ${kind.noun} is a recap.\n\n` +
-    pairs.map((p) => `[P${p.k + 1}] ${kind.noun} "${items[p.i].title}": ${(items[p.i].bullets || []).join('; ')}\n` +
-      `  figure: ${p.f.caption || '(no caption)'}. Text in it: ${p.f.labels.slice(0, 240)}`).join('\n\n');
-  const schema = {
-    type: 'object',
-    properties: {
-      answers: {
-        type: 'array',
-        items: {
-          type: 'object',
-          properties: { pair: { type: 'string', enum: pairs.map((p) => `P${p.k + 1}`) }, shows_subject: { type: 'boolean' } },
-          required: ['pair', 'shows_subject'],
-        },
-      },
-    },
-    required: ['answers'],
-  };
-  const { answers = [] } = await generateStructured(prompt, generateModel, schema, { think: true });
-  return answers.filter((a) => a.shows_subject).map((a) => Number(String(a.pair).slice(1)) - 1);
-}
-
 // The user split their text into slides with "---": one item per part, in their order, each carrying its
-// part as `own_text`. The model only titles, summarises and picks a layout for each part.
+// part as `own_text`. The model titles each part, picks its kind and quotes its points from the part.
 async function planFromSegments(generation, kind, pasted) {
   const parts = pasted.split(SPLIT_RE).map((p) => p.trim()).filter(Boolean).slice(0, kind.countRange[1]);
   const prompt =
     `The user wrote a ${kind.product} as ${parts.length} parts, one ${kind.noun} each, in this order.\n\n` +
     `${briefBlock(generation)}\n\n` +
     parts.map((p, i) => `--- Part ${i + 1} ---\n${p}`).join('\n\n') + '\n\n' +
+    `Kinds of ${kind.noun}:\n${kindList(kind)}\n\n` +
     `Return audience (who it is for, a few words), tone (2-4 adjectives), thesis (one sentence) and exactly ` +
     `${parts.length} items, item i for part i:\n` +
-    `- title: the part's own heading if it has one, otherwise a specific title (max 10 words).\n` +
-    `- bullets: 2-5 short lines on what the part covers, taken from its text.\n- source_ids: [].`;
-  const plan = await generateStructured(prompt, generateModel, contentSchema(parts.length), { think: false });
+    `- title: the part's own heading if it has one, otherwise a specific title of at most 10 words.\n` +
+    `- kind: the kind that presents the part best.\n` +
+    `- points: what the part says, each with point (short), quote (the part's own words that state it) and source 0.\n` +
+    `- figure: 0.`;
+  const schema = planSchema(kind, parts.length, []);
+  schema.properties.items.minItems = parts.length;
+  const plan = await generateStructured(prompt, generateModel, schema, { think: false });
 
-  let items = parts.map((part, i) => {
-    const raw = plan.items?.[i] || { title: part.split('\n')[0].slice(0, 80), bullets: [] };
-    return {
-      id: newItemId(kind),
-      title: raw.title,
-      bullets: (raw.bullets || []).filter(Boolean),
-      sources: [],
-      content: null,
-      own_text: part,
-    };
-  });
-  items = await chooseLayouts(generation, kind, items);
-  // Keep the user's structure: bookend layouts only where they fit, nothing else forced.
-  items = items.map((it, i) => {
-    const t = it[kind.typeKey];
-    return (t === kind.firstType && i !== 0) || (t === kind.lastType && i !== items.length - 1)
-      ? { ...it, [kind.typeKey]: kind.defaultType } : it;
-  });
+  const raw = parts.map((part, i) => ({
+    ...(plan.items?.[i] || { title: part.split('\n')[0].slice(0, 80), kind: kind.defaultType, points: [] }),
+    own_text: part,
+  }));
+  // Keep the user's structure: every part stays, bookend kinds only where they fit.
+  const items = toItems(kind, raw, { passages: [], figures: [] }, { fixed: true, bookends: false });
   await attachSources(generation, kind, items);
   return {
     storyline: { audience: plan.audience, tone: plan.tone, thesis: plan.thesis, generated_at: new Date().toISOString() },
@@ -342,29 +308,22 @@ async function planFromSegments(generation, kind, pasted) {
 export async function planOneItem(generation, description, afterIndex) {
   const kind = kindOf(generation);
   const items = generation.outline?.[kind.listKey] || [];
-  const passages = generation.source_document_ids?.length
+  const rows = generation.source_document_ids?.length
     ? await getSourcePassagesDb(await requestEmbedding(description), ADD_ITEM_PASSAGES, generation.source_document_ids, description)
     : [];
+  const { figures, figureByKey } = await withFigures(rows);
+  const choosable = kind.types.filter((t) => t !== kind.firstType && t !== kind.lastType);
   const prompt =
     `You are adding one ${kind.noun} to a ${kind.product}.\n\n${briefBlock(generation)}\n\n` +
     (generation.storyline ? `${storylineBlock(generation.storyline)}\n\n` : '') +
     `Current outline:\n${items.map((it, i) => `${i + 1}. ${it.title}`).join('\n')}\n\n` +
     `The new ${kind.noun} goes after ${kind.noun} ${afterIndex + 1}. The user describes it as: "${description}"\n\n` +
-    (passages.length ? `Passages (id, page, section):\n${passageBlock(passages)}\n\n` : '') +
-    `Return a title (specific, max 10 words), 3-6 bullets with the concrete points it will present (exact figures ` +
-    `only from the passages), and the source_ids of the passages used.`;
-  const schema = contentSchema(1).properties.items.items;
-  const raw = await generateStructured(prompt, generateModel, schema, { think: false });
-
-  const byId = new Map(passages.map((p) => [p.id, p]));
-  let [item] = await chooseLayouts(generation, kind, [{
-    id: newItemId(kind),
-    title: raw.title,
-    bullets: (raw.bullets || []).filter(Boolean),
-    sources: [...new Set(raw.source_ids || [])].filter((id) => byId.has(id)).map((id) => toSource(byId.get(id))),
-    content: null,
-  }]);
-  if ([kind.firstType, kind.lastType].includes(item[kind.typeKey])) item = { ...item, [kind.typeKey]: kind.defaultType };
+    (rows.length ? `Passages (id, page, section):\n${passageBlock(rows, figureByKey)}\n\n` : '') +
+    `Kinds of ${kind.noun}:\n${choosable.map((t) => `- "${t}": ${kind.typeGuide[t]}`).join('\n')}\n\n` +
+    `Return:\n- title: specific, at most 10 words.\n- kind: the kind that presents it best.\n` +
+    pointRules(kind).replace(` (none for the first and last ${kind.noun})`, '');
+  const raw = await generateStructured(prompt, generateModel, itemSchema(kind, figures.map((f) => f.id)), { think: false });
+  const [item] = toItems(kind, [raw], { passages: rows, figures, ownText: pastedText(generation.brief) }, { fixed: true, bookends: false });
   if (!item.sources.length) await attachSources(generation, kind, [item]);
   return item;
 }
@@ -414,9 +373,9 @@ export async function searchSources(generation, q, limit = 8) {
   return rows.map((r) => toSource(r, true));
 }
 
-// ── Layout suggestions (remix) ──
+// ── Kind suggestions (remix) ──
 
-/** The layouts (other than the current one) that would present this item best, each with a reason. */
+/** The kinds (other than the current one) that would present this item best, each with a reason. */
 export async function suggestTypes(generation, index) {
   const kind = kindOf(generation);
   const item = generation.outline?.[kind.listKey]?.[index];
@@ -424,13 +383,13 @@ export async function suggestTypes(generation, index) {
   const current = item[kind.typeKey];
   const candidates = kind.types.filter((t) => t !== current && t !== kind.firstType && t !== kind.lastType
     && !kind.appOnlyTypes.includes(t));
-  const { source_chunk_ids: _ids, used_pages: _pages, diagram_file: _d, speaker_notes: _n, ...content } = item.content || {};
+  const { source_chunk_ids: _ids, used_pages: _pages, diagram_file: _d, speaker_notes: _n, pictures: _p, ...content } = item.content || {};
 
   const prompt =
-    `A ${kind.noun} in a ${kind.product} currently uses the "${current}" layout.\n\n` +
+    `A ${kind.noun} in a ${kind.product} is currently a "${current}" ${kind.noun}.\n\n` +
     `Title: ${item.title}\nContent:\n${JSON.stringify(content, null, 2)}\n\n` +
-    `Layouts to choose from:\n${candidates.map((t) => `- "${t}": ${kind.typeGuide[t]}`).join('\n')}\n\n` +
-    `Pick the ${Math.min(3, candidates.length)} layouts that would present this content best, best first. ` +
+    `Kinds to choose from:\n${candidates.map((t) => `- "${t}": ${kind.typeGuide[t]}`).join('\n')}\n\n` +
+    `Pick the ${Math.min(3, candidates.length)} kinds that would present this content best, best first. ` +
     `For each give a one-line reason a user would understand, e.g. "The four steps read as a sequence".`;
   const schema = {
     type: 'object',

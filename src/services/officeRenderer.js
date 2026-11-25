@@ -10,6 +10,7 @@ import { ensureDiagramFile } from './diagrams.js';
 import { getTemplate } from './templates.js';
 import { generationName, getImagePathsDb } from '../db/generationsQueries.js';
 import { getFiguresByIdsDb } from '../db/figuresQueries.js';
+import { layoutSlide } from '../../shared/slides/layout.js';
 
 const execFileAsync = promisify(execFile);
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -51,6 +52,14 @@ async function renderInput(generation) {
     if (content.diagram_file) content = { ...content, diagram_path: await ensureDiagramFile(generation, content.diagram_file) };
     return { ...item, content };
   }));
+  // Decks: every slide's boxes from the layout engine; render_pptx.py only draws them.
+  if (generation.type === 'deck') {
+    items.forEach((item, i) => {
+      if (!item.content) return;
+      const { background, boxes, pictureBoxes } = layoutSlide(item, i + 1);
+      items[i] = { ...item, background, boxes, picture_boxes: pictureBoxes };
+    });
+  }
   const { pptx_path: templatePath, ...theme } = await getTemplate(generation.brief?.template);
   return { input: { ...generation.outline, [listKey]: items, theme }, templatePath };
 }

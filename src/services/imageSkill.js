@@ -22,10 +22,17 @@ const BRIEF_SCHEMA = {
   required: ['subject', 'style', 'size', 'caption'],
 };
 
-/** What a slide/section says, for an image made for it. */
+const NOT_SAID = new Set(['speaker_notes', 'notes', 'mermaid_code', 'diagram_file', 'diagram_type', 'pictures', 'image', 'icon', 'source_chunk_ids', 'used_pages']);
+
+/** What a slide/section says (every text on it, whatever its kind), for an image made for it. */
 function itemText(item) {
-  const c = item?.content || {};
-  const parts = [c.title || item?.title, c.subtitle, c.statement, ...(c.bullets || []).map((b) => b.text || b)];
+  const parts = [item?.content?.title ? '' : item?.title];
+  (function walk(v, key) {
+    if (NOT_SAID.has(key)) return;
+    if (typeof v === 'string') parts.push(v);
+    else if (Array.isArray(v)) v.forEach((x) => walk(x));
+    else if (v && typeof v === 'object') Object.entries(v).forEach(([k, x]) => walk(x, k));
+  })(item?.content || {});
   return parts.filter((p) => typeof p === 'string' && p.trim()).join('\n');
 }
 

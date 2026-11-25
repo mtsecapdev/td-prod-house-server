@@ -103,7 +103,6 @@ export async function placeFigure(generationId, figureId, index) {
     title: figure.caption.replace(/^fig(ure)?\.?\s*[A-Z]?\d+(?:[.-]\d+)*[a-z]?\s*/i, '') || 'Figure',
     bullets: [],
     [kind.typeKey]: 'figure',
-    type_reason: 'Figure from the document',
     figure_id: figure.id,
     sources: passages.map((p) => ({
       chunk_id: p.id, page: p.page, heading: p.heading,

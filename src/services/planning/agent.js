@@ -31,6 +31,8 @@ async function ensureIds(generation, kind) {
 /** Proposes the steps that carry out `instruction` across the deck. Nothing is changed yet. */
 export async function planAgent(generationInput, instruction) {
   const kind = kindOf(generationInput);
+  // Kinds a slide/section can be rewritten as (a Figure needs a figure attached, so it is not one).
+  const switchable = kind.types.filter((t) => !kind.appOnlyTypes.includes(t));
   const generation = await ensureIds(generationInput, kind);
   const items = generation.outline[kind.listKey];
 
@@ -42,7 +44,7 @@ export async function planAgent(generationInput, instruction) {
     `\n\nThe user asks: "${instruction}"\n\n` +
     `Step actions:\n` +
     `- "edit": change one ${kind.noun}'s text. instruction says exactly what to change, self-contained.\n` +
-    `- "layout": rewrite one ${kind.noun} in another layout (set layout). Use only when the user asks for a different presentation.\n` +
+    `- "layout": rewrite one ${kind.noun} as another kind (set layout to one of: ${switchable.join(', ')}). Use only when the user asks for a different presentation.\n` +
     `- "add": a new ${kind.noun} after item_id (or item_id "start" for first). instruction describes it.\n` +
     `- "delete": remove item_id.\n` +
     `- "move": move item_id to position (1-based).\n` +
@@ -63,7 +65,7 @@ export async function planAgent(generationInput, instruction) {
             action: { type: 'string', enum: ACTIONS },
             item_id: { type: 'string' },
             instruction: { type: 'string' },
-            layout: { type: 'string', enum: ['', ...kind.types] },
+            layout: { type: 'string', enum: ['', ...switchable] },
             position: { type: 'integer' },
           },
           required: ['action', 'item_id', 'instruction', 'layout', 'position'],
@@ -78,7 +80,7 @@ export async function planAgent(generationInput, instruction) {
   const titleOf = Object.fromEntries(items.map((it, i) => [it.id, `${i + 1}. ${it.title}`]));
   const steps = (result.steps || [])
     .filter((s) => ACTIONS.includes(s.action) && (ids.has(s.item_id) || (s.action === 'add' && s.item_id === 'start')))
-    .filter((s) => s.action !== 'layout' || kind.types.includes(s.layout))
+    .filter((s) => s.action !== 'layout' || switchable.includes(s.layout))
     .map((s) => ({
       ...s,
       // An edit/add without its own instruction carries the user's request, applied to that item.

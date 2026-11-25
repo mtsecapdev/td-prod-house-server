@@ -1,4 +1,5 @@
-// Removes what a written slide or document section says that its sources don't. The writer pads paragraphs
+// Removes what a written document section says that its sources don't (slides are written from checked facts
+// instead: see writer.js). The writer pads paragraphs
 // with claims of its own ("this directly contributed to the 24.6% gross margin", "below industry averages",
 // "Brandt succeeds Vercoe") and works out figures the sources never give ("growth exceeds FY2024's 8.2%");
 // factCheck.js finds them, and they are cut here. Titles, labels and table cells are left alone.
@@ -9,17 +10,15 @@ const MAX_EXTRA_CHARS = 12000;
 // A sentence that only makes sense after the one before it.
 const REFERS_BACK_RE = /^(this|these|that|those|it|its|they|such|the (improvement|increase|decrease|decline|shortfall|change|result|growth))\b/i;
 
-// Prose checked sentence by sentence against the sources.
-// Speaker notes too: checked for numbers only, they carried "exceeds industry benchmarks" and "Heron is now
-// operational"; the checker passes their transitions and audience questions as making no claim.
-const CHECKED = new Set(['text', 'detail', 'description', 'introduction', 'summary', 'key_takeaway', 'supporting',
-  'context', 'commentary', 'verdict', 'caption', 'caution', 'statement', 'speaker_notes', 'notes']);
+// Prose checked sentence by sentence against the sources (notes too: they carried "exceeds industry benchmarks"
+// and "Heron is now operational").
+const CHECKED = new Set(['text', 'detail', 'description', 'introduction', 'summary', 'key_takeaway', 'caption', 'caution', 'notes']);
 // Lists of one-line statements, checked item by item.
-const CHECKED_LISTS = new Set(['takeaways', 'recap_points', 'column_a_bullets', 'column_b_bullets', 'bullets', 'checklist']);
-// Next steps and calls to action are advice the brief asks for: only their numbers are checked.
-const NUMBERS_ONLY = new Set(['next_steps', 'call_to_action', 'subtitle']);
-// An entry of these lists is dropped when its prose is: a bullet or point without its detail says nothing.
-const DROP_WHEN_EMPTY = { paragraphs: 'text', bullets: 'detail', points: 'description', items: 'description' };
+const CHECKED_LISTS = new Set(['recap_points']);
+// Next steps are advice the brief asks for: only their numbers are checked.
+const NUMBERS_ONLY = new Set(['next_steps', 'subtitle']);
+// An entry of these lists is dropped when its prose is: a point without its description says nothing.
+const DROP_WHEN_EMPTY = { paragraphs: 'text', points: 'description' };
 
 /** Every checkable piece of text in the content, with where it lives. */
 function collect(content) {

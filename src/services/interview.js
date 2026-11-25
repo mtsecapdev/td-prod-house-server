@@ -303,7 +303,8 @@ function summary(state, note = '') {
     const v = state.slots[slot] || {};
     let value = v.value;
     if (!value) value = v.auto && slot !== 'extras' ? 'Chosen from the documents' : 'Nothing extra';
-    if (slot === 'length' && v.count) value = /^\d+$/.test(v.value) || !v.value ? `${v.count} ${kind.nounPlural}` : `${v.value} (${v.count} ${kind.nounPlural})`;
+    // A length is a most: the plan uses fewer when the documents have less to say.
+    if (slot === 'length' && v.count) value = /^\d+$/.test(v.value) || !v.value ? `Up to ${v.count} ${kind.nounPlural}` : `${v.value} (up to ${v.count} ${kind.nounPlural})`;
     return { slot, label: LABELS[slot], value, assumed: Boolean(v.assumed) };
   });
   return {
