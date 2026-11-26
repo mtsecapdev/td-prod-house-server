@@ -27,8 +27,8 @@ const DECK = {
   idPrefix: 's_',
   countRange: [3, 25],
   defaultCount: 8,
-  // Written from the facts the planner quoted (not whole passages): see writer.js.
-  writeFrom: 'facts',
+  // Facts the planner quotes per slide: a slide shows a few.
+  planPoints: { range: '2-5', max: 6 },
   // Items that frame the deck rather than carry evidence: no sources searched for them.
   noSourceTypes: slideKinds((k) => !k.sourced),
   // Kinds that need something the planner or the user attaches (a figure), never offered as a change of kind.
@@ -90,8 +90,8 @@ const DOC = {
   defaultCount: 8,
   noSourceTypes: ['heading', 'summary'],
   appOnlyTypes: ['figure'],
-  // Written from whole passages, then fact-checked: sections are prose and need more than the planned facts.
-  writeFrom: 'passages',
+  // Facts the planner quotes per section: sections are prose, built from more of them.
+  planPoints: { range: '4-8', max: 8 },
   minCount: {},
   // A figure planned for a section is shown in it.
   pictureTypes: ['body', 'procedure', 'key_points', 'reference_table', 'summary'],
@@ -164,12 +164,14 @@ export function styleGuide(kind, brief = {}) {
     brief.audience ? `Audience: ${brief.audience}. Pitch terms and depth to them.` : '',
     brief.goal ? `Goal: afterwards the audience should ${brief.goal.replace(/^to\s+/i, '')}. Everything should serve it.` : '',
     brief.tone ? `Tone: ${brief.tone}.` : '',
-    brief.instructions ? `Instructions from the user (follow them): ${brief.instructions}` : '',
-    'Grounding: every number, name, date and quote you write must appear in the sources given for this item ' +
-      'or in the user\'s own text. ' +
-      'The planned bullets are a guide to what to cover, not a source of facts. If the sources do not support a ' +
-      'point, leave it out rather than inventing a figure.',
-    'Write in plain English. No filler ("it is important to note"), no hype, no emoji.',
+    // "Stress safety" once produced safety claims the manual never makes: instructions steer, facts stay facts.
+    brief.instructions ? `Instructions from the user: ${brief.instructions}. Follow them in what you emphasise, how ` +
+      'you word it and how you arrange it, using the facts given; they never add facts the sources do not state.' : '',
+    'Grounding: every number, name, date and quote you write must come from the facts given for this item ' +
+      'or the user\'s own text. The planned points are a guide to what to cover, not a source of facts. If the ' +
+      'facts do not support a point, leave it out rather than inventing it.',
+    'Write in plain English. No filler ("it is important to note"), no hype, no emoji. State facts directly: never ' +
+      'refer to the sources, documents or documentation in the text ("as stated in the sources").',
   ].filter(Boolean).join('\n');
 }
 

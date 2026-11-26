@@ -12,7 +12,7 @@ import { generateStructured, requestEmbedding, requestEmbeddingBatch } from '../
 import { getAllPassagesDb, getChunksByIdsDb, getDocumentMapDb, getSourcePassagesDb } from '../../db/chunksQueries.js';
 import { kindOf, briefBlock, storylineBlock, itemCount } from './kinds.js';
 import { readablePassage, stripFigureMarkers } from '../figures.js';
-import { verifiedFacts } from './facts.js';
+import { verifiedFacts, sameFact } from './facts.js';
 import { pickFigures } from './figurePicks.js';
 
 const { generateModel } = config.ollama;
@@ -24,7 +24,6 @@ const ADD_ITEM_PASSAGES = 6;
 const MAX_PASTED_CHARS = 20000;
 // Slides marked by the user: a line containing only "---".
 const SPLIT_RE = /\n\s*-{3,}\s*\n/;
-const MAX_POINTS = 6;
 
 // The model sometimes labels titles with their role ("Deck Title: …", "Slide 3: …"); the label is not the title.
 const TITLE_LABEL_RE = /^(?:(?:deck|document|slide|section|page)\s*(?:title|\d+)?|title)\s*[:\-–]\s*/i;
@@ -108,7 +107,7 @@ function itemSchema(kind) {
       kind: { type: 'string', enum: plannable(kind) },
       points: {
         type: 'array',
-        maxItems: MAX_POINTS,
+        maxItems: kind.planPoints.max,
         items: {
           type: 'object',
           properties: { point: { type: 'string' }, quote: { type: 'string' }, source: { type: 'integer' } },
@@ -137,7 +136,7 @@ const kindList = (kind) => plannable(kind).map((t) => `- "${t}": ${kind.typeGuid
 
 /** How every item's points are given, shared by all planning prompts. */
 function pointRules(kind) {
-  return `- points: the facts it presents (none for the first and last ${kind.noun}). For each: point (the fact as ` +
+  return `- points: the ${kind.planPoints.range} facts it presents (none for the first and last ${kind.noun}). For each: point (the fact as ` +
     `it will be presented: short, with its exact figures), quote (the words in the passage that state it, copied ` +
     `exactly, at most 40 words) and source (that passage's id; 0 for the user's own text). Only facts a passage ` +
     `states: no figure, name or claim that is not in the quote.\n`;
@@ -173,6 +172,7 @@ async function planContent(generation, kind, material, count) {
     `- Keep each fact with what its passage is about: a passage about one engine type, system, product or process ` +
     `is not evidence about another, even when the wording is similar. An example in a passage stays an example.\n` +
     `- If the user asked for a particular kind (a table, a diagram, a timeline), include it where the facts allow.\n` +
+    `- The user's instructions decide what to emphasise; they never call for facts the passages do not state.\n` +
     `- Order them so the ${kind.product} builds from situation to conclusion.\n` +
     `Also return: audience (who it is for, a few words; the user's if given), tone (2-4 adjectives), and thesis ` +
     `(the one sentence the ${deck ? 'audience' : 'reader'} should leave with).`;
@@ -193,15 +193,19 @@ const NEEDS = {
 
 /**
  * Raw planned items → outline items: facts checked, sources attached, kinds made to fit their position and facts.
- * Items in the middle with no fact left are dropped. `fixed`: keep every item (the user's own parts).
+ * A fact an earlier item already presents is dropped (two sections once said the same three things), and items
+ * in the middle with no fact left are dropped. `fixed`: keep every item (the user's own parts). `planned`:
+ * facts of items already in the outline.
  */
-function toItems(kind, rawItems, material, { fixed = false, bookends = true } = {}) {
+function toItems(kind, rawItems, material, { fixed = false, bookends = true, planned = [] } = {}) {
   const byId = new Map(material.passages.map((p) => [p.id, p]));
   const last = rawItems.length - 1;
   const items = [];
+  const said = [...planned];
   rawItems.forEach((raw, i) => {
     const ownText = raw.own_text || material.ownText || '';
-    const facts = verifiedFacts(raw.points, byId, ownText);
+    const facts = verifiedFacts(raw.points, byId, ownText).filter((f) => !said.some((s) => sameFact(f, s)));
+    said.push(...facts);
     let type = plannable(kind).includes(raw.kind) ? raw.kind : kind.defaultType;
     const bookend = bookends && (i === 0 || (i === last && rawItems.length > 2));
     if (bookend) type = i === 0 ? kind.firstType : kind.lastType;
@@ -294,8 +298,9 @@ export async function planOneItem(generation, description, afterIndex) {
     `Return:\n- title: specific, at most 10 words.\n- kind: the kind that presents it best.\n` +
     pointRules(kind).replace(` (none for the first and last ${kind.noun})`, '');
   const raw = await generateStructured(prompt, generateModel, itemSchema(kind), { think: false });
-  const planned = toItems(kind, [raw], { passages: rows, ownText: pastedText(generation.brief) }, { fixed: true, bookends: false });
-  const [item] = await pickFigures(kind, planned, generation.source_document_ids);
+  const planned = toItems(kind, [raw], { passages: rows, ownText: pastedText(generation.brief) },
+    { fixed: true, bookends: false, planned: items.flatMap((it) => it.facts || []) });
+  const [item] = await pickFigures(kind, planned, generation.source_document_ids, { used: items.map((it) => it.figure_id).filter(Boolean) });
   if (!item.sources.length) await attachSources(generation, kind, [item]);
   return item;
 }

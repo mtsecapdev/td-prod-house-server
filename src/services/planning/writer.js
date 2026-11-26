@@ -1,26 +1,21 @@
 // Writes slides / sections from the agreed plan. Each item is written with the whole plan in view (brief,
-// storyline, full outline), a one-line summary of every item already written, and its own evidence.
-//
-// Evidence depends on the kind of product (kinds.js writeFrom):
-// - decks ('facts'): the facts the planner quoted for the slide (planning/facts.js), plus passages the user added
-//   and passages for points the user wrote into the plan. The slide is written from those alone; its numbers
-//   are then checked against them, and a slide that used others is written once more with them pointed out.
-//   Nothing is deleted after writing, so a slide never ends up with a lone point.
-// - documents ('passages'): the item's whole passages, since sections are prose; the result is fact-checked and
-//   unsupported statements are removed (checkWritten.js).
+// storyline, full outline), a one-line summary of every item already written, and its own evidence: the facts
+// the planner quoted for it (planning/facts.js), plus passages the user added and passages for points the user
+// wrote into the plan. It is written from those alone; its numbers are then checked against them, and an item
+// that used others is written once more with them pointed out. Nothing is deleted after writing: checking and
+// deleting statements afterwards left slides with a lone point and sections of one-sentence paragraphs.
 //
 // Prompt order matters for scale: the system prompt and the plan block are identical for every item in a
 // generation, so llama.cpp / vLLM can reuse them from their prompt cache. Item-specific text comes last.
 import config from '../../config.js';
-import { chatStructured, requestEmbedding, requestEmbeddingBatch } from '../llm.js';
-import { getChunksByIdsDb, getSourcePassagesDb, getAllPassagesDb } from '../../db/chunksQueries.js';
+import { chatStructured, requestEmbeddingBatch } from '../llm.js';
+import { getChunksByIdsDb, getSourcePassagesDb } from '../../db/chunksQueries.js';
 import { renderWithRepair, DiagramSyntaxError } from '../diagrams.js';
 import { kindOf, styleGuide, briefBlock, storylineBlock } from './kinds.js';
 import { fitContent } from './fit.js';
 import { stripFigureMarkers, pictureOf } from '../figures.js';
 import { getFigureByIdDb } from '../../db/figuresQueries.js';
 import { sourceQuery, pastedText } from './planner.js';
-import { checkWritten } from './checkWritten.js';
 import { factsBlock } from './facts.js';
 import { unsupportedNumbers, sentencesOf } from '../factCheck.js';
 import { withIcons } from './icons.js';
@@ -28,8 +23,7 @@ import { withIcons } from './icons.js';
 const { generateModel } = config.ollama;
 // Free-form pasted text goes into the shared plan block (identical for every item, so it is cached).
 const MAX_PASTED_IN_PLAN = 12000;
-// Passages found by searching on the item's title and points (documents), or on each point the user wrote
-// into the plan (decks).
+// Passages found for each point the user wrote into the plan.
 const SEARCHED_EXTRA = 2;
 
 // How to treat the user's own text, by the mode they chose.
@@ -95,7 +89,7 @@ const passageText = (rows) => rows.map((r) => `[p. ${r.page ?? '?'}${r.heading ?
 // ── Evidence ──
 
 /**
- * A slide's evidence: its planned facts; passages the user added (sources no fact came from); and passages for
+ * An item's evidence: its planned facts; passages the user added (sources no fact came from); and passages for
  * points the user wrote or changed in the plan, found by search. A slide with none of these (one the user added
  * blank) gets passages found from its title.
  */
@@ -130,37 +124,6 @@ async function factEvidence(generation, kind, item, type) {
   return { text, rows, facts };
 }
 
-/** A section's evidence: its planned passages plus the best matches for what it is about. */
-async function passageEvidence(generation, kind, item, type) {
-  const docIds = generation.source_document_ids || [];
-  if (kind.noSourceTypes.includes(type)) return { text: '', rows: [], facts: [] };
-  const planned = await getChunksByIdsDb((item.sources || []).map((s) => s.chunk_id));
-  let rows = planned;
-  if (docIds.length) {
-    // The planner sometimes attaches the wrong passages; the best matches for what the item is about come too.
-    const q = sourceQuery(item);
-    const have = new Set(planned.map((r) => r.id));
-    const found = (await getSourcePassagesDb(await requestEmbedding(q), SEARCHED_EXTRA + Math.max(planned.length, kind.sourcesPerItem), docIds, q))
-      .filter((r) => !have.has(r.id)).slice(0, planned.length ? SEARCHED_EXTRA : kind.sourcesPerItem);
-    rows = [...planned, ...found];
-  }
-  const text = rows.length ? `Sources for this ${kind.noun}:\n${passageText(rows)}` : '';
-  return { text, rows, facts: [] };
-}
-
-// Every passage of a generation's documents, for the document fact check (kept briefly: items are written one
-// after another).
-const passageCache = new Map();
-async function documentPassages(generation) {
-  const key = (generation.source_document_ids || []).join(',');
-  if (!key) return [];
-  if (!passageCache.has(key)) {
-    passageCache.set(key, getAllPassagesDb(generation.source_document_ids));
-    setTimeout(() => passageCache.delete(key), 10 * 60 * 1000).unref();
-  }
-  return passageCache.get(key);
-}
-
 // ── Writing ──
 
 function itemBlock(generation, kind, index, type, { note, figure, evidence }) {
@@ -168,7 +131,6 @@ function itemBlock(generation, kind, index, type, { note, figure, evidence }) {
   const item = items[index];
   const userNote = note ?? item.note;
   const bullets = (item.bullets || []).map((b) => b.trim()).filter(Boolean);
-  const facts = kind.writeFrom === 'facts';
   const noEvidence = `(No sources for this ${kind.noun}: build it from the plan and the ${kind.nounPlural} already written.)`;
   return [
     `Write ${kind.noun} ${index + 1} of ${items.length}.`,
@@ -181,13 +143,9 @@ function itemBlock(generation, kind, index, type, { note, figure, evidence }) {
     generation.brief?.source_text ? TEXT_MODES[generation.brief.text_mode] || TEXT_MODES.generate : '',
     userNote ? `Note from the user (follow it): ${userNote}` : '',
     `Kind: ${type}. How to fill it:\n${kind.writeGuide[type] || ''}`,
-    facts
-      ? `Write only from the facts${evidence.rows.length ? ' and passages' : ''} below${item.own_text ? ' and the user\'s text' : ''}: ` +
-        `every number, name and claim must come from them, with their exact figures. Do not add causes, ` +
-        `comparisons, tips or advice they do not state. Say each fact once.`
-      : `Fill the type's range with facts from the sources for this ${kind.noun}'s subject: if a planned point is ` +
-        `not in the sources, use other facts from them instead of leaving it short. Do not add procedures, tips or ` +
-        `advice the sources do not give.`,
+    `Write only from the facts${evidence.rows.length ? ' and passages' : ''} below${item.own_text ? ' and the user\'s text' : ''}: ` +
+      `every number, name and claim must come from them, with their exact figures. Do not add causes, ` +
+      `comparisons, tips or advice they do not state. Say each fact once.`,
     `Do not repeat points or figures the earlier ${kind.nounPlural} already made unless this one builds on them.`,
     // A fact belongs to what its passage is about: the engine manual's gasoline ignition timing ended up as
     // "diesel injection timing" once.
@@ -236,9 +194,7 @@ function withoutUnsupported(content, bad, evidence) {
 
 async function writeAs(generation, kind, index, type, { note, figure } = {}) {
   const item = generation.outline[kind.listKey][index];
-  const evidence = kind.writeFrom === 'facts'
-    ? await factEvidence(generation, kind, item, type)
-    : await passageEvidence(generation, kind, item, type);
+  const evidence = await factEvidence(generation, kind, item, type);
   const messages = [
     { role: 'system', content: systemPrompt(kind, generation) },
     {
@@ -265,65 +221,22 @@ async function writeAs(generation, kind, index, type, { note, figure } = {}) {
     figure ? `${figure.caption || ''}\n${figure.labels || ''}` : '',
   ].filter(Boolean).join('\n\n');
 
-  if (kind.writeFrom === 'facts') {
-    let bad = unsupportedIn(content, checkSource);
-    if (bad.length) {
-      // Written once more with the numbers pointed out; whatever is still unsupported goes.
-      content = await write([
-        ...messages,
-        { role: 'assistant', content: JSON.stringify({ ...content, source_chunk_ids: undefined, used_pages: undefined }) },
-        {
-          role: 'user',
-          content: `These numbers are not in the facts: ${[...new Set(bad.flatMap((b) => b.numbers))].join(', ')}. ` +
-            `Write the ${kind.noun} again using only numbers the facts state (rounding them is fine).`,
-        },
-      ]);
-      bad = unsupportedIn(content, checkSource);
-      if (bad.length) content = withoutUnsupported(content, bad, checkSource);
-    }
-    return { content: await withIcons(type, content), sources: item.sources || [] };
-  }
-
-  // Documents: statements the sources don't support are removed, then the title is checked against what is left.
-  const checked = await checkWritten(content, checkSource, {
-    documentPassages: await documentPassages(generation),
-    findMore: async (statement) => (await getSourcePassagesDb(await requestEmbedding(statement), 2, generation.source_document_ids || [], statement))
-      .map((r) => `[p. ${r.page ?? '?'}]\n${stripFigureMarkers(r.content)}`).join('\n\n'),
-  });
-  return { content: kind.noSourceTypes.includes(type) ? checked : await titleThatFits(checked, kind), sources: item.sources || [] };
-}
-
-const TITLE_FORMAT = {
-  type: 'object',
-  properties: { fits: { type: 'boolean' }, title: { type: 'string' } },
-  required: ['fits', 'title'],
-};
-const MAX_TITLE_WORDS = 10;
-
-/**
- * Keeps a section's title true to what it ended up saying: the fact check can remove what a title promised
- * ("Board Oversight & Executive Pay" over a section with no pay left in it).
- */
-async function titleThatFits(content, kind) {
-  const title = String(content?.title || '').trim();
-  const body = textsOf({ ...content, title: '' }, { notes: false }).map((t) => t.text).join(' ').trim();
-  if (!title || !body) return content;
-  try {
-    const result = await chatStructured([
-      { role: 'system', content: `You check the title of one ${kind.noun}. Return only JSON.` },
+  let bad = unsupportedIn(content, checkSource);
+  if (bad.length) {
+    // Written once more with the numbers pointed out; whatever is still unsupported goes.
+    content = await write([
+      ...messages,
+      { role: 'assistant', content: JSON.stringify({ ...content, source_chunk_ids: undefined, used_pages: undefined }) },
       {
         role: 'user',
-        content: `Title: ${title}\n\n${kind.noun} content:\n${body.slice(0, 3000)}\n\n` +
-          `fits: true when every topic the title names is covered by the content. If not, title: a new title of ` +
-          `at most ${MAX_TITLE_WORDS} words naming what the content covers, in the same style; otherwise the same title.`,
+        content: `These numbers are not in the facts: ${[...new Set(bad.flatMap((b) => b.numbers))].join(', ')}. ` +
+          `Write the ${kind.noun} again using only numbers the facts state (rounding them is fine).`,
       },
-    ], generateModel, TITLE_FORMAT, { think: false });
-    const better = String(result.title || '').trim();
-    if (result.fits !== false || !better || better.split(/\s+/).length > MAX_TITLE_WORDS) return content;
-    return { ...content, title: better };
-  } catch {
-    return content;
+    ]);
+    bad = unsupportedIn(content, checkSource);
+    if (bad.length) content = withoutUnsupported(content, bad, checkSource);
   }
+  return { content: await withIcons(type, content), sources: item.sources || [] };
 }
 
 // ── Clean-up of what was written ──
