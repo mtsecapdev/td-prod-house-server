@@ -90,8 +90,10 @@ const DOC = {
   defaultCount: 8,
   noSourceTypes: ['heading', 'summary'],
   appOnlyTypes: ['figure'],
-  // Facts the planner quotes per section: sections are prose, built from more of them.
+  // Facts the planner quotes per section: sections are prose, built from more of them, and written with the
+  // passages they were quoted from for context.
   planPoints: { range: '4-8', max: 8 },
+  factPassages: true,
   minCount: {},
   // A figure planned for a section is shown in it.
   pictureTypes: ['body', 'procedure', 'key_points', 'reference_table', 'summary'],
@@ -108,14 +110,14 @@ const DOC = {
   },
 
   writeGuide: {
-    heading: 'title: max 10 words. subtitle: one sentence on the document\'s purpose for the reader. summary: 2-4 sentences on what it covers and why it matters.',
-    body: '2-5 paragraphs. subheading: 3-6 words, a different one for each paragraph (or empty to continue the one before). text: 2-4 sentences, each a fact from the sources; when the sources run out, stop rather than add interpretation (what something "reflects", "drives" or "positions"). key_takeaway: one sentence: the section\'s main fact as the sources state it.',
+    heading: 'title: max 10 words. subtitle: one sentence on the document\'s purpose for the reader. summary: 2-4 sentences on what it covers, from the facts.',
+    body: '2-4 paragraphs, each grouping related facts under one subheading: never one paragraph per fact. subheading: 3-6 words, a different one for each paragraph (or empty to continue the one before). text: 2-4 sentences that explain, with the facts and the passages\' own explanation; when they run out, stop rather than add interpretation (what something "reflects", "drives" or "positions"). key_takeaway: one sentence the reader should remember from the section, not a copy of a sentence already in it.',
     procedure: 'introduction: when and why to follow it (1-2 sentences). 3-10 steps: step_number, action (verb first), detail (1-2 sentences), caution (a specific warning, or an empty string). notes: anything else the reader needs.',
     key_points: 'introduction: 1-2 sentences. 3-8 points: label (2-5 words), description (1-3 sentences with specifics). notes: optional context.',
     reference_table: 'introduction: what the table holds and how to use it. 2-6 columns; rows of short cells matching the columns. notes: abbreviations or special values.',
     diagram: `introduction: what the figure shows and when to use it (1-2 sentences). caption: a short figure title. notes: explanation of steps or branches that need it. Top-down flowcharts suit a portrait page.\n${mermaidGuide({ direction: 'TD' })}`,
     figure: 'The section shows a figure from the documents (its caption and the text printed in it are given; the caption from the document is shown under it). introduction: what the figure shows and why it matters (1-2 sentences). caption: only for a figure the document gave no caption: a few plain words saying what the picture shows (e.g. "Cover of the handbook"); never a figure number or a name the sources do not give it. notes: explain the figure using its text.',
-    summary: 'recap_points: one per key message of the document, each one sentence. next_steps: 2-3 sentences on what the reader should do next. notes: optional.',
+    summary: 'recap_points: one per key message of the document, each one sentence. next_steps: 1-2 sentences pointing the reader to what to review or practise from this document\'s own sections; no procedures, checks or advice of your own. notes: empty unless the facts add something.',
   },
 
   formats: {
@@ -147,7 +149,10 @@ const TEXT_AMOUNTS = {
   detailed: 'Text amount: detailed. Use the upper end of each range, with full sentences and supporting specifics.',
 };
 
-/** Number of items to plan, clamped to what the kind allows. */
+/**
+ * How many content items to plan at most (the brief's count), clamped to what the kind allows. The opening and
+ * closing items (title and closing slides, title page and summary) come on top.
+ */
 export function itemCount(kind, brief = {}) {
   const [min, max] = kind.countRange;
   const n = Number(brief.count) || kind.defaultCount;
@@ -170,6 +175,8 @@ export function styleGuide(kind, brief = {}) {
     'Grounding: every number, name, date and quote you write must come from the facts given for this item ' +
       'or the user\'s own text. The planned points are a guide to what to cover, not a source of facts. If the ' +
       'facts do not support a point, leave it out rather than inventing it.',
+    'Keep the facts\' qualifiers as they give them ("up to", "about", "typically", "usually", "most"): "compressed ' +
+      'to as much as 500 psi" is not "at 500 psi".',
     'Write in plain English. No filler ("it is important to note"), no hype, no emoji. State facts directly: never ' +
       'refer to the sources, documents or documentation in the text ("as stated in the sources").',
   ].filter(Boolean).join('\n');

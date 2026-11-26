@@ -89,16 +89,18 @@ const passageText = (rows) => rows.map((r) => `[p. ${r.page ?? '?'}${r.heading ?
 // ── Evidence ──
 
 /**
- * An item's evidence: its planned facts; passages the user added (sources no fact came from); and passages for
+ * An item's evidence: its planned facts (for documents with the passages they were quoted from: sections are
+ * prose, and quotes alone made one-sentence paragraphs); passages the user added (sources no fact came from); and passages for
  * points the user wrote or changed in the plan, found by search. A slide with none of these (one the user added
  * blank) gets passages found from its title.
  */
 async function factEvidence(generation, kind, item, type) {
   const docIds = generation.source_document_ids || [];
   if (kind.noSourceTypes.includes(type)) {
-    // The closing recaps the deck: its numbers come from every slide's facts.
-    const all = type === kind.lastType ? generation.outline[kind.listKey].flatMap((it) => it.facts || []) : [];
-    return { text: all.length ? `Facts in the deck:\n${factsBlock(all)}` : '', rows: [], facts: all };
+    // The opening and closing items introduce and recap the whole: they are written from every item's facts.
+    const whole = type === kind.firstType || type === kind.lastType;
+    const all = whole ? generation.outline[kind.listKey].flatMap((it) => it.facts || []) : [];
+    return { text: all.length ? `Facts in the ${kind.product}:\n${factsBlock(all)}` : '', rows: [], facts: all };
   }
   const facts = item.facts || [];
   const fromFacts = new Set(facts.map((f) => f.chunk_id));
@@ -108,7 +110,7 @@ async function factEvidence(generation, kind, item, type) {
   let queries = written;
   if (!facts.length && !added.length && !written.length && !item.own_text) queries = [sourceQuery(item)];
 
-  const rows = await getChunksByIdsDb(added);
+  const rows = await getChunksByIdsDb([...(kind.factPassages ? fromFacts : []), ...added].filter(Boolean));
   if (queries.length && docIds.length) {
     const have = new Set([...rows.map((r) => r.id), ...fromFacts]);
     const vectors = await requestEmbeddingBatch(queries);
@@ -152,10 +154,14 @@ function itemBlock(generation, kind, index, type, { note, figure, evidence }) {
     `Keep each fact with what its source says it is about: a passage about one engine type, system, product or ` +
       `process is not evidence about another. Examples stay examples: one engine's figures are never a rule for all.`,
     // Notes are where the model added its own tips and pointed at the wrong slides.
-    `Notes (speaker_notes / notes) explain this ${kind.noun}'s content from the same facts; a question for the ` +
-      `audience is fine, tips or claims of your own are not. For transitions use only: previous ${kind.noun} ` +
-      `"${items[index - 1]?.title || '(none: this is the first)'}", next ${kind.noun} ` +
-      `"${items[index + 1]?.title || '(none: this is the last)'}".`,
+    kind.name === 'deck'
+      ? `speaker_notes explain this slide's content from the same facts; a question for the audience is fine, ` +
+        `tips or claims of your own are not. For transitions use only: previous slide ` +
+        `"${items[index - 1]?.title || '(none: this is the first)'}", next slide ` +
+        `"${items[index + 1]?.title || '(none: this is the last)'}".`
+      // A document is read, not presented: "Previous section covered..." in a section is noise.
+      : `notes: only something more from the facts that the reader needs, or empty. Never describe the ` +
+        `document's own structure ("this section", "the next section", "previous section").`,
     `Lines starting "Text in the figure:" list the words printed in a figure; use them to understand it, never ` +
       `copy them into the text.`,
     evidence.text || (kind.noSourceTypes.includes(type) ? '' : noEvidence),

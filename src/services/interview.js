@@ -17,10 +17,12 @@ const MAX_FOLLOW_UPS = 2;
 const MAX_PARTS = 30;
 const EVERYTHING = 'Everything';
 
+// Lengths count content: the title and closing slides (title page and summary) come on top.
 const LENGTHS = {
   deck: { short: ['Short', 6, 'about 6 slides'], standard: ['Standard', 10, 'about 10 slides'] },
   doc: { short: ['Short', 4, 'about 4 sections'], standard: ['Standard', 6, 'about 6 sections'] },
 };
+const BOOKENDS = { deck: 'the title and closing slides', doc: 'the title page and summary' };
 const FORMATS = {
   deck: { presented: 'Presented live', read: 'Read on its own', both: 'Presented, then shared' },
   doc: { learning: 'Learning guide', reference: 'Reference', procedure: 'Procedure' },
@@ -304,7 +306,10 @@ function summary(state, note = '') {
     let value = v.value;
     if (!value) value = v.auto && slot !== 'extras' ? 'Chosen from the documents' : 'Nothing extra';
     // A length is a most: the plan uses fewer when the documents have less to say.
-    if (slot === 'length' && v.count) value = /^\d+$/.test(v.value) || !v.value ? `Up to ${v.count} ${kind.nounPlural}` : `${v.value} (up to ${v.count} ${kind.nounPlural})`;
+    if (slot === 'length' && v.count) {
+      const most = `up to ${v.count} ${kind.nounPlural}, plus ${BOOKENDS[state.type]}`;
+      value = /^\d+$/.test(v.value) || !v.value ? most[0].toUpperCase() + most.slice(1) : `${v.value} (${most})`;
+    }
     return { slot, label: LABELS[slot], value, assumed: Boolean(v.assumed) };
   });
   return {

@@ -119,6 +119,7 @@ function itemSchema(kind) {
   };
 }
 
+// count: content items at most; the first and last come on top.
 function planSchema(kind, count) {
   return {
     type: 'object',
@@ -126,7 +127,7 @@ function planSchema(kind, count) {
       audience: { type: 'string' },
       tone: { type: 'string' },
       thesis: { type: 'string' },
-      items: { type: 'array', minItems: Math.min(3, count), maxItems: count, items: itemSchema(kind) },
+      items: { type: 'array', minItems: 3, maxItems: count + 2, items: itemSchema(kind) },
     },
     required: ['audience', 'tone', 'thesis', 'items'],
   };
@@ -147,7 +148,8 @@ async function planContent(generation, kind, material, count) {
   const opening = deck ? 'a title slide saying what the deck covers' : 'a title page with the document\'s purpose';
   const closing = deck ? 'the takeaways and what to do next' : 'a summary and next steps';
   const prompt =
-    `You are planning a ${kind.product} of at most ${count} ${kind.nounPlural} for the user below, the way an ` +
+    `You are planning a ${kind.product} for the user below: the first ${kind.noun}, at most ${count} content ` +
+    `${kind.nounPlural}, and the last ${kind.noun}, planned the way an ` +
     `expert would plan it before writing.\n\n${briefBlock(generation)}\n\n${material.block}\n\n` +
     `Kinds of ${kind.noun}:\n${kindList(kind)}\n\n` +
     `For each ${kind.noun}:\n` +
@@ -155,7 +157,7 @@ async function planContent(generation, kind, material, count) {
     `- kind: the kind that presents its facts best.\n` +
     pointRules(kind) + '\n' +
     `Rules:\n` +
-    `- At most ${count} ${kind.nounPlural}: the first is ${opening}; the last is ${closing}. Use fewer when the ` +
+    `- The first is ${opening}; the last is ${closing}; between them at most ${count}. Use fewer when the ` +
     `material is thin. Every ${kind.noun} must bring facts no other ${kind.noun} has: never repeat a fact, figure ` +
     `or example, and never pad. The last ${kind.noun} is the only recap: no "key takeaways" or summary before it.\n` +
     `- One main idea per ${kind.noun}. Cover everything the user asked for.\n` +
@@ -203,11 +205,13 @@ function toItems(kind, rawItems, material, { fixed = false, bookends = true, pla
   const items = [];
   const said = [...planned];
   rawItems.forEach((raw, i) => {
+    const bookend = bookends && (i === 0 || (i === last && rawItems.length > 2));
+    // The opening and closing hold no facts of their own (they are written from everyone's): facts given to the
+    // title page were then barred from the sections, and a four-stroke document lost its four-stroke section.
     const ownText = raw.own_text || material.ownText || '';
-    const facts = verifiedFacts(raw.points, byId, ownText).filter((f) => !said.some((s) => sameFact(f, s)));
+    const facts = bookend ? [] : verifiedFacts(raw.points, byId, ownText).filter((f) => !said.some((s) => sameFact(f, s)));
     said.push(...facts);
     let type = plannable(kind).includes(raw.kind) ? raw.kind : kind.defaultType;
-    const bookend = bookends && (i === 0 || (i === last && rawItems.length > 2));
     if (bookend) type = i === 0 ? kind.firstType : kind.lastType;
     else if (type === kind.firstType || type === kind.lastType || rawItems.length < (kind.minCount[type] || 0)) type = kind.defaultType;
     if (NEEDS[type] && !NEEDS[type](facts)) type = kind.defaultType;
