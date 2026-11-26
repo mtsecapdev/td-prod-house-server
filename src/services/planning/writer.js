@@ -311,21 +311,22 @@ export async function writeItem(generation, index, options = {}) {
   const item = generation.outline[kind.listKey][index];
   const written = await writeContent(generation, index, options);
   // Pictures the user placed stay through rewrites and kind changes. A Figure item shows its figure first, under
-  // the document's caption (the writer's caption is only a stand-in for an uncaptioned figure); a figure planned
-  // for another kind goes on beside the text.
+  // the document's caption (the writer's caption is only a stand-in for an uncaptioned figure); figures planned
+  // for another kind go on beside the text, in the order planned.
   const pictures = [...(item?.content?.pictures || [])];
   const { figure, ...rest } = written;
-  let shown = null;
+  let shown = [];
   let standIn = '';
   if (figure) {
     const { caption, ...content } = rest.content;
     rest.content = content;
-    shown = figure;
+    shown = [figure];
     standIn = caption;
-  } else if (item?.figure_id && kind.pictureTypes.includes(written.type)) {
-    shown = await getFigureByIdDb(item.figure_id);
+  } else if (item?.figure_ids?.length && kind.pictureTypes.includes(written.type)) {
+    shown = (await Promise.all(item.figure_ids.map((id) => getFigureByIdDb(id)))).filter(Boolean);
   }
-  if (shown && !pictures.some((p) => Number(p.figure_id) === shown.id)) pictures.unshift(pictureOf(shown, standIn));
+  const fresh = shown.filter((f) => !pictures.some((p) => Number(p.figure_id) === f.id));
+  pictures.unshift(...fresh.map((f) => pictureOf(f, figure ? standIn : '')));
   return pictures.length ? { ...rest, content: { ...rest.content, pictures } } : rest;
 }
 
@@ -341,7 +342,7 @@ async function writeContent(generation, index, { note, type: typeOverride } = {}
   };
 
   if (type === 'figure') {
-    const figure = item.figure_id ? await getFigureByIdDb(item.figure_id) : null;
+    const figure = item.figure_ids?.length ? await getFigureByIdDb(item.figure_ids[0]) : null;
     if (!figure) return fallback('its figure was deleted');
     const written = await writeAs(generation, kind, index, type, { note, figure });
     return { type, figure, content: tidy(written.content), sources: written.sources };

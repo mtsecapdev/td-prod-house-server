@@ -91,7 +91,7 @@ export async function figureUsageDb(figureIds) {
     `SELECT g.id, g.type, g.outline, g.brief
      FROM generations g
      WHERE g.outline IS NOT NULL
-       AND jsonb_path_exists(g.outline, '$.*[*] ? (@.figure_id == $ids[*] || @.content.pictures[*].figure_id == $ids[*])',
+       AND jsonb_path_exists(g.outline, '$.*[*] ? (@.figure_ids[*] == $ids[*] || @.content.pictures[*].figure_id == $ids[*])',
                              jsonb_build_object('ids', to_jsonb($1::int[])))`,
     [figureIds],
   );
@@ -101,10 +101,10 @@ export async function figureUsageDb(figureIds) {
     const items = g.outline.slides || g.outline.sections || [];
     const name = generationName(g);
     items.forEach((it, index) => {
-      // Written items: the pictures placed on them. Unwritten Figure items: the figure they are planned around.
+      // Written items: the pictures placed on them. Unwritten items: the figures they are planned with.
       const ids = it.content
         ? (it.content.pictures || []).map((p) => Number(p.figure_id))
-        : (it.layout ?? it.section_type) === 'figure' ? [Number(it.figure_id)] : [];
+        : (it.figure_ids || []).map(Number);
       for (const fid of new Set(ids)) {
         if (wanted.has(fid)) uses.push({ figure_id: fid, generation_id: g.id, type: g.type, name, index });
       }

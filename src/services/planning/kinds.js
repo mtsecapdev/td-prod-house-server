@@ -35,8 +35,9 @@ const DECK = {
   appOnlyTypes: slideKinds((k) => k.figure),
   // A long-deck kind: only in decks of this many slides or more.
   minCount: byKind((k) => SLIDE_KINDS[k].minDeck || 0),
-  // Kinds a figure from the documents can sit beside (in a panel the layout engine makes room for).
+  // Kinds a figure from the documents can sit beside (in a panel the layout engine makes room for), and how many.
   pictureTypes: slideKinds((k) => k.picture),
+  figuresPerItem: 1,
 
   // Shown to the planner: what each kind is for.
   typeGuide: byKind((k) => SLIDE_KINDS[k].use),
@@ -95,8 +96,9 @@ const DOC = {
   planPoints: { range: '4-8', max: 8, min: 2 }, // a one-fact section was padding
   factPassages: true,
   minCount: {},
-  // A figure planned for a section is shown in it.
+  // Figures planned for a section are shown in it; a section can show two (a part and a stage, two types).
   pictureTypes: ['body', 'procedure', 'key_points', 'reference_table', 'summary'],
+  figuresPerItem: 2,
 
   typeGuide: {
     heading: 'Title page: document title, purpose and a short executive summary. First section only.',

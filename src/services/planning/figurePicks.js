@@ -31,9 +31,9 @@ function candidatesFor(item, figuresByDoc) {
 }
 
 /**
- * Sets figure_id on the items a figure illustrates (kinds that show a picture beside their text), each figure on
- * one item at most. Items keep a figure they already have; `used`: figures already on other items. Returns the
- * items.
+ * Sets figure_ids on the items figures illustrate (kinds that show a picture beside their text): up to
+ * kind.figuresPerItem each (a slide's panel holds one; a section can show two), each figure on one item at
+ * most. Items keep figures they already have; `used`: figures already on other items. Returns the items.
  */
 export async function pickFigures(kind, items, documentIds, { used = [] } = {}) {
   if (!documentIds?.length) return items;
@@ -44,19 +44,23 @@ export async function pickFigures(kind, items, documentIds, { used = [] } = {}) 
     if (!figuresByDoc.has(f.document_id)) figuresByDoc.set(f.document_id, []);
     figuresByDoc.get(f.document_id).push(f);
   }
-  const taken = new Set([...used, ...items.map((it) => it.figure_id).filter(Boolean)]);
+  const per = kind.figuresPerItem;
+  const taken = new Set([...used, ...items.flatMap((it) => it.figure_ids || [])]);
   const open = items
     .map((it, i) => ({ it, i, candidates: candidatesFor(it, figuresByDoc).filter((c) => !taken.has(c.figure.id)) }))
-    .filter(({ it, candidates }) => !it.figure_id && kind.pictureTypes.includes(it[kind.typeKey]) && candidates.length);
+    .filter(({ it, candidates }) => !it.figure_ids?.length && kind.pictureTypes.includes(it[kind.typeKey]) && candidates.length);
   if (!open.length) return items;
 
   const prompt =
     `A ${kind.product} is being planned. Below are some of its ${kind.nounPlural}, each with the figures printed ` +
-    `near the pages it draws on. For each ${kind.noun}, pick the figure that shows what it explains, so the reader ` +
-    `can look at it while reading the ${kind.noun}: the thing, part, process or stage it is about. Include a ` +
-    `figure whenever one fits: pictures make the ${kind.nounPlural} easier to follow. Pick 0 only when none of ` +
-    `its figures shows its subject (one about a different part or process). Each figure goes on one ${kind.noun} ` +
-    `at most: give it to the ${kind.noun} it fits best.\n\n` +
+    `near the pages it draws on. For each ${kind.noun}, pick ${per > 1 ? `up to ${per} figures that show` : 'the figure that shows'} ` +
+    `what it explains, so the reader can look at ${per > 1 ? 'them' : 'it'} while reading the ${kind.noun}: the ` +
+    `thing, part, process or stage it is about. Judge a figure by the words printed in it as well as its caption: ` +
+    `a caption can promise more than the picture shows. Include a figure whenever one fits: pictures make the ` +
+    `${kind.nounPlural} easier to follow.` +
+    (per > 1 ? ` Add a second figure only when it shows something the first does not (another part, stage or type the ${kind.noun} explains).` : '') +
+    ` Pick none when no figure shows its subject (one about a different part or process). Each figure goes on ` +
+    `one ${kind.noun} at most: give it to the ${kind.noun} it fits best.\n\n` +
     open.map(({ it, i, candidates }) =>
       `${kind.noun[0].toUpperCase() + kind.noun.slice(1)} ${i + 1}: ${it.title}\n` +
       (it.bullets || []).map((b) => `  - ${b}`).join('\n') + '\n' +
@@ -72,9 +76,12 @@ export async function pickFigures(kind, items, documentIds, { used = [] } = {}) 
           type: 'object',
           properties: {
             item: { type: 'integer', enum: open.map(({ i }) => i + 1) },
-            figure: { type: 'integer', enum: [0, ...new Set(open.flatMap(({ candidates }) => candidates.map((c) => c.figure.id)))] },
+            figures: {
+              type: 'array', maxItems: per,
+              items: { type: 'integer', enum: [...new Set(open.flatMap(({ candidates }) => candidates.map((c) => c.figure.id)))] },
+            },
           },
-          required: ['item', 'figure'],
+          required: ['item', 'figures'],
         },
       },
     },
@@ -89,11 +96,13 @@ export async function pickFigures(kind, items, documentIds, { used = [] } = {}) 
   }
 
   const allowed = new Map(open.map(({ i, candidates }) => [i, new Set(candidates.map((c) => c.figure.id))]));
-  for (const { item, figure } of picks) {
+  for (const { item, figures: chosen = [] } of picks) {
     const i = item - 1;
-    if (!figure || !allowed.get(i)?.has(figure) || taken.has(figure) || items[i].figure_id) continue;
-    items[i] = { ...items[i], figure_id: figure };
-    taken.add(figure);
+    if (items[i]?.figure_ids?.length) continue;
+    const ids = [...new Set(chosen)].filter((id) => allowed.get(i)?.has(id) && !taken.has(id)).slice(0, per);
+    if (!ids.length) continue;
+    items[i] = { ...items[i], figure_ids: ids };
+    ids.forEach((id) => taken.add(id));
   }
   return items;
 }

@@ -21,20 +21,23 @@ const EMBEDDED_IMAGE_RE = /!\[[^\]]*\]\(data:image\/[a-z]+;base64,[A-Za-z0-9+/=]
 const MIN_FIGURE_LABELS = 3;
 const MIN_FIGURE_SIDE = 300; // px at images_scale 2, i.e. about 2 inches on the page
 const MAX_FIGURE_TEXT = 1500;
+// A figure's own caption, as documents print it: "Figure 2-4 - Two-stroke-cycle engine."
+const NUMBERED_CAPTION_RE = /\bFig(?:ure)?\.?\s*([A-Z]?\d+(?:[.-]\d+)*[a-z]?)\s*[-–—:]\s*([^\n;]{3,140}?)\s*(?:\.(?=\s|$)|\n|;|$)/gi;
+const hasFigureNumber = (caption) => /\bfig(?:ure)?\.?\s*[A-Z]?\d/i.test(caption || '');
 
 export async function extractMarkdownFromFile(filePath, filename, onProgress) {
   if (path.extname(filename).toLowerCase() !== '.pdf') {
     if (onProgress) onProgress({ phase: 'converting', message: 'Converting document...' });
-    return extractMarkdownFromBuffer(await fs.readFile(filePath), filename);
+    return mergeRepeatedFigures(await extractMarkdownFromBuffer(await fs.readFile(filePath), filename));
   }
   const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'tdph-prep-'));
   try {
     const source = await preparePdf(filePath, tmpDir);
     const buffer = await fs.readFile(source);
     const pageCount = await getPdfPageCount(buffer);
-    if (pageCount > PAGES_PER_CHUNK) return await extractLargePdf(source, filename, pageCount, onProgress);
+    if (pageCount > PAGES_PER_CHUNK) return mergeRepeatedFigures(await extractLargePdf(source, filename, pageCount, onProgress));
     if (onProgress) onProgress({ phase: 'converting', message: 'Converting document...' });
-    return await extractMarkdownFromBuffer(buffer, filename);
+    return mergeRepeatedFigures(await extractMarkdownFromBuffer(buffer, filename));
   } finally {
     await fs.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
   }
@@ -181,9 +184,21 @@ function extractFigures(doc) {
 /**
  * Replaces each embedded image in docling's markdown with the figure's text, so the caption and the words
  * inside a diagram become searchable and quotable. A comment marker links the passage to the stored image.
- * The n-th image in the markdown is the n-th picture in the JSON.
+ * The n-th image in the markdown is the n-th picture in the JSON. Captions docling missed are recovered first
+ * (ownCaption).
  */
 function placeFigures(markdown, figures) {
+  const images = [...markdown.matchAll(EMBEDDED_IMAGE_RE)];
+  const numbered = new Set(figures.map((f) => figureNumberOf(f.caption)).filter(Boolean));
+  images.forEach((m, i) => {
+    const f = figures[i];
+    if (!f) return;
+    // The text between this figure and its neighbours: where a caption docling did not link to it is printed.
+    const after = markdown.slice(m.index + m[0].length, images[i + 1]?.index ?? markdown.length).slice(0, 500);
+    const before = markdown.slice(images[i - 1] ? images[i - 1].index + images[i - 1][0].length : 0, m.index).slice(-300);
+    ownCaption(f, { after, before, numbered });
+    if (!f.keep && hasFigureNumber(f.caption) && f.png) f.keep = true; // a figure the document numbers is not decoration
+  });
   let n = 0;
   return markdown.replace(EMBEDDED_IMAGE_RE, () => {
     const f = figures[n++];
@@ -191,6 +206,58 @@ function placeFigures(markdown, figures) {
     const title = !f.caption ? 'Figure' : /^fig(ure)?\b/i.test(f.caption) ? f.caption : `Figure: ${f.caption}`;
     return `<!-- figure:${f.key} -->\n${title}${f.labels ? `\nText in the figure: ${f.labels}` : ''}\n`;
   });
+}
+
+const figureNumberOf = (text) => (String(text || '').match(/\bfig(?:ure)?\.?\s*([A-Z]?\d+(?:[.-]\d+)*[a-z]?)/i)?.[1] || '').toLowerCase() || null;
+
+/**
+ * Gives a figure its numbered caption when docling missed it: docling left the engine manual's two-stroke engine
+ * (Figure 2-4) uncaptioned and captioned the V-8 photo with words printed in it ('"V" Type Engine Block')
+ * instead of "Figure 2-5 - Engine block designs". The caption is looked for in the words docling read inside
+ * the figure, then in the text right after it, then right before; one already belonging to another figure is
+ * skipped. A caption without a figure number that is replaced moves to the figure's words.
+ */
+function ownCaption(f, { after, before, numbered }) {
+  if (hasFigureNumber(f.caption)) return;
+  const strip = (t) => t.replace(EMBEDDED_IMAGE_RE, ' ');
+  const candidates = [
+    ...[...f.labels.matchAll(NUMBERED_CAPTION_RE)],
+    ...[...strip(after).matchAll(NUMBERED_CAPTION_RE)],
+    ...[...strip(before).matchAll(NUMBERED_CAPTION_RE)].reverse(),
+  ];
+  const found = candidates.find((c) => !numbered.has(c[1].toLowerCase()));
+  if (!found) return;
+  const caption = `Figure ${found[1]} - ${found[2].trim()}`;
+  if (f.caption) f.labels = [f.caption, f.labels].filter(Boolean).join('; ').slice(0, MAX_FIGURE_TEXT);
+  f.caption = caption;
+  numbered.add(found[1].toLowerCase());
+}
+
+/**
+ * A figure printed twice (the engine manual shows its four-stroke figure as both 2-3 and 2-10) is kept once:
+ * same caption apart from its number, and the same words inside. Its later places in the text point to the
+ * first, so a deck never shows the same picture twice as two figures.
+ */
+function mergeRepeatedFigures(result) {
+  const sameness = (f) => {
+    const caption = String(f.caption || '').replace(/^\s*fig(?:ure)?\.?\s*[A-Z]?\d+(?:[.-]\d+)*[a-z]?\s*[-–—:.]?\s*/i, '').trim().toLowerCase();
+    const labels = String(f.labels || '').trim().toLowerCase();
+    return caption.length >= 8 || labels.split(';').length >= 3 ? `${caption}|${labels}` : null;
+  };
+  const first = new Map();
+  const figures = [];
+  let { markdown } = result;
+  for (const f of result.figures) {
+    const key = sameness(f);
+    const kept = key && first.get(key);
+    if (kept) {
+      markdown = markdown.replaceAll(`<!-- figure:${f.key} -->`, `<!-- figure:${kept.key} -->`);
+      continue;
+    }
+    if (key) first.set(key, f);
+    figures.push(f);
+  }
+  return { ...result, markdown, figures };
 }
 
 function extractPageCount(data) {
