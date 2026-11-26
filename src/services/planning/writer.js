@@ -148,6 +148,11 @@ function itemBlock(generation, kind, index, type, { note, figure, evidence }) {
     `Write only from the facts${evidence.rows.length ? ' and passages' : ''} below${item.own_text ? ' and the user\'s text' : ''}: ` +
       `every number, name and claim must come from them, with their exact figures. Do not add causes, ` +
       `comparisons, tips or advice they do not state. Say each fact once.`,
+    // A section's passages also hold what neighbouring sections cover ("still on many older engines" twice).
+    kind.factPassages
+      ? `Use the passages only to explain this ${kind.noun}'s own facts. What other ${kind.nounPlural} in the ` +
+        `outline cover is theirs: leave it out here.`
+      : '',
     `Do not repeat points or figures the earlier ${kind.nounPlural} already made unless this one builds on them.`,
     // A fact belongs to what its passage is about: the engine manual's gasoline ignition timing ended up as
     // "diesel injection timing" once.

@@ -28,7 +28,7 @@ const DECK = {
   countRange: [3, 25],
   defaultCount: 8,
   // Facts the planner quotes per slide: a slide shows a few.
-  planPoints: { range: '2-5', max: 6 },
+  planPoints: { range: '2-5', max: 6, min: 1 }, // one fact makes a statement slide
   // Items that frame the deck rather than carry evidence: no sources searched for them.
   noSourceTypes: slideKinds((k) => !k.sourced),
   // Kinds that need something the planner or the user attaches (a figure), never offered as a change of kind.
@@ -92,7 +92,7 @@ const DOC = {
   appOnlyTypes: ['figure'],
   // Facts the planner quotes per section: sections are prose, built from more of them, and written with the
   // passages they were quoted from for context.
-  planPoints: { range: '4-8', max: 8 },
+  planPoints: { range: '4-8', max: 8, min: 2 }, // a one-fact section was padding
   factPassages: true,
   minCount: {},
   // A figure planned for a section is shown in it.

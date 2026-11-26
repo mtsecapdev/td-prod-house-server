@@ -17,8 +17,6 @@ import { pickFigures } from './figurePicks.js';
 
 const { generateModel } = config.ollama;
 const PREVIEW_CHARS = 220;
-// Passages read when planning: enough to cover a typical report the way chat does (~8-10k tokens).
-const PLAN_PASSAGES = 24;
 const ADD_ITEM_PASSAGES = 6;
 // Pasted text is read in full when planning; very long pastes are cut to stay inside the model's context.
 const MAX_PASTED_CHARS = 20000;
@@ -45,52 +43,74 @@ function passageBlock(rows) {
   return rows.map((r) => `[${r.id}] p.${r.page ?? '?'}${r.heading ? ` · ${r.heading}` : ''}\n${stripFigureMarkers(r.content).trim()}`).join('\n\n');
 }
 
-// What to plan from: the passages most relevant to the request (plus the documents' section list, so the
-// plan knows what else exists), the whole documents, or the user's own text.
+// What to plan from. The planner reads whole passages, never cut short: a combustion chamber document missed
+// swirl chambers and energy cells because whole-document plans saw sampled passages cut at 1,400 characters.
+// - Documents that fit MATERIAL_CHARS are read in full.
+// - Larger ones, for a request on a topic: whole sections, most relevant first (a section is often split across
+//   passages, and the second half held swirl chambers and energy cells).
+// - Larger ones, for the whole documents: passages in turns, the most relevant of every section in each round,
+//   so every part is represented before any part gets more.
+// Passages the conversation's answers used come first. The documents' section list shows what else exists.
+// The budget is what the model's context holds besides the prompt (~4,000 tokens) and its answer, at about 3.5
+// characters a token: ~72,000 characters at 32k context, more on a server with a larger one.
+const MATERIAL_CHARS = Math.round((config.ollama.numCtx - config.ollama.numPredict - 4000) * 3.5);
+
 async function planningMaterial(generation) {
   const pasted = pastedText(generation.brief);
   if (pasted) return { block: `The user's own text, to build from (source 0):\n"""\n${pasted}\n"""`, passages: [], ownText: pasted };
-  if (generation.brief?.scope === 'full') return wholeDocumentMaterial(generation);
 
+  const docIds = generation.source_document_ids || [];
+  const full = generation.brief?.scope === 'full';
   const query = [generation.brief?.topic, generation.brief?.goal, generation.brief?.instructions].filter(Boolean).join('\n');
   const embedding = await requestEmbedding(query);
-  const docIds = generation.source_document_ids || [];
-  const [found, map, pinnedRows] = await Promise.all([
-    getSourcePassagesDb(embedding, PLAN_PASSAGES, docIds, query),
-    getDocumentMapDb(docIds, { topicEmbedding: embedding }),
+  const [all, map, pinnedRows] = await Promise.all([
+    getAllPassagesDb(docIds),
+    getDocumentMapDb(docIds, full ? {} : { topicEmbedding: embedding }),
     getChunksByIdsDb(generation.brief?.pinned_chunk_ids || []),
   ]);
-  // Passages the conversation's answers used come first (still from these documents); search fills the rest.
-  const pinned = pinnedRows.filter((r) => docIds.includes(r.document_id));
-  const pinnedIds = new Set(pinned.map((r) => r.id));
-  const passages = [...pinned, ...found.filter((r) => !pinnedIds.has(r.id))].slice(0, PLAN_PASSAGES);
-  const ordered = [...passages].sort((a, b) => a.document_id - b.document_id || a.id - b.id); // reading order
-  const sections = map.sections.map((s) => `- ${s.heading}${s.page != null ? ` (p. ${s.page})` : ''}`).join('\n');
+  const size = (r) => stripFigureMarkers(r.content).length;
+  let chosen;
+  if (all.reduce((n, r) => n + size(r), 0) <= MATERIAL_CHARS) {
+    chosen = all;
+  } else {
+    const ranked = await getSourcePassagesDb(embedding, all.length, docIds, query);
+    const sectionOf = (r) => `${r.document_id}:${r.heading || ''}`;
+    const sections = new Map();
+    for (const r of all) {
+      if (!sections.has(sectionOf(r))) sections.set(sectionOf(r), []);
+      sections.get(sectionOf(r)).push(r);
+    }
+    // The order passages are considered in: by relevance, or in turns across sections.
+    let order = ranked;
+    if (full) {
+      const queues = new Map();
+      for (const r of ranked) {
+        if (!queues.has(sectionOf(r))) queues.set(sectionOf(r), []);
+        queues.get(sectionOf(r)).push(r);
+      }
+      order = [];
+      for (let round = 0; order.length < ranked.length; round++) {
+        for (const q of queues.values()) if (q[round]) order.push(q[round]);
+      }
+    }
+    const taken = new Set();
+    let used = 0;
+    const take = (r) => { taken.add(r.id); used += size(r); };
+    for (const r of pinnedRows.filter((p) => docIds.includes(p.document_id))) take(r);
+    for (const r of order) {
+      if (taken.has(r.id)) continue;
+      // Topic: the whole section when it fits, else this passage alone when it does. Whole documents: one at a time.
+      const section = full ? [r] : sections.get(sectionOf(r)).filter((x) => !taken.has(x.id));
+      const sectionSize = section.reduce((n, x) => n + size(x), 0);
+      if (used + sectionSize <= MATERIAL_CHARS) section.forEach(take);
+      else if (used + size(r) <= MATERIAL_CHARS) take(r);
+    }
+    chosen = all.filter((r) => taken.has(r.id)); // reading order
+  }
+  const sectionList = map.sections.map((s) => `- ${s.heading}${s.page != null ? ` (p. ${s.page})` : ''}`).join('\n');
   return {
-    block: `Sections of the documents:\n${sections}\n\nPassages (id, page, section):\n${passageBlock(ordered)}`,
-    passages: ordered,
-  };
-}
-
-// A whole-document deck plans from every part of the documents, not the passages that best match the request:
-// each section's summary, and passages spread evenly through the documents (shortened to fit the context).
-const FULL_PASSAGES = 36;
-const FULL_PASSAGE_CHARS = 1400;
-
-async function wholeDocumentMaterial(generation) {
-  const docIds = generation.source_document_ids || [];
-  const [all, map] = await Promise.all([getAllPassagesDb(docIds), getDocumentMapDb(docIds)]);
-  const step = Math.max(1, all.length / FULL_PASSAGES);
-  const passages = [];
-  for (let k = 0; k < all.length && passages.length < FULL_PASSAGES; k += step) passages.push(all[Math.floor(k)]);
-  // Shortened for the prompt; the facts are checked against what the planner was shown.
-  const shown = passages.map((r) => ({ ...r, content: stripFigureMarkers(r.content).slice(0, FULL_PASSAGE_CHARS) }));
-  const sections = map.sections
-    .map((s) => `- ${s.heading}${s.page != null ? ` (p. ${s.page})` : ''}: ${s.content.replace(/^Summary:[^\n]*\n?/, '').replace(/\s+/g, ' ').slice(0, 300)}`)
-    .join('\n');
-  return {
-    block: `The documents' sections, in order, with summaries:\n${sections}\n\nPassages (id, page, section), in reading order:\n${passageBlock(shown)}`,
-    passages: shown,
+    block: `Sections of the documents:\n${sectionList}\n\nPassages (id, page, section), in reading order:\n${passageBlock(chosen)}`,
+    passages: chosen,
   };
 }
 
@@ -196,7 +216,7 @@ const NEEDS = {
 /**
  * Raw planned items → outline items: facts checked, sources attached, kinds made to fit their position and facts.
  * A fact an earlier item already presents is dropped (two sections once said the same three things), and items
- * in the middle with no fact left are dropped. `fixed`: keep every item (the user's own parts). `planned`:
+ * in the middle left with fewer facts than the kind needs (kinds.js planPoints.min) are dropped. `fixed`: keep every item (the user's own parts). `planned`:
  * facts of items already in the outline.
  */
 function toItems(kind, rawItems, material, { fixed = false, bookends = true, planned = [] } = {}) {
@@ -215,7 +235,7 @@ function toItems(kind, rawItems, material, { fixed = false, bookends = true, pla
     if (bookend) type = i === 0 ? kind.firstType : kind.lastType;
     else if (type === kind.firstType || type === kind.lastType || rawItems.length < (kind.minCount[type] || 0)) type = kind.defaultType;
     if (NEEDS[type] && !NEEDS[type](facts)) type = kind.defaultType;
-    if (!bookend && !fixed && !facts.length) return; // nothing to say: no padding
+    if (!bookend && !fixed && facts.length < kind.planPoints.min) return; // too little to say: no padding
 
     const sourceIds = [...new Set(facts.map((f) => f.chunk_id).filter(Boolean))];
     const item = {
