@@ -19,6 +19,7 @@ import { listTemplates, createBrandTemplate, deleteBrandTemplate } from '../serv
 import { getBrandTemplateDb } from '../db/brandTemplatesQueries.js';
 import { ownFigureIds } from '../middleware/auth.js';
 import { renderOfficeFile, notReadyMessage, officeExt, downloadName } from '../services/officeRenderer.js';
+import { openEventStream } from '../utils/eventStream.js';
 
 async function getTemplates(req, res) {
   res.json(responseFactory.createJsonResponse(await listTemplates()));
@@ -121,23 +122,20 @@ async function findSources(req, res) {
 const WATCH_INTERVAL_MS = 2000;
 
 async function writeSSE(req, res) {
-  res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive' });
-  let open = true;
-  req.on('close', () => { open = false; });
-  const send = (data) => { if (open) res.write(`data: ${JSON.stringify(data)}\n\n`); };
+  const { send, isOpen, end } = openEventStream(res);
 
   const generation = await getPlannable(req.params.id).catch((err) => { send({ phase: 'error', message: err.message }); return null; });
-  if (!generation) return res.end();
+  if (!generation) return end();
   const kind = kindOf(generation);
   const items = generation.outline?.[kind.listKey] || [];
-  if (!items.length) { send({ phase: 'error', message: `The outline has no ${kind.nounPlural}` }); return res.end(); }
+  if (!items.length) { send({ phase: 'error', message: `The outline has no ${kind.nounPlural}` }); return end(); }
 
   send({ phase: 'start', total: items.length, [kind.listKey]: items.map((it) => ({ title: it.title, [kind.typeKey]: it[kind.typeKey] })) });
 
   const claimed = !isJobLive(generation.job) && await claimJobDb(generation.id, 'write');
   if (!claimed) {
-    await watchWrite(generation.id, kind, send, () => open);
-    return res.end();
+    await watchWrite(generation.id, kind, send, isOpen);
+    return end();
   }
 
   try {
@@ -164,7 +162,7 @@ async function writeSSE(req, res) {
     await failJobDb(generation.id, 'write', err.message);
     send({ phase: 'error', message: err.message });
   }
-  res.end();
+  end();
 }
 
 // Streams a write that another request is running: progress, and each item as it lands in the database.

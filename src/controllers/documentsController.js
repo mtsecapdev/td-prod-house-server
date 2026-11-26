@@ -13,6 +13,7 @@ import { insertChunkDb } from '../db/chunksQueries.js';
 import { generateSummaryChunks } from '../services/summarizer.js';
 import { saveFigures, deleteFigureFiles } from '../services/figures.js';
 import { figureUsageDb, listFiguresDb } from '../db/figuresQueries.js';
+import { openEventStream } from '../utils/eventStream.js';
 
 async function ensureDir(dir) {
   await fs.mkdir(dir, { recursive: true });
@@ -45,15 +46,7 @@ const uploadDocumentsStream = [
 
     const docId = await insertDocumentDb(originalname, { ownerId: req.user.id, filePath, fileHash, status: 'processing' });
 
-    res.writeHead(200, {
-      'Content-Type': 'text/event-stream',
-      'Cache-Control': 'no-cache',
-      Connection: 'keep-alive',
-    });
-
-    const send = (data) => {
-      res.write(`data: ${JSON.stringify(data)}\n\n`);
-    };
+    const { send, end } = openEventStream(res);
 
     send({ phase: 'uploaded', docId, message: `Processing ${originalname}...` });
 
@@ -64,7 +57,7 @@ const uploadDocumentsStream = [
         send(progress);
       });
 
-      if (await aborted()) { send({ phase: 'error', message: 'Document was deleted' }); res.end(); return; }
+      if (await aborted()) { send({ phase: 'error', message: 'Document was deleted' }); end(); return; }
 
       if (figures.length) send({ phase: 'chunking', message: `Saving ${figures.length} figures...` });
       await saveFigures(docId, figures);
@@ -72,19 +65,19 @@ const uploadDocumentsStream = [
       send({ phase: 'chunking', message: 'Splitting into text chunks...' });
       const chunks = await splitMarkdown(markdown, pageStarts);
 
-      if (await aborted()) { send({ phase: 'error', message: 'Document was deleted' }); res.end(); return; }
+      if (await aborted()) { send({ phase: 'error', message: 'Document was deleted' }); end(); return; }
 
       send({ phase: 'embedding', message: `Embedding ${chunks.length} chunks...`, total: chunks.length });
       const embeddings = await requestEmbeddingBatch(chunks.map((c) => enrichTextForEmbedding(c.text, c)));
 
-      if (await aborted()) { send({ phase: 'error', message: 'Document was deleted' }); res.end(); return; }
+      if (await aborted()) { send({ phase: 'error', message: 'Document was deleted' }); end(); return; }
 
       send({ phase: 'storing', message: 'Saving to database...' });
       for (let i = 0; i < chunks.length; i++) {
         await insertChunkDb(docId, chunks[i].text, embeddings[i], { page: chunks[i].page, heading: chunks[i].heading });
       }
 
-      if (await aborted()) { send({ phase: 'error', message: 'Document was deleted' }); res.end(); return; }
+      if (await aborted()) { send({ phase: 'error', message: 'Document was deleted' }); end(); return; }
 
       send({ phase: 'summarizing', message: 'Generating summaries...' });
       await generateSummaryChunks(docId, chunks, {
@@ -104,7 +97,7 @@ const uploadDocumentsStream = [
       send({ phase: 'error', message: err.message });
       console.error(`Upload ingestion failed: ${originalname} — ${err.message}`);
     }
-    res.end();
+    end();
   },
 ];
 

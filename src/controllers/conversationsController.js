@@ -20,6 +20,7 @@ import { startJob } from '../services/jobs.js';
 import { deleteDiagrams } from '../services/diagrams.js';
 import { ownDocumentIds } from '../middleware/auth.js';
 import { startInterview, answerInterview, skipRest, reask, briefFromInterview } from '../services/interview.js';
+import { openEventStream } from '../utils/eventStream.js';
 
 const HISTORY_MESSAGES = 10;
 
@@ -106,10 +107,7 @@ async function sendMessage(req, res) {
     throw new AppError('That deck or document is not part of this conversation', 400);
   }
 
-  res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive' });
-  res.flushHeaders();
-  const send = (data) => res.write(`data: ${JSON.stringify(data)}\n\n`);
-  const keepalive = setInterval(() => res.write(': keepalive\n\n'), 5000);
+  const { send, end } = openEventStream(res);
 
   const previous = await listMessagesDb(conversation.id);
   const userMessage = await insertMessageDb(conversation.id, {
@@ -146,9 +144,8 @@ async function sendMessage(req, res) {
     reply = { kind: 'error', content: err.message };
   }
   const assistantMessage = await insertMessageDb(conversation.id, { role: 'assistant', ...reply });
-  clearInterval(keepalive);
   send({ phase: 'done', messages: [sent, assistantMessage] });
-  res.end();
+  end();
 }
 
 /** The slide/section an image is for: the one selected, or one the message names ("for slide 3"). */
