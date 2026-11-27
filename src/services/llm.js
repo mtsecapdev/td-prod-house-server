@@ -265,9 +265,9 @@ export async function describeFigure({ png, caption, labels, documentName }) {
     `Describe what the picture actually shows, in 2 to 4 plain sentences, for someone deciding whether it ` +
     `illustrates a point they are explaining: what kind of picture it is (photo, cutaway drawing, diagram, ` +
     `chart, table...), the thing, part, process or stage shown, and the parts or labels that matter. Use the ` +
-    `caption and the document only to name things correctly. If the caption names something the picture does ` +
-    `not show (more stages, parts or steps than are drawn), say what is and is not shown. Do not guess at what ` +
-    `cannot be seen.`;
+    `caption and the document only to name things correctly. Only when the caption names something the picture ` +
+    `does not show (more stages, parts or steps than are drawn), say what is missing; otherwise don't compare ` +
+    `the picture with its caption. Do not guess at what cannot be seen.`;
   const format = { type: 'object', properties: { description: { type: 'string' } }, required: ['description'] };
   try {
     const reply = await provider.chat(
