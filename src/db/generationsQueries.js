@@ -38,7 +38,7 @@ export async function updateGenerationDb(id, fields) {
 
 export async function getAllGenerationsDb(ownerId) {
   const res = await pool.query(
-    `SELECT id, type, status, brief, job, conversation_id, created_at, updated_at,
+    `SELECT id, type, status, brief, job, conversation_id, created_at, updated_at, name,
        coalesce(outline->'slides'->0->'content'->>'title', outline->'sections'->0->'content'->>'title') AS first_title
      FROM generations WHERE owner_id = $1 ORDER BY created_at DESC`,
     [ownerId],
@@ -101,6 +101,8 @@ export function isJobLive(job) {
  * fallback until the title slide exists.
  */
 export function generationName(generation) {
+  // A name the user gave it; otherwise its title slide's / title page's title, then the request.
+  if (generation.name?.trim()) return generation.name.trim();
   const first = generation.outline?.slides?.[0] || generation.outline?.sections?.[0];
   const title = first?.content?.title || generation.first_title;
   if (title) return title;
@@ -111,7 +113,8 @@ export function generationName(generation) {
 /** What clients see: the name, and a running job whose heartbeat stopped reported as failed (so the UI offers a retry). */
 export function presentGeneration(generation) {
   const { job, first_title: _t, ...rest } = generation;
-  const presented = { ...rest, job, name: generationName(generation) };
+  // named: the user named it, so its name no longer follows the title slide.
+  const presented = { ...rest, job, name: generationName(generation), named: Boolean(generation.name?.trim()) };
   if (job?.state === 'running' && !isJobLive(job)) {
     presented.job = { ...job, state: 'failed', error: 'Interrupted (the server restarted). Try again.' };
   }

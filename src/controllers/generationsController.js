@@ -86,6 +86,16 @@ async function updateBrief(req, res) {
   res.json(responseFactory.createJsonResponse({ generation: await getGenerationByIdDb(generation.id) }));
 }
 
+// The deck's/document's own name, separate from its title slide's title. An empty name goes back to following
+// the title slide.
+const MAX_NAME = 120;
+async function renameGeneration(req, res) {
+  const generation = await getPlannable(req.params.id);
+  const name = String(req.body?.name ?? '').replace(/\s+/g, ' ').trim().slice(0, MAX_NAME);
+  await updateGenerationDb(generation.id, { name: name || null });
+  res.json(responseFactory.createJsonResponse({ generation: presentGeneration(await getGenerationByIdDb(generation.id)) }));
+}
+
 async function createOutline(req, res) {
   const generation = await getPlannable(req.params.id);
   if (req.body?.brief) {
@@ -344,6 +354,7 @@ export default {
   listGenerations,
   updateOutline,
   updateBrief,
+  renameGeneration,
   createOutline,
   refreshItemSources,
   findSources,

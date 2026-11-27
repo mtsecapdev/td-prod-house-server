@@ -15,6 +15,7 @@ generationsRouter.put('/:id/outline', generationsController.updateOutline);
 
 // Planning (decks and documents)
 generationsRouter.put('/:id/brief', generationsController.updateBrief);
+generationsRouter.put('/:id/name', generationsController.renameGeneration);
 generationsRouter.post('/:id/outline', generationsController.createOutline);
 generationsRouter.post('/:id/outline/:index/sources', generationsController.refreshItemSources);
 generationsRouter.get('/:id/sources', generationsController.findSources);

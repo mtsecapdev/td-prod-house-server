@@ -88,7 +88,7 @@ export async function getFiguresForDownloadDb(ids) {
 export async function figureUsageDb(figureIds) {
   if (!figureIds.length) return [];
   const res = await pool.query(
-    `SELECT g.id, g.type, g.outline, g.brief
+    `SELECT g.id, g.type, g.outline, g.brief, g.name
      FROM generations g
      WHERE g.outline IS NOT NULL
        AND jsonb_path_exists(g.outline, '$.*[*] ? (@.figure_ids[*] == $ids[*] || @.content.pictures[*].figure_id == $ids[*])',
