@@ -65,8 +65,11 @@ async function ollamaStream(path, body) {
 
 export class OutputTruncatedError extends Error {}
 
-function bodyFor(extra, { format, think }) {
-  const body = { ...extra, options: OPTIONS };
+// numCtx: a model's own context window instead of the shared one (the vision model's is small, so it fits beside
+// the text model). Keep it the same on every call to that model: Ollama reloads a model whose num_ctx changes.
+function bodyFor(extra, { format, think, numCtx }) {
+  const options = numCtx ? { num_ctx: numCtx, num_predict: Math.min(numPredict, Math.floor(numCtx / 2)) } : OPTIONS;
+  const body = { ...extra, options };
   if (format) body.format = format;
   if (think !== undefined) body.think = think;
   return body;

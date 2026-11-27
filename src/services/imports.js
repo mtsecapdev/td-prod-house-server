@@ -11,6 +11,8 @@ import { splitMarkdown, enrichTextForEmbedding } from './textChunker.js';
 import { requestEmbeddingBatch } from './llm.js';
 import { writeOverview } from './summarizer.js';
 import { describeNextFigure } from './figureDescriptions.js';
+import { unload as unloadModel } from './providers/ollama.js';
+import config from '../config.js';
 import { insertChunkDb } from '../db/chunksQueries.js';
 import {
   claimNextImportDb, heartbeatImportDb, clearImportedDb, updateDocumentStatusDb, documentExistsDb,
@@ -36,6 +38,9 @@ export async function importDocument(doc, report = () => {}) {
   // A restarted import starts from scratch.
   await clearImportedDb(doc.id);
   await deleteFigureFiles(doc.id);
+  // The converter (docling) needs GPU memory too; the vision model, loaded beside the text model to describe the
+  // previous document's figures, would leave it almost none. It loads again when this document's figures are described.
+  if (config.ollama.visionModel) await unloadModel(config.ollama.visionModel).catch(() => {});
 
   const { markdown, pageStarts, figures } = await extractMarkdownFromFile(doc.file_path, doc.name, report);
   await still();

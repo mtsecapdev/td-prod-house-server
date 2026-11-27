@@ -15,6 +15,10 @@ const config = {
     // A model that can see images (Qwen3-VL), for describing figures after import. Unset: figures are not
     // described, and picking goes by caption and the text printed in them.
     visionModel: process.env.VISION_MODEL_NAME || null,
+    // A figure description needs little context (one image, a short prompt, some reasoning); a small window
+    // keeps the vision model small enough to stay loaded beside the text model (qwen3-vl:4b: 3.4 GB at 8k,
+    // 5.4 GB at 32k).
+    visionNumCtx: Number(process.env.VISION_NUM_CTX ?? 8192),
     numCtx: Number(process.env.OLLAMA_NUM_CTX ?? 32768),
     // Max tokens per call, thinking included. Stops runaway reasoning loops.
     numPredict: Number(process.env.OLLAMA_NUM_PREDICT ?? 8192),
