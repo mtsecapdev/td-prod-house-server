@@ -9,7 +9,8 @@
 // generation, so llama.cpp / vLLM can reuse them from their prompt cache. Item-specific text comes last.
 import config from '../../config.js';
 import { chatStructured, requestEmbeddingBatch } from '../llm.js';
-import { getChunksByIdsDb, getSourcePassagesDb } from '../../db/chunksQueries.js';
+import { getChunksByIdsDb, getSectionPassagesDb } from '../../db/chunksQueries.js';
+import { findSections } from '../retrieval.js';
 import { renderWithRepair, DiagramSyntaxError } from '../diagrams.js';
 import { kindOf, styleGuide, briefBlock, storylineBlock } from './kinds.js';
 import { fitContent } from './fit.js';
@@ -23,8 +24,8 @@ import { withIcons } from './icons.js';
 const { generateModel } = config.ollama;
 // Free-form pasted text goes into the shared plan block (identical for every item, so it is cached).
 const MAX_PASTED_IN_PLAN = 12000;
-// Passages found for each point the user wrote into the plan.
-const SEARCHED_EXTRA = 2;
+// Text found for each point the user wrote into the plan: the sections of its best matches, at most this much.
+const SEARCHED_CHARS = 8000;
 
 // How to treat the user's own text, by the mode they chose.
 const TEXT_MODES = {
@@ -110,13 +111,16 @@ async function factEvidence(generation, kind, item, type) {
   let queries = written;
   if (!facts.length && !added.length && !written.length && !item.own_text) queries = [sourceQuery(item)];
 
-  const rows = await getChunksByIdsDb([...(kind.factPassages ? fromFacts : []), ...added].filter(Boolean));
+  // Documents read the whole sections their facts were quoted from; passages the user added come as they are.
+  const factRows = kind.factPassages ? await getChunksByIdsDb([...fromFacts].filter(Boolean)) : [];
+  const sections = [...new Map(factRows.map((r) => [`${r.document_id}:${r.section}`, r])).values()];
+  const rows = [...await getSectionPassagesDb(sections), ...await getChunksByIdsDb(added)];
   if (queries.length && docIds.length) {
     const have = new Set([...rows.map((r) => r.id), ...fromFacts]);
     const vectors = await requestEmbeddingBatch(queries);
     for (let q = 0; q < queries.length; q++) {
-      const found = await getSourcePassagesDb(vectors[q], SEARCHED_EXTRA + 2, docIds, queries[q]);
-      for (const r of found.filter((x) => !have.has(x.id)).slice(0, SEARCHED_EXTRA)) { rows.push(r); have.add(r.id); }
+      const { passages } = await findSections(queries[q], docIds, { k: 2, maxChars: SEARCHED_CHARS, embedding: vectors[q] });
+      for (const r of passages.filter((x) => !have.has(x.id))) { rows.push(r); have.add(r.id); }
     }
   }
   const text = [

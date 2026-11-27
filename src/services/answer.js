@@ -1,11 +1,14 @@
 // Answers a question from the conversation's documents (retrieval-augmented), as the chat does.
 import config from '../config.js';
-import { generateAnswer, generateGeneralAnswer, requestEmbedding, understandMessage } from './llm.js';
-import { getSimilarChunksDb, getNeighborChunksDb, getDocumentOverviewsDb } from '../db/chunksQueries.js';
+import { generateAnswer, generateGeneralAnswer, understandMessage } from './llm.js';
+import { getDocumentOverviewsDb } from '../db/chunksQueries.js';
+import { findSections } from './retrieval.js';
 import { coverDocuments } from './wholeDocument.js';
 import { figuresInChunks, figuresMentioned, stripFigureMarkers } from './figures.js';
 
-const EXPAND_THRESHOLD = 0.6;
+// Text an answer reads at most: the sections its best matches belong to (whole, so an explanation is never cut
+// off mid-way).
+const ANSWER_CHARS = 30000;
 // Whether to read the documents: small talk never does. Otherwise the search runs (it is cheap), and the answer
 // skips the documents only when the model judged the message unrelated AND nothing in them scored above
 // UNRELATED_MAX, or nothing came close at all. Neither signal is enough alone: the model can't know every detail a
@@ -56,26 +59,12 @@ export async function answerQuestion({ question, history, docIds, onPhase = () =
   if (smallTalk && scope === 'specific') return answerFromGeneralKnowledge(question, history, true, onPhase);
 
   onPhase('searching');
-  const topChunks = await getSimilarChunksDb(await requestEmbedding(searchQuery), config.rag.topK, docIds, searchQuery);
+  const { passages: finalChunks, best } = await findSections(searchQuery, docIds, { k: config.rag.topK, maxChars: ANSWER_CHARS });
   // A whole-document request skips the relevance gate: "give me the gist" matches no passage closely.
-  if (scope === 'whole_document') return answerWholeDocument(question, history, documentsMeant(allDocuments, docIds, topChunks), onPhase);
-  const best = Math.max(0, ...topChunks.map((c) => c.similarity));
+  if (scope === 'whole_document') return answerWholeDocument(question, history, documentsMeant(allDocuments, docIds, finalChunks), onPhase);
   if (best < NOTHING_CLOSE || (!aboutDocuments && best < UNRELATED_MAX)) {
     return answerFromGeneralKnowledge(question, history, false, onPhase);
   }
-  // Strong matches bring their neighbours, so an answer sees the whole passage around a hit.
-  const seen = new Set(topChunks.map((c) => c.id));
-  const expanded = [...topChunks];
-  for (const chunk of topChunks) {
-    if (chunk.level !== 'leaf' || chunk.similarity < EXPAND_THRESHOLD) continue;
-    for (const n of await getNeighborChunksDb(chunk.id, chunk.document_id, 3)) {
-      if (seen.has(n.id)) continue;
-      seen.add(n.id);
-      expanded.push({ ...n, similarity: chunk.similarity * 0.9 });
-    }
-  }
-  expanded.sort((a, b) => b.similarity - a.similarity);
-  const finalChunks = expanded.slice(0, config.rag.topK + 5);
 
   onPhase('generating');
   const available = await figuresInChunks(finalChunks);
@@ -90,7 +79,7 @@ export async function answerQuestion({ question, history, docIds, onPhase = () =
   const figures = figuresMentioned(available, llmResponse.content).map((f) => ({
     id: f.id, caption: f.caption, page: f.page, width: f.width, height: f.height, document_id: f.document_id,
   }));
-  const sourceIds = finalChunks.filter((c) => c.level === 'leaf' || !c.level).slice(0, SOURCES_KEPT).map((c) => c.id);
+  const sourceIds = finalChunks.slice(0, SOURCES_KEPT).map((c) => c.id);
   const content = grounded ? llmResponse.content : withoutRepeatedNote(llmResponse.content, history);
   return { content, grounded, figures, sourceIds };
 }

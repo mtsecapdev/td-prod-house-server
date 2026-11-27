@@ -11,6 +11,7 @@ import { requestLogger } from './src/middleware/requestLogger.js';
 import { loadUser, requireUser } from './src/middleware/auth.js';
 import authRouter from './src/routes/authRouter.js';
 import usersRouter from './src/routes/usersRouter.js';
+import { startImportWorker } from './src/services/imports.js';
 
 const app = express();
 
@@ -57,4 +58,6 @@ app.use((err, req, res, next) => {
 app.listen(config.port, (error) => {
   if (error) throw error;
   console.log(`Listening on ${config.port}`);
+  // Document imports run in the background; ones cut off by a restart resume.
+  startImportWorker();
 });

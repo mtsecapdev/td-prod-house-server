@@ -60,3 +60,42 @@ export async function deleteDocumentDb(id) {
   if (res.rowCount === 0) throw new AppError(`Document ${id} not found`, 404);
   return res.rows[0];
 }
+
+// ── Imports (background jobs: services/imports.js) ──
+// A document being imported has status 'processing'. heartbeat_at is null while it waits, and kept fresh by the
+// worker running it; one whose heartbeat stopped (the server restarted mid-import) is picked up again.
+
+/** Claims the next document waiting to be imported (or abandoned), so no other worker takes it. */
+export async function claimNextImportDb(staleSeconds) {
+  const res = await pool.query(
+    `UPDATE documents SET heartbeat_at = NOW()
+     WHERE id = (
+       SELECT id FROM documents
+       WHERE status = 'processing' AND (heartbeat_at IS NULL OR heartbeat_at < NOW() - make_interval(secs => $1))
+       ORDER BY uploaded_at LIMIT 1 FOR UPDATE SKIP LOCKED
+     )
+     RETURNING id, name, file_path, owner_id`,
+    [staleSeconds],
+  );
+  return res.rows[0] ?? null;
+}
+
+/** Marks a document's import as taken by the caller (the command-line import runs it itself). */
+export async function claimImportDb(id) {
+  await pool.query('UPDATE documents SET heartbeat_at = NOW() WHERE id = $1', [id]);
+}
+
+export async function heartbeatImportDb(id) {
+  await pool.query('UPDATE documents SET heartbeat_at = NOW() WHERE id = $1', [id]);
+}
+
+/** Removes what an earlier, interrupted import of the document stored, so it can start again cleanly. */
+export async function clearImportedDb(id) {
+  await pool.query('DELETE FROM chunks WHERE document_id = $1', [id]);
+  await pool.query('DELETE FROM figures WHERE document_id = $1', [id]);
+}
+
+export async function getDocumentStatusDb(id) {
+  const res = await pool.query('SELECT status, error FROM documents WHERE id = $1', [id]);
+  return res.rows[0] ?? null;
+}

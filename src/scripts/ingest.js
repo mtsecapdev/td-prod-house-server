@@ -3,17 +3,8 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import pool from '../db/pool.js';
 import config from '../config.js';
-import { extractMarkdownFromFile } from '../services/fileProcessor.js';
-import { saveFigures } from '../services/figures.js';
-import { splitMarkdown, enrichTextForEmbedding } from '../services/textChunker.js';
-import { requestEmbeddingBatch } from '../services/llm.js';
-import {
-  getDocumentByHashDb,
-  insertDocumentDb,
-  updateDocumentStatusDb,
-} from '../db/documentsQueries.js';
-import { insertChunkDb } from '../db/chunksQueries.js';
-import { generateSummaryChunks } from '../services/summarizer.js';
+import { runImport } from '../services/imports.js';
+import { getDocumentByHashDb, insertDocumentDb, claimImportDb } from '../db/documentsQueries.js';
 
 const SUPPORTED_EXTENSIONS = new Set(['.pdf', '.docx', '.pptx', '.md', '.txt']);
 
@@ -54,35 +45,14 @@ async function ingestFile(filePath, ownerId) {
   }
 
   const docId = await insertDocumentDb(filename, { ownerId, filePath, fileHash, status: 'processing' });
+  // Taken by this script, so a running app server's import queue leaves it alone.
+  await claimImportDb(docId);
   console.log(`  Processing: ${filename} (doc ${docId})`);
-
-  try {
-    const { markdown, pageCount, pageStarts, figures } = await extractMarkdownFromFile(filePath, filename);
-    await saveFigures(docId, figures);
-    const chunks = await splitMarkdown(markdown, pageStarts);
-    const embeddings = await requestEmbeddingBatch(chunks.map((c) => enrichTextForEmbedding(c.text, c)));
-
-    for (let i = 0; i < chunks.length; i++) {
-      await insertChunkDb(docId, chunks[i].text, embeddings[i], { page: chunks[i].page, heading: chunks[i].heading });
-    }
-
-    console.log(`  Generating summaries...`);
-    const { sectionCount } = await generateSummaryChunks(docId, chunks, {
-      onProgress: ({ step, current, total }) => {
-        if (step === 'section') process.stdout.write(`\r  Summarizing section ${current}/${total}`);
-        else if (step === 'document') process.stdout.write(`\r  Generating document overview...`);
-      },
-    });
-    console.log(`\n  Summaries: ${sectionCount} sections + 1 document overview`);
-
-    await updateDocumentStatusDb(docId, 'ready');
-    console.log(`  Done: ${filename} — ${chunks.length} chunks`);
-    return { status: 'ingested', filename, chunks: chunks.length };
-  } catch (err) {
-    await updateDocumentStatusDb(docId, 'failed', err.message);
-    console.error(`  Failed: ${filename} — ${err.message}`);
-    return { status: 'failed', filename, error: err.message };
-  }
+  const outcome = await runImport({ id: docId, name: filename, file_path: filePath }, (e) => {
+    if (e.message && e.phase !== 'done') process.stdout.write(`\r  ${e.message.padEnd(60)}`);
+  });
+  process.stdout.write('\n');
+  return { status: outcome === 'ready' ? 'ingested' : 'failed', filename };
 }
 
 // Documents belong to someone: npm run ingest -- --owner <username>

@@ -1,6 +1,7 @@
 import config from '../config.js';
-import { chatStructured, requestEmbedding } from './llm.js';
-import { getSimilarChunksDb } from '../db/chunksQueries.js';
+import { chatStructured } from './llm.js';
+import { findSections } from './retrieval.js';
+import { stripFigureMarkers } from './figures.js';
 import { getGenerationByIdDb, updateGenerationDb } from '../db/generationsQueries.js';
 import { SECTION_SCHEMAS } from './docSchemas.js';
 import { mermaidGuide, renderWithRepair, DiagramSyntaxError } from './diagrams.js';
@@ -11,6 +12,8 @@ import { withIcons } from './planning/icons.js';
 // Set by the app, not the model: the pictures placed on an item (with captions, position and crop) and a
 // diagram's size/crop. Hidden from the model and carried over unchanged, so a chat edit never drops them.
 const APP_FIELDS = ['pictures', 'image'];
+// Document text an edit can draw on: the sections that best match the instruction.
+const EDIT_CONTEXT_CHARS = 12000;
 const appFields = (content) => Object.fromEntries(APP_FIELDS.filter((f) => content?.[f] !== undefined).map((f) => [f, content[f]]));
 const forModel = (content) => Object.fromEntries(Object.entries(content || {}).filter(([f]) => !APP_FIELDS.includes(f)));
 
@@ -27,12 +30,10 @@ export async function editSlide(generationId, slideIndex, instruction, history =
   if (!schema) throw new Error('This slide was made by an earlier version of the app; regenerate it first');
 
   // Sources for the edit, when the generation has documents (pasted-text decks may have none).
-  const chunks = docIds?.length && instruction.trim()
-    ? await getSimilarChunksDb(await requestEmbedding(instruction), 3, docIds)
-    : [];
+  const chunks = (await findSections(instruction, docIds, { k: 3, maxChars: EDIT_CONTEXT_CHARS })).passages;
 
   const context = chunks
-    .map((c, i) => `[${i + 1}] (page ${c.page ?? '?'}): ${c.content}`)
+    .map((c, i) => `[${i + 1}] (page ${c.page ?? '?'}): ${stripFigureMarkers(c.content)}`)
     .join('\n\n');
 
   const currentSlide = JSON.stringify(forModel(slide.content), null, 2);
@@ -119,12 +120,10 @@ export async function editSection(generationId, sectionIndex, instruction, histo
   if (!schema) throw new Error(`Unknown section type: ${sType}`);
 
   // Sources for the edit, when the generation has documents (pasted-text decks may have none).
-  const chunks = docIds?.length && instruction.trim()
-    ? await getSimilarChunksDb(await requestEmbedding(instruction), 3, docIds)
-    : [];
+  const chunks = (await findSections(instruction, docIds, { k: 3, maxChars: EDIT_CONTEXT_CHARS })).passages;
 
   const context = chunks
-    .map((c, i) => `[${i + 1}] (page ${c.page ?? '?'}): ${c.content}`)
+    .map((c, i) => `[${i + 1}] (page ${c.page ?? '?'}): ${stripFigureMarkers(c.content)}`)
     .join('\n\n');
 
   const currentSection = JSON.stringify(forModel(section.content), null, 2);

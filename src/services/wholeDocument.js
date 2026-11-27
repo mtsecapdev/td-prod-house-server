@@ -5,7 +5,8 @@
 // (an appendix superseding a policy) is passed to the section it revises.
 import config from '../config.js';
 import * as provider from './providers/ollama.js';
-import { getAllPassagesDb, getSectionSummariesDb, getDocumentOverviewsDb } from '../db/chunksQueries.js';
+import { getAllPassagesDb, getDocumentOverviewsDb } from '../db/chunksQueries.js';
+import { ensureSectionSummaries } from './summarizer.js';
 import { stripFigureMarkers } from './figures.js';
 import AppError from '../utils/AppError.js';
 import { unsupportedNumbers, checkStatements, keepFlags } from './factCheck.js';
@@ -137,7 +138,7 @@ function attachSummaries(sections, summaries) {
     const home = sections.find((sec) => s.page != null && sec.firstPage != null && s.page >= sec.firstPage && s.page <= sec.lastPage)
       || sections.findLast((sec) => sec.firstPage != null && s.page != null && sec.firstPage <= s.page);
     if (!home) continue;
-    (home.summaries ||= []).push(`[p. ${s.page ?? '?'}] ${s.heading.replace(/^Summary:\s*/, '')}: ${s.content.replace(/\s+/g, ' ')}`);
+    (home.summaries ||= []).push(`[p. ${s.page ?? '?'}] ${(s.heading || 'Section').replace(/^Summary:\s*/, '')}: ${s.content.replace(/\s+/g, ' ')}`);
   }
 }
 
@@ -392,9 +393,10 @@ export async function coverDocuments(docIds, request) {
       .filter((s) => s.key !== 'front' || sectionText(s).length >= MIN_OPENING_CHARS);
     const total = passages.reduce((n, p) => n + p.content.length, 0);
     const full = total <= FULL_TEXT_MAX;
-    // Long documents, and sections too long for one call, are read from their section summaries.
+    // Long documents, and sections too long for one call, are read from their section summaries (written the
+    // first time a document needs them).
     if (!full || sections.some((s) => sectionText(s).length > CALL_CHARS)) {
-      attachSummaries(sections, await getSectionSummariesDb([doc.id]));
+      attachSummaries(sections, await ensureSectionSummaries(doc.id));
     }
     const material = (s) => {
       const text = sectionText(s);

@@ -8,8 +8,9 @@
 // on the items they illustrate in a step of their own (figurePicks.js).
 import { randomBytes } from 'node:crypto';
 import config from '../../config.js';
-import { generateStructured, requestEmbedding, requestEmbeddingBatch } from '../llm.js';
-import { getAllPassagesDb, getChunksByIdsDb, getDocumentMapDb, getSourcePassagesDb } from '../../db/chunksQueries.js';
+import { generateStructured, requestEmbeddingBatch } from '../llm.js';
+import { getAllPassagesDb, getChunksByIdsDb, getSectionListDb } from '../../db/chunksQueries.js';
+import { findPassages, findSections } from '../retrieval.js';
 import { kindOf, briefBlock, storylineBlock, itemCount } from './kinds.js';
 import { readablePassage, stripFigureMarkers } from '../figures.js';
 import { verifiedFacts, sameFact } from './facts.js';
@@ -54,62 +55,68 @@ function passageBlock(rows) {
 // The budget is what the model's context holds besides the prompt (~4,000 tokens) and its answer, at about 3.5
 // characters a token: ~72,000 characters at 32k context, more on a server with a larger one.
 const MATERIAL_CHARS = Math.round((config.ollama.numCtx - config.ollama.numPredict - 4000) * 3.5);
+// When only part of the documents is shown, the planner also sees their section list (headings, at most this
+// many: the top levels first) so it knows what else exists.
+const MAX_SECTION_LIST = 100;
+const sectionKey = (r) => `${r.document_id}:${r.section}`;
+
+function sectionList(sections) {
+  let list = sections.filter((s) => s.heading);
+  if (list.length > MAX_SECTION_LIST) list = list.filter((s) => !/^\d+(\.\d+){2,}/.test(s.heading) || /^\d+(\.0)+\b/.test(s.heading));
+  return list.slice(0, MAX_SECTION_LIST).map((s) => `- ${s.heading}${s.page != null ? ` (p. ${s.page})` : ''}`).join('\n');
+}
 
 async function planningMaterial(generation) {
   const pasted = pastedText(generation.brief);
   if (pasted) return { block: `The user's own text, to build from (source 0):\n"""\n${pasted}\n"""`, passages: [], ownText: pasted };
 
   const docIds = generation.source_document_ids || [];
-  const full = generation.brief?.scope === 'full';
-  const query = [generation.brief?.topic, generation.brief?.goal, generation.brief?.instructions].filter(Boolean).join('\n');
-  const embedding = await requestEmbedding(query);
-  const [all, map, pinnedRows] = await Promise.all([
+  const [all, pinnedRows] = await Promise.all([
     getAllPassagesDb(docIds),
-    getDocumentMapDb(docIds, full ? {} : { topicEmbedding: embedding }),
     getChunksByIdsDb(generation.brief?.pinned_chunk_ids || []),
   ]);
   const size = (r) => stripFigureMarkers(r.content).length;
-  let chosen;
   if (all.reduce((n, r) => n + size(r), 0) <= MATERIAL_CHARS) {
-    chosen = all;
-  } else {
-    const ranked = await getSourcePassagesDb(embedding, all.length, docIds, query);
-    const sectionOf = (r) => `${r.document_id}:${r.heading || ''}`;
-    const sections = new Map();
-    for (const r of all) {
-      if (!sections.has(sectionOf(r))) sections.set(sectionOf(r), []);
-      sections.get(sectionOf(r)).push(r);
-    }
-    // The order passages are considered in: by relevance, or in turns across sections.
-    let order = ranked;
-    if (full) {
-      const queues = new Map();
-      for (const r of ranked) {
-        if (!queues.has(sectionOf(r))) queues.set(sectionOf(r), []);
-        queues.get(sectionOf(r)).push(r);
-      }
-      order = [];
-      for (let round = 0; order.length < ranked.length; round++) {
-        for (const q of queues.values()) if (q[round]) order.push(q[round]);
-      }
-    }
-    const taken = new Set();
-    let used = 0;
-    const take = (r) => { taken.add(r.id); used += size(r); };
-    for (const r of pinnedRows.filter((p) => docIds.includes(p.document_id))) take(r);
-    for (const r of order) {
-      if (taken.has(r.id)) continue;
-      // Topic: the whole section when it fits, else this passage alone when it does. Whole documents: one at a time.
-      const section = full ? [r] : sections.get(sectionOf(r)).filter((x) => !taken.has(x.id));
-      const sectionSize = section.reduce((n, x) => n + size(x), 0);
-      if (used + sectionSize <= MATERIAL_CHARS) section.forEach(take);
-      else if (used + size(r) <= MATERIAL_CHARS) take(r);
-    }
-    chosen = all.filter((r) => taken.has(r.id)); // reading order
+    return { block: `Passages (id, page, section), in reading order:\n${passageBlock(all)}`, passages: all };
   }
-  const sectionList = map.sections.map((s) => `- ${s.heading}${s.page != null ? ` (p. ${s.page})` : ''}`).join('\n');
+
+  const full = generation.brief?.scope === 'full';
+  const query = [generation.brief?.topic, generation.brief?.goal, generation.brief?.instructions].filter(Boolean).join('\n');
+  const ranked = await findPassages(query, docIds, { k: all.length });
+  const bySection = new Map();
+  for (const r of all) {
+    if (!bySection.has(sectionKey(r))) bySection.set(sectionKey(r), []);
+    bySection.get(sectionKey(r)).push(r);
+  }
+  // The order passages are considered in: by relevance, or in turns across sections.
+  let order = ranked;
+  if (full) {
+    const queues = new Map();
+    for (const r of ranked) {
+      if (!queues.has(sectionKey(r))) queues.set(sectionKey(r), []);
+      queues.get(sectionKey(r)).push(r);
+    }
+    order = [];
+    for (let round = 0; order.length < ranked.length; round++) {
+      for (const q of queues.values()) if (q[round]) order.push(q[round]);
+    }
+  }
+  const taken = new Set();
+  let used = 0;
+  const take = (r) => { taken.add(r.id); used += size(r); };
+  for (const r of pinnedRows.filter((p) => docIds.includes(p.document_id))) take(r);
+  for (const r of order) {
+    if (taken.has(r.id)) continue;
+    // Topic: the whole section when it fits, else this passage alone when it does. Whole documents: one at a time.
+    const section = full ? [r] : bySection.get(sectionKey(r)).filter((x) => !taken.has(x.id));
+    const sectionSize = section.reduce((n, x) => n + size(x), 0);
+    if (used + sectionSize <= MATERIAL_CHARS) section.forEach(take);
+    else if (used + size(r) <= MATERIAL_CHARS) take(r);
+  }
+  const chosen = all.filter((r) => taken.has(r.id)); // reading order
   return {
-    block: `Sections of the documents:\n${sectionList}\n\nPassages (id, page, section), in reading order:\n${passageBlock(chosen)}`,
+    block: `Sections of the documents:\n${sectionList(await getSectionListDb(docIds))}\n\n` +
+      `Passages (id, page, section), in reading order (only part of the documents):\n${passageBlock(chosen)}`,
     passages: chosen,
   };
 }
@@ -224,8 +231,8 @@ async function planItems(generation, kind, material, count, notes) {
 /** The passages an item's facts are quoted from: the ones it named, then the rest of their sections. */
 function itemPassages(material, sourceIds) {
   const named = sourceIds.map((id) => material.passages.find((p) => p.id === id)).filter(Boolean);
-  const sections = new Set(named.map((p) => `${p.document_id}:${p.heading || ''}`));
-  const rows = [...named, ...material.passages.filter((p) => !named.includes(p) && sections.has(`${p.document_id}:${p.heading || ''}`))];
+  const sections = new Set(named.map(sectionKey));
+  const rows = [...named, ...material.passages.filter((p) => !named.includes(p) && sections.has(sectionKey(p)))];
   const out = [];
   let used = 0;
   for (const r of rows) {
@@ -387,7 +394,7 @@ export async function planOneItem(generation, description, afterIndex) {
   const kind = kindOf(generation);
   const items = generation.outline?.[kind.listKey] || [];
   const rows = generation.source_document_ids?.length
-    ? await getSourcePassagesDb(await requestEmbedding(description), ADD_ITEM_PASSAGES, generation.source_document_ids, description)
+    ? (await findSections(description, generation.source_document_ids, { k: ADD_ITEM_PASSAGES, maxChars: 16000 })).passages
     : [];
   const prompt =
     `You are adding one ${kind.noun} to a ${kind.product}.\n\n${briefBlock(generation)}\n\n` +
@@ -436,7 +443,7 @@ export async function attachSources(generation, kind, items, { force = false } =
     const it = needing[i];
     const kept = (it.sources || []).filter((s) => s.added);
     const taken = new Set(kept.map((s) => s.chunk_id));
-    const rows = await getSourcePassagesDb(embeddings[i], kind.sourcesPerItem * 2, generation.source_document_ids, queries[i]);
+    const rows = await findPassages(queries[i], generation.source_document_ids, { k: kind.sourcesPerItem * 2, embedding: embeddings[i] });
     const found = rows.filter((r) => !taken.has(r.id)).slice(0, Math.max(0, kind.sourcesPerItem - kept.length)).map((r) => toSource(r));
     it.sources = [...kept, ...found];
   }
@@ -445,8 +452,7 @@ export async function attachSources(generation, kind, items, { force = false } =
 
 /** Search the generation's documents for passages to add to an item. */
 export async function searchSources(generation, q, limit = 8) {
-  const embedding = await requestEmbedding(q);
-  const rows = await getSourcePassagesDb(embedding, limit, generation.source_document_ids, q);
+  const rows = await findPassages(q, generation.source_document_ids, { k: limit });
   return rows.map((r) => toSource(r, true));
 }
 

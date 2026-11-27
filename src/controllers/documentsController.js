@@ -5,13 +5,9 @@ import config from '../config.js';
 import { uploadToMemory } from '../middleware/upload.js';
 import responseFactory from '../utils/responseFactory.js';
 import AppError from '../utils/AppError.js';
-import { extractMarkdownFromFile } from '../services/fileProcessor.js';
-import { splitMarkdown, enrichTextForEmbedding } from '../services/textChunker.js';
-import { requestEmbeddingBatch } from '../services/llm.js';
-import { getAllDocumentsDb, getDocumentByIdDb, insertDocumentDb, updateDocumentStatusDb, deleteDocumentDb, documentExistsDb } from '../db/documentsQueries.js';
-import { insertChunkDb } from '../db/chunksQueries.js';
-import { generateSummaryChunks } from '../services/summarizer.js';
-import { saveFigures, deleteFigureFiles } from '../services/figures.js';
+import { getAllDocumentsDb, getDocumentByIdDb, insertDocumentDb, deleteDocumentDb, getDocumentStatusDb } from '../db/documentsQueries.js';
+import { deleteFigureFiles } from '../services/figures.js';
+import { runImportQueue, watchImport } from '../services/imports.js';
 import { figureUsageDb, listFiguresDb } from '../db/figuresQueries.js';
 import { openEventStream } from '../utils/eventStream.js';
 
@@ -32,6 +28,14 @@ async function downloadDocument(req, res) {
   res.download(doc.file_path, doc.name);
 }
 
+// How often an upload's stream checks the document's status, in case its import runs elsewhere (another app
+// server) or finished before the stream started listening.
+const UPLOAD_STATUS_POLL_MS = 3000;
+
+/**
+ * POST a file: it is saved and recorded, and its import runs in the background (services/imports.js). The
+ * response streams the import's progress until it is done; closing it does not stop the import.
+ */
 const uploadDocumentsStream = [
   uploadToMemory.single('uploaded_file'),
   async (req, res) => {
@@ -39,64 +43,32 @@ const uploadDocumentsStream = [
     const fileHash = crypto.createHash('sha256').update(buffer).digest('hex');
 
     await ensureDir(config.uploadsDir);
-    const ext = path.extname(originalname);
-    const savedName = `${fileHash}${ext}`;
-    const filePath = path.join(config.uploadsDir, savedName);
+    const filePath = path.join(config.uploadsDir, `${fileHash}${path.extname(originalname)}`);
     await fs.writeFile(filePath, buffer);
-
     const docId = await insertDocumentDb(originalname, { ownerId: req.user.id, filePath, fileHash, status: 'processing' });
 
-    const { send, end } = openEventStream(res);
-
-    send({ phase: 'uploaded', docId, message: `Processing ${originalname}...` });
-
-    const aborted = async () => !(await documentExistsDb(docId));
-
-    try {
-      const { markdown, pageCount, pageStarts, figures } = await extractMarkdownFromFile(filePath, originalname, (progress) => {
-        send(progress);
+    const { send, end, isOpen } = openEventStream(res);
+    send({ phase: 'uploaded', docId, message: `Waiting to process ${originalname}...` });
+    await new Promise((resolve) => {
+      const finish = (event) => {
+        stopWatching();
+        clearInterval(poll);
+        if (event) send(event);
+        resolve();
+      };
+      const stopWatching = watchImport(docId, (event) => {
+        if (event.phase === 'done' || event.phase === 'error') finish(event);
+        else send(event);
       });
-
-      if (await aborted()) { send({ phase: 'error', message: 'Document was deleted' }); end(); return; }
-
-      if (figures.length) send({ phase: 'chunking', message: `Saving ${figures.length} figures...` });
-      await saveFigures(docId, figures);
-
-      send({ phase: 'chunking', message: 'Splitting into text chunks...' });
-      const chunks = await splitMarkdown(markdown, pageStarts);
-
-      if (await aborted()) { send({ phase: 'error', message: 'Document was deleted' }); end(); return; }
-
-      send({ phase: 'embedding', message: `Embedding ${chunks.length} chunks...`, total: chunks.length });
-      const embeddings = await requestEmbeddingBatch(chunks.map((c) => enrichTextForEmbedding(c.text, c)));
-
-      if (await aborted()) { send({ phase: 'error', message: 'Document was deleted' }); end(); return; }
-
-      send({ phase: 'storing', message: 'Saving to database...' });
-      for (let i = 0; i < chunks.length; i++) {
-        await insertChunkDb(docId, chunks[i].text, embeddings[i], { page: chunks[i].page, heading: chunks[i].heading });
-      }
-
-      if (await aborted()) { send({ phase: 'error', message: 'Document was deleted' }); end(); return; }
-
-      send({ phase: 'summarizing', message: 'Generating summaries...' });
-      await generateSummaryChunks(docId, chunks, {
-        onProgress: ({ step, current, total }) => {
-          if (step === 'section') send({ phase: 'summarizing', message: `Summarizing section ${current} of ${total}...`, current, total });
-          else if (step === 'document') send({ phase: 'summarizing', message: 'Generating document overview...' });
-        },
-      });
-
-      await updateDocumentStatusDb(docId, 'ready');
-      send({ phase: 'done', docId, message: `${originalname} is ready`, chunks: chunks.length });
-      console.log(`Ingested upload: ${originalname} (id: ${docId}, ${chunks.length} chunks)`);
-    } catch (err) {
-      if (await documentExistsDb(docId)) {
-        await updateDocumentStatusDb(docId, 'failed', err.message);
-      }
-      send({ phase: 'error', message: err.message });
-      console.error(`Upload ingestion failed: ${originalname} — ${err.message}`);
-    }
+      const poll = setInterval(async () => {
+        if (!isOpen()) return finish(null);
+        const status = await getDocumentStatusDb(docId).catch(() => null);
+        if (!status) finish({ phase: 'error', message: 'Document was deleted' });
+        else if (status.status === 'ready') finish({ phase: 'done', docId, message: `${originalname} is ready` });
+        else if (status.status === 'failed') finish({ phase: 'error', message: status.error || 'Import failed' });
+      }, UPLOAD_STATUS_POLL_MS);
+      runImportQueue();
+    });
     end();
   },
 ];

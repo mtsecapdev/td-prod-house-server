@@ -1,4 +1,4 @@
-// Re-embed every chunk with the current EMBEDDING_MODEL_NAME, in place.
+// Re-embed every passage with the current EMBEDDING_MODEL_NAME, in place.
 // Run after changing the embedding model: vectors from different models are not comparable,
 // so search breaks until every chunk is re-embedded. Chunk text, pages, headings and summaries
 // are kept; only the embedding column changes. All-or-nothing (single transaction).
@@ -12,7 +12,8 @@ const BATCH = 50;
 
 const client = await pool.connect();
 try {
-  const { rows } = await client.query('SELECT id, content, page, heading FROM chunks ORDER BY id');
+  // Only the passages are searched; overviews and section summaries carry no embedding.
+  const { rows } = await client.query("SELECT id, content, page, heading FROM chunks WHERE level = 'leaf' ORDER BY id");
   console.log(`Re-embedding ${rows.length} chunks with ${config.ollama.embeddingModel}...`);
 
   await client.query('BEGIN');

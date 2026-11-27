@@ -1,119 +1,102 @@
+// Passages of the documents, and what is stored beside them. A document is stored as:
+// - leaf passages: its text, one per section (a long section in several parts), each with its page, heading,
+//   section number and embedding. Everything that reads or searches a document uses these.
+// - one document overview (level 'document'): a paragraph on what the document is about.
+// - section summaries (level 'section'): written only when a whole-document answer needs them for a document
+//   too long to read in full (wholeDocument.js); never searched, never used as evidence.
 import pool from './pool.js';
 import pgvector from 'pgvector/pg';
 
-export async function insertChunkDb(documentId, content, embedding, { page, heading, level } = {}) {
+const PASSAGE_COLUMNS = 'id, document_id, content, page, heading, section';
+
+export async function insertChunkDb(documentId, content, embedding, { page, heading, level, section } = {}) {
   const res = await pool.query(
-    'INSERT INTO chunks (document_id, content, embedding, page, heading, level) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id',
-    [documentId, content, pgvector.toSql(embedding), page, heading, level || 'leaf'],
+    'INSERT INTO chunks (document_id, content, embedding, page, heading, level, section) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id',
+    [documentId, content, embedding ? pgvector.toSql(embedding) : null, page, heading, level || 'leaf', section ?? null],
   );
   return res.rows[0].id;
 }
 
+// Search score: meaning (embedding similarity) and wording (keyword rank) together.
 const VECTOR_WEIGHT = 0.7;
 const TEXT_WEIGHT = 0.3;
-const MAX_SUMMARY_CHUNKS = 3;
-const FETCH_MULTIPLIER = 2;
 
-export async function getSimilarChunksDb(queryEmbedding, k = 10, docIdsToReference, queryText) {
-  const hasQuery = queryText && queryText.trim().length > 0;
-  const fetchK = k * FETCH_MULTIPLIER;
-
-  const sql = hasQuery
-    ? `SELECT id, document_id, content, page, heading, level,
-         (1 - (embedding <=> $1)) * ${VECTOR_WEIGHT}
-         + coalesce(ts_rank(tsv, websearch_to_tsquery('english', $4)), 0) * ${TEXT_WEIGHT}
-         AS similarity
-       FROM chunks
-       WHERE document_id = ANY($3)
-       ORDER BY similarity DESC
-       LIMIT $2`
-    : `SELECT id, document_id, content, page, heading, level,
-         (1 - (embedding <=> $1)) AS similarity
-       FROM chunks
-       WHERE document_id = ANY($3)
-       ORDER BY similarity DESC
-       LIMIT $2`;
-
-  const params = hasQuery
-    ? [pgvector.toSql(queryEmbedding), fetchK, docIdsToReference, queryText]
-    : [pgvector.toSql(queryEmbedding), fetchK, docIdsToReference];
-
-  const res = await pool.query(sql, params);
-
-  const result = [];
-  let summaryCount = 0;
-  for (const row of res.rows) {
-    if (row.level !== 'leaf') {
-      if (summaryCount >= MAX_SUMMARY_CHUNKS) continue;
-      summaryCount++;
-    }
-    result.push(row);
-    if (result.length >= k) break;
-  }
-  return result;
-}
-
-export async function getNeighborChunksDb(chunkId, documentId, radius = 3) {
+/**
+ * The passages of the documents that best match a query (meaning and keywords), best first, with their score.
+ * Every passage of the selected documents is scored exactly (the documents index finds them).
+ */
+export async function searchPassagesDb(queryEmbedding, k, docIds, queryText) {
   const res = await pool.query(
-    `SELECT id, document_id, content, page, heading, level, 0::float AS similarity
+    `SELECT ${PASSAGE_COLUMNS},
+       (1 - (embedding <=> $1)) * ${VECTOR_WEIGHT}
+       + coalesce(ts_rank(tsv, websearch_to_tsquery('english', $4)), 0) * ${TEXT_WEIGHT} AS similarity
      FROM chunks
-     WHERE document_id = $2::int
-       AND level = 'leaf'
-       AND id BETWEEN ($1::int - $3::int) AND ($1::int + $3::int)
-       AND id != $1::int
-     ORDER BY id`,
-    [chunkId, documentId, radius],
+     WHERE document_id = ANY($3) AND level = 'leaf'
+     ORDER BY similarity DESC
+     LIMIT $2`,
+    [pgvector.toSql(queryEmbedding), k, docIds, queryText || ''],
   );
   return res.rows;
 }
 
-/**
- * The document map used for planning: each document's overview and its section summaries, in reading order.
- * With topicEmbedding and more than `limit` sections, keeps the `limit` sections closest to the topic.
- */
-export async function getDocumentMapDb(docIds, { topicEmbedding, limit = 40 } = {}) {
-  const overviews = await pool.query(
-    `SELECT c.document_id, d.name, c.content
-     FROM chunks c JOIN documents d ON d.id = c.document_id
-     WHERE c.document_id = ANY($1) AND c.level = 'document'
-     ORDER BY c.document_id`,
-    [docIds],
+/** Every passage of the given sections ([{ document_id, section }]), in reading order. */
+export async function getSectionPassagesDb(sections) {
+  if (!sections.length) return [];
+  const res = await pool.query(
+    `SELECT ${PASSAGE_COLUMNS} FROM chunks
+     JOIN unnest($1::int[], $2::int[]) AS want(document_id, section) USING (document_id, section)
+     WHERE level = 'leaf'
+     ORDER BY document_id, id`,
+    [sections.map((s) => s.document_id), sections.map((s) => s.section)],
   );
-
-  const count = await pool.query(
-    `SELECT count(*)::int AS n FROM chunks WHERE document_id = ANY($1) AND level = 'section'`,
-    [docIds],
-  );
-  const ranked = topicEmbedding && count.rows[0].n > limit;
-
-  const sections = ranked
-    ? await pool.query(
-      `SELECT * FROM (
-         SELECT c.id, c.document_id, d.name AS document_name, c.content, c.page, c.heading
-         FROM chunks c JOIN documents d ON d.id = c.document_id
-         WHERE c.document_id = ANY($1) AND c.level = 'section'
-         ORDER BY c.embedding <=> $2 LIMIT $3
-       ) s ORDER BY document_id, id`,
-      [docIds, pgvector.toSql(topicEmbedding), limit],
-    )
-    : await pool.query(
-      `SELECT c.id, c.document_id, d.name AS document_name, c.content, c.page, c.heading
-       FROM chunks c JOIN documents d ON d.id = c.document_id
-       WHERE c.document_id = ANY($1) AND c.level = 'section'
-       ORDER BY c.document_id, c.id`,
-      [docIds],
-    );
-
-  return {
-    overviews: overviews.rows,
-    sections: sections.rows.map((r) => ({ ...r, heading: (r.heading || '').replace(/^Summary:\s*/, '') || 'Section' })),
-    truncated: ranked,
-  };
+  return res.rows;
 }
 
-/** How many summarised sections the documents have (a measure of their size). */
+/** Every passage of the documents, in reading order. */
+export async function getAllPassagesDb(docIds) {
+  const res = await pool.query(
+    `SELECT ${PASSAGE_COLUMNS} FROM chunks
+     WHERE document_id = ANY($1) AND level = 'leaf' ORDER BY document_id, id`,
+    [docIds],
+  );
+  return res.rows;
+}
+
+export async function getChunksByIdsDb(ids) {
+  if (!ids?.length) return [];
+  const res = await pool.query(`SELECT ${PASSAGE_COLUMNS} FROM chunks WHERE id = ANY($1)`, [ids.map(Number)]);
+  const byId = new Map(res.rows.map((r) => [r.id, r]));
+  return ids.map((id) => byId.get(Number(id))).filter(Boolean); // keep the caller's order
+}
+
+/** The passages that contain a figure (by its marker), in reading order. */
+export async function getChunksWithFigureDb(documentId, key) {
+  const res = await pool.query(
+    `SELECT ${PASSAGE_COLUMNS} FROM chunks
+     WHERE document_id = $1 AND level = 'leaf' AND position($2 in content) > 0
+     ORDER BY id`,
+    [documentId, `<!-- figure:${key} -->`],
+  );
+  return res.rows;
+}
+
+/** The documents' sections in reading order: heading and the page each starts on. */
+export async function getSectionListDb(docIds) {
+  const res = await pool.query(
+    `SELECT document_id, section, min(heading) AS heading, min(page) AS page
+     FROM chunks WHERE document_id = ANY($1) AND level = 'leaf'
+     GROUP BY document_id, section ORDER BY document_id, min(id)`,
+    [docIds],
+  );
+  return res.rows;
+}
+
+/** How many sections the documents have (a measure of their size). */
 export async function countSectionsDb(docIds) {
-  const res = await pool.query(`SELECT count(*)::int AS n FROM chunks WHERE document_id = ANY($1) AND level = 'section'`, [docIds]);
+  const res = await pool.query(
+    `SELECT count(DISTINCT (document_id, section))::int AS n FROM chunks WHERE document_id = ANY($1) AND level = 'leaf'`,
+    [docIds],
+  );
   return res.rows[0].n;
 }
 
@@ -128,58 +111,12 @@ export async function getDocumentOverviewsDb(docIds, chars = 240) {
   return res.rows;
 }
 
-/** Every section summary of the documents in reading order (for answering about a whole document). */
+/** A document's section summaries in reading order (written on demand: see wholeDocument.js). */
 export async function getSectionSummariesDb(docIds) {
   const res = await pool.query(
-    `SELECT id, document_id, content, page, heading, level FROM chunks
+    `SELECT ${PASSAGE_COLUMNS}, level FROM chunks
      WHERE document_id = ANY($1) AND level = 'section' ORDER BY document_id, id`,
     [docIds],
-  );
-  return res.rows;
-}
-
-/** Every passage of the documents in reading order (for planning a whole-document deck). */
-export async function getAllPassagesDb(docIds) {
-  const res = await pool.query(
-    `SELECT id, document_id, content, page, heading FROM chunks
-     WHERE document_id = ANY($1) AND level = 'leaf' ORDER BY document_id, id`,
-    [docIds],
-  );
-  return res.rows;
-}
-
-/** Passages (leaf chunks only) for a slide or section, ranked like chat search: meaning + keywords. */
-export async function getSourcePassagesDb(queryEmbedding, k, docIds, queryText) {
-  const res = await pool.query(
-    `SELECT id, document_id, content, page, heading,
-       (1 - (embedding <=> $1)) * ${VECTOR_WEIGHT}
-       + coalesce(ts_rank(tsv, websearch_to_tsquery('english', $4)), 0) * ${TEXT_WEIGHT} AS similarity
-     FROM chunks
-     WHERE document_id = ANY($3) AND level = 'leaf'
-     ORDER BY similarity DESC
-     LIMIT $2`,
-    [pgvector.toSql(queryEmbedding), k, docIds, queryText || ''],
-  );
-  return res.rows;
-}
-
-export async function getChunksByIdsDb(ids) {
-  if (!ids?.length) return [];
-  const res = await pool.query(
-    `SELECT id, document_id, content, page, heading FROM chunks WHERE id = ANY($1)`,
-    [ids.map(Number)],
-  );
-  const byId = new Map(res.rows.map((r) => [r.id, r]));
-  return ids.map((id) => byId.get(Number(id))).filter(Boolean); // keep the caller's order
-}
-
-/** The passages that contain a figure (by its marker), in reading order. */
-export async function getChunksWithFigureDb(documentId, key) {
-  const res = await pool.query(
-    `SELECT id, document_id, content, page, heading FROM chunks
-     WHERE document_id = $1 AND level = 'leaf' AND position($2 in content) > 0
-     ORDER BY id`,
-    [documentId, `<!-- figure:${key} -->`],
   );
   return res.rows;
 }

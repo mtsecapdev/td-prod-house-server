@@ -1,109 +1,81 @@
-import { requestEmbedding, generateStructured } from './llm.js';
-import { enrichTextForEmbedding } from './textChunker.js';
+// Writing about a document, as opposed to the document itself:
+// - its overview: one paragraph on what it is about, written when it is imported (shown to the model reading a
+//   chat message, used for the planning interview's suggestions).
+// - section summaries: 2-3 sentences per section, written only when a whole-document answer needs them for a
+//   document too long to read in full (wholeDocument.js), then kept. They used to be written for every section
+//   of every upload (the heaviest part of an import) and mixed into search as if they were the document.
+// Neither is searched or used as evidence: answers and slides are built from the document's own text.
+import { generateStructured } from './llm.js';
 import { readablePassage } from './figures.js';
-import { insertChunkDb } from '../db/chunksQueries.js';
+import { getAllPassagesDb, getSectionSummariesDb, insertChunkDb } from '../db/chunksQueries.js';
 import config from '../config.js';
 
 const { generateModel } = config.ollama;
+
+// The overview reads the whole text when it is this short, otherwise each section's opening.
+const OVERVIEW_CHARS = 40000;
+const SECTION_OPENING_CHARS = 600;
 const SECTIONS_PER_BATCH = 8;
 // Text shown per section (8 per call: up to ~48k characters, ~13k tokens, inside the 32k context with the reply).
 const SECTION_CHARS = 6000;
 
-export async function generateSummaryChunks(docId, leafChunks, { onProgress } = {}) {
-  const sections = groupBySection(leafChunks);
-  const batches = batchSections(sections, SECTIONS_PER_BATCH);
-  const sectionSummaries = [];
+/** The document's sections in reading order: [{ section, heading, passages }]. */
+function sectionsOf(passages) {
+  const sections = [];
+  for (const p of passages) {
+    const last = sections[sections.length - 1];
+    if (last && last.section === p.section) last.passages.push(p);
+    else sections.push({ section: p.section, heading: p.heading, passages: [p] });
+  }
+  return sections;
+}
 
-  for (let b = 0; b < batches.length; b++) {
-    if (onProgress) onProgress({ step: 'section', current: b + 1, total: batches.length });
+/** Writes and stores the document's overview. */
+export async function writeOverview(docId) {
+  const passages = await getAllPassagesDb([docId]);
+  if (!passages.length) return;
+  const full = passages.map((p) => readablePassage(p.content)).join('\n\n');
+  const material = full.length <= OVERVIEW_CHARS
+    ? full
+    : sectionsOf(passages)
+      .map((s) => `## ${s.heading || 'Section'}\n${readablePassage(s.passages[0].content).slice(0, SECTION_OPENING_CHARS)}`)
+      .join('\n\n')
+      .slice(0, OVERVIEW_CHARS);
+  const prompt =
+    `Below is a document${full.length <= OVERVIEW_CHARS ? '' : ' (the opening of each section)'}. Write an overview ` +
+    `of it in one paragraph (4-6 sentences): what it is, its purpose, and the main topics it covers. State only ` +
+    `what the text says.\n\n${material}`;
+  const schema = { type: 'object', properties: { overview: { type: 'string' } }, required: ['overview'] };
+  const { overview } = await generateStructured(prompt, generateModel, schema, { think: false });
+  await insertChunkDb(docId, overview.trim(), null, { heading: 'Document Overview', level: 'document' });
+}
 
-    const batch = batches[b];
+/** The document's section summaries, written now if it has none yet. */
+export async function ensureSectionSummaries(docId) {
+  const existing = await getSectionSummariesDb([docId]);
+  if (existing.length) return existing;
+  const sections = sectionsOf(await getAllPassagesDb([docId]));
+  for (let i = 0; i < sections.length; i += SECTIONS_PER_BATCH) {
+    const batch = sections.slice(i, i + SECTIONS_PER_BATCH);
     const summaries = await summarizeBatch(batch);
-
-    for (let i = 0; i < batch.length; i++) {
-      const section = batch[i];
-      const summary = summaries[i];
-      const heading = section.heading || `Section`;
-      const page = section.chunks[0]?.page ?? null;
-
-      const embeddingText = enrichTextForEmbedding(summary, { page, heading: `Summary: ${heading}` });
-      const embedding = await requestEmbedding(embeddingText);
-      await insertChunkDb(docId, summary, embedding, {
-        page,
-        heading: `Summary: ${heading}`,
-        level: 'section',
+    for (let k = 0; k < batch.length; k++) {
+      await insertChunkDb(docId, summaries[k], null, {
+        page: batch[k].passages[0].page, heading: batch[k].heading || 'Section', level: 'section', section: batch[k].section,
       });
-
-      sectionSummaries.push({ heading, summary });
     }
   }
-
-  if (onProgress) onProgress({ step: 'document' });
-
-  const docSummary = await summarizeDocument(sectionSummaries);
-  const embeddingText = enrichTextForEmbedding(docSummary, { heading: 'Document Overview' });
-  const embedding = await requestEmbedding(embeddingText);
-  await insertChunkDb(docId, docSummary, embedding, {
-    heading: 'Document Overview',
-    level: 'document',
-  });
-
-  return { sectionCount: sectionSummaries.length };
+  return getSectionSummariesDb([docId]);
 }
 
-function groupBySection(chunks) {
-  const sections = [];
-  let current = { heading: null, chunks: [] };
-
-  // Continuation chunks carry their section's heading (textChunker), so start a new section
-  // only when the heading changes.
-  for (const chunk of chunks) {
-    if (chunk.heading && chunk.heading !== current.heading && current.chunks.length > 0) {
-      sections.push(current);
-      current = { heading: chunk.heading, chunks: [chunk] };
-    } else {
-      if (chunk.heading) current.heading = chunk.heading;
-      current.chunks.push(chunk);
-    }
-  }
-  if (current.chunks.length > 0) sections.push(current);
-
-  if (sections.length <= 2 && chunks.length > 10) {
-    return chunkEvenly(chunks, Math.ceil(chunks.length / 8));
-  }
-
-  return sections;
-}
-
-function chunkEvenly(chunks, groupSize) {
-  const sections = [];
-  for (let i = 0; i < chunks.length; i += groupSize) {
-    const group = chunks.slice(i, i + groupSize);
-    const heading = group.find((c) => c.heading)?.heading || null;
-    sections.push({ heading, chunks: group });
-  }
-  return sections;
-}
-
-function batchSections(sections, batchSize) {
-  const batches = [];
-  for (let i = 0; i < sections.length; i += batchSize) {
-    batches.push(sections.slice(i, i + batchSize));
-  }
-  return batches;
-}
-
-// Summaries run without thinking (a large document has dozens of these calls; thinking made them the slowest
-// step of ingestion) and as JSON: with thinking off, qwen3 reasons out loud in plain-text replies, which
-// would end up in the stored summary. Answers are matched by section number, not position, so a skipped
-// answer can't shift every later summary onto the wrong section.
-export async function summarizeBatch(sections) {
+// Summaries run without thinking (a large document has dozens of these calls) and as JSON: with thinking off,
+// qwen3 reasons out loud in plain-text replies, which would end up in the stored summary. Answers are matched by
+// section number, not position, so a skipped answer can't shift every later summary onto the wrong section.
+async function summarizeBatch(sections) {
   const parts = sections.map((section, i) => {
     const label = section.heading || `Section ${i + 1}`;
-    // Whole passages up to SECTION_CHARS. Cut shorter (1,200 per passage, 2,400 per section), the Norvane
-    // incident log showed rows 1-26 of 49 and the summary called that the total. When a section is still cut,
-    // it says so, so the summary gives no totals or counts for it.
-    const full = section.chunks.map((c) => readablePassage(c.text)).join('\n');
+    // Whole sections up to SECTION_CHARS. Cut shorter, the Norvane incident log showed rows 1-26 of 49 and the
+    // summary called that the total. When a section is still cut, it says so, so the summary gives no totals.
+    const full = section.passages.map((p) => readablePassage(p.content)).join('\n');
     const text = full.length > SECTION_CHARS
       ? `${full.slice(0, SECTION_CHARS)}\n[THIS SECTION CONTINUES; the rest is not shown]`
       : full;
@@ -137,20 +109,5 @@ export async function summarizeBatch(sections) {
   const byNumber = new Map((result.summaries || []).map((x) => [x.n, x.summary?.trim()]));
   // A section the model left out gets its opening text rather than a neighbour's summary.
   return sections.map((section, i) => byNumber.get(i + 1)
-    || section.chunks.map((c) => c.text).join(' ').replace(/\s+/g, ' ').slice(0, 300));
-}
-
-async function summarizeDocument(sectionSummaries) {
-  const list = sectionSummaries
-    .map((s) => `${s.heading}: ${s.summary}`)
-    .join('\n\n');
-
-  const prompt =
-    `Below are summaries of each section of a document. ` +
-    `Write a comprehensive overview of the entire document in one paragraph (4-6 sentences). ` +
-    `Cover the main topics, purpose, and key content areas.\n\n` +
-    list;
-  const schema = { type: 'object', properties: { overview: { type: 'string' } }, required: ['overview'] };
-  const result = await generateStructured(prompt, generateModel, schema, { think: false });
-  return result.overview.trim();
+    || readablePassage(section.passages[0].content).replace(/\s+/g, ' ').slice(0, 300));
 }
