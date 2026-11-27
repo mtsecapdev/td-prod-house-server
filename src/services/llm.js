@@ -263,11 +263,16 @@ export async function describeFigure({ png, caption, labels, documentName }) {
     (caption ? ` The document's caption for it: "${caption}".` : ' It has no caption.') +
     (labels ? ` Text printed in it: ${String(labels).slice(0, 600)}` : '') + '\n\n' +
     `Describe what the picture actually shows, in 2 to 4 plain sentences, for someone deciding whether it ` +
-    `illustrates a point they are explaining: what kind of picture it is (photo, cutaway drawing, diagram, ` +
-    `chart, table...), the thing, part, process or stage shown, and the parts or labels that matter. Use the ` +
-    `caption and the document only to name things correctly. Only when the caption names something the picture ` +
-    `does not show (more stages, parts or steps than are drawn), say what is missing; otherwise don't compare ` +
-    `the picture with its caption. Do not guess at what cannot be seen.`;
+    `illustrates a point they are explaining:\n` +
+    `- What kind of picture it is: a photo, a drawing (cutaway, cross-section), a diagram, a chart or a table. ` +
+    `A photo of the outside of something is not a drawing of its inside.\n` +
+    `- The thing, part, process or stage shown, and the parts or labels that matter, named as the document ` +
+    `names them.\n` +
+    `- When it has several drawings side by side, what each one shows and how they differ: they are often ` +
+    `different types or designs of one thing (three combustion chamber types), not stages or views of one.\n` +
+    `Use the caption and the document only to name things correctly. Only when the caption names something the ` +
+    `picture does not show (more stages, parts or steps than are drawn), say what is missing; otherwise say ` +
+    `nothing about the caption or about what is not shown. Do not guess at what cannot be seen.`;
   const format = { type: 'object', properties: { description: { type: 'string' } }, required: ['description'] };
   try {
     const reply = await provider.chat(
