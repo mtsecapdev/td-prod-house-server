@@ -12,6 +12,9 @@ const config = {
     embeddingModel: required('EMBEDDING_MODEL_NAME'),
     rewriteModel: required('REWRITE_QUERY_MODEL_NAME'),
     generateModel: required('GENERATE_MODEL_NAME'),
+    // A model that can see images (Qwen3-VL), for describing figures after import. Unset: figures are not
+    // described, and picking goes by caption and the text printed in them.
+    visionModel: process.env.VISION_MODEL_NAME || null,
     numCtx: Number(process.env.OLLAMA_NUM_CTX ?? 32768),
     // Max tokens per call, thinking included. Stops runaway reasoning loops.
     numPredict: Number(process.env.OLLAMA_NUM_PREDICT ?? 8192),

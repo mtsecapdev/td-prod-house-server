@@ -1,13 +1,16 @@
-// Figures from ingested documents as assets: list/search, image, and bulk download, usage check, delete.
+// Figures from ingested documents as assets: list/search, image, caption/description edits, and bulk download,
+// usage check, delete.
 // Bulk actions take a list of ids so the Assets page acts on a selection in one request.
 import { unlink } from 'node:fs/promises';
+import config from '../config.js';
 import responseFactory from '../utils/responseFactory.js';
 import AppError from '../utils/AppError.js';
 import { writeZip } from '../utils/zip.js';
 import {
-  listFiguresDb, getFigureByIdDb, deleteFiguresDb, figureUsageDb, getFiguresForDownloadDb,
+  listFiguresDb, getFigureByIdDb, deleteFiguresDb, figureUsageDb, getFiguresForDownloadDb, updateFigureDb,
 } from '../db/figuresQueries.js';
 import { ownFigureIds } from '../middleware/auth.js';
+import { runImportQueue } from '../services/imports.js';
 
 const MAX_BULK = 500;
 
@@ -30,7 +33,8 @@ async function idsFrom(req, value) {
 async function listFigures(req, res) {
   const documentIds = String(req.query.documentIds || '').split(',').map(Number).filter(Number.isInteger).filter(Boolean);
   const figures = await listFiguresDb({ q: req.query.q, documentIds, ownerId: req.user.id });
-  res.json(responseFactory.createJsonResponse({ figures: figures.map(toPublic) }));
+  // describing: whether waiting figures will be described (a vision model is set).
+  res.json(responseFactory.createJsonResponse({ figures: figures.map(toPublic), describing: Boolean(config.ollama.visionModel) }));
 }
 
 async function serveImage(req, res) {
@@ -84,4 +88,32 @@ async function deleteFigures(req, res) {
   res.json(responseFactory.createJsonResponse({ deleted: files.length, removedFrom: usage.length }));
 }
 
-export default { listFigures, serveImage, downloadFigures, getUsage, deleteFigures };
+const MAX_CAPTION = 300;
+const MAX_DESCRIPTION = 2000;
+
+/**
+ * A person's corrections to a figure of their own documents: body { caption?, description? }, or
+ * { redescribe: true } to have the model describe it again. Edited fields are marked and never overwritten.
+ */
+async function updateFigure(req, res) {
+  const id = Number(req.params.id);
+  if (!(await ownFigureIds(req.user.id, [id])).length) throw new AppError('Figure not found', 404);
+  const { caption, description, redescribe } = req.body || {};
+  const text = (value, max, name) => {
+    if (value === undefined) return undefined;
+    if (typeof value !== 'string') throw new AppError(`${name} must be text`, 400);
+    const clean = value.replace(/\s+/g, ' ').trim();
+    if (clean.length > max) throw new AppError(`${name} can be at most ${max} characters`, 400);
+    return clean;
+  };
+  const figure = await updateFigureDb(id, {
+    caption: text(caption, MAX_CAPTION, 'Caption'),
+    description: text(description, MAX_DESCRIPTION, 'Description'),
+    redescribe: redescribe === true,
+  });
+  if (!figure) throw new AppError('Figure not found', 404);
+  if (redescribe === true) runImportQueue();
+  res.json(responseFactory.createJsonResponse({ figure: toPublic(figure) }));
+}
+
+export default { listFigures, serveImage, downloadFigures, getUsage, deleteFigures, updateFigure };

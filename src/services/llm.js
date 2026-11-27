@@ -184,14 +184,16 @@ export async function generateAnswer(query, history, chunks, figures = [], { mus
     `Never mention excerpts, chunks or their labels; the user cannot see them.\n` +
     `- Use plain text only: no markdown (no **, *, # or - bullets). For a list, write numbered lines (1. 2. 3.).\n` +
     (figures.length
-      ? `- Figures in these excerpts. You cannot see them, only their caption and the text printed in them, ` +
-        `listed in reading order (so labels that belong together are usually next to each other). When asked about ` +
-        `a figure, describe what its text shows: the groups and the items in each. The user can see the figure ` +
+      ? `- Figures in these excerpts. You cannot see them, only their caption, a description of what the picture ` +
+        `shows (when there is one; written by someone who looked at it) and the text printed in them, listed in ` +
+        `reading order (so labels that belong together are usually next to each other). When asked about a ` +
+        `figure, say what it shows from its description and text: the parts, groups and items. The user can see the figure ` +
         `and you cannot: when they say what kind of figure it is (a Venn diagram, a flowchart...), take that as ` +
         `correct and use it (in a Venn diagram, the labels between two groups are the overlap). Never say a figure ` +
         `is not what the user calls it. Name the figure by its caption, e.g. "Figure 2.0-1"; the user will see the ` +
         `figure itself under your answer.\n` +
         figures.map((f) => `  * ${f.caption || 'Untitled figure'} (p. ${f.page ?? '?'})` +
+          (f.description ? `. Shows: ${f.description}` : '') +
           (f.labels ? `. Text in it: ${f.labels}` : '')).join('\n') + '\n'
       : '') +
     (mustCover.length
@@ -246,6 +248,35 @@ export async function generateStructured(prompt, model, format, { think, onRetry
     return await structuredWithRetry((t) => provider.generate(prompt, model, { format, think: t }), think, onRetry);
   } catch (error) {
     throw new AppError(`Structured generation failed: ${error.message}`, 503, error);
+  }
+}
+
+/**
+ * What a document figure shows, as seen by the vision model: a few plain sentences, for picking figures and
+ * for people to check. The caption is what the document says about it, and can promise more than the picture
+ * shows (a caption naming the four-stroke cycle over a drawing of the intake stroke only), so the model is told
+ * to describe the picture, and to say so when the caption names something it does not show.
+ */
+export async function describeFigure({ png, caption, labels, documentName }) {
+  const prompt =
+    `This picture is a figure from the document "${documentName}".` +
+    (caption ? ` The document's caption for it: "${caption}".` : ' It has no caption.') +
+    (labels ? ` Text printed in it: ${String(labels).slice(0, 600)}` : '') + '\n\n' +
+    `Describe what the picture actually shows, in 2 to 4 plain sentences, for someone deciding whether it ` +
+    `illustrates a point they are explaining: what kind of picture it is (photo, cutaway drawing, diagram, ` +
+    `chart, table...), the thing, part, process or stage shown, and the parts or labels that matter. Use the ` +
+    `caption and the document only to name things correctly. If the caption names something the picture does ` +
+    `not show (more stages, parts or steps than are drawn), say what is and is not shown. Do not guess at what ` +
+    `cannot be seen.`;
+  const format = { type: 'object', properties: { description: { type: 'string' } }, required: ['description'] };
+  try {
+    const reply = await provider.chat(
+      [{ role: 'user', content: prompt, images: [Buffer.from(png).toString('base64')] }],
+      config.ollama.visionModel, { format, think: true },
+    );
+    return String(JSON.parse(reply.content).description || '').replace(/\s+/g, ' ').trim();
+  } catch (error) {
+    throw new AppError(`Describing a figure failed: ${error.message}`, 503, error);
   }
 }
 

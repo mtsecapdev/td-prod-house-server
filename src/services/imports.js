@@ -2,13 +2,15 @@
 // (convert, figures, passages, embeddings, overview) runs here, one document at a time, outside the request:
 // a closed tab, or another user generating a deck, doesn't stop it, and a server restart doesn't leave it stuck
 // at "processing" (an import whose heartbeat stopped is started again, from a clean slate). The claim and the
-// heartbeat live in Postgres, so several app servers can share the queue.
+// heartbeat live in Postgres, so several app servers can share the queue. When no import is waiting, the queue
+// describes figures (figureDescriptions.js).
 import { EventEmitter } from 'node:events';
 import { extractMarkdownFromFile } from './fileProcessor.js';
 import { saveFigures, deleteFigureFiles } from './figures.js';
 import { splitMarkdown, enrichTextForEmbedding } from './textChunker.js';
 import { requestEmbeddingBatch } from './llm.js';
 import { writeOverview } from './summarizer.js';
+import { describeNextFigure } from './figureDescriptions.js';
 import { insertChunkDb } from '../db/chunksQueries.js';
 import {
   claimNextImportDb, heartbeatImportDb, clearImportedDb, updateDocumentStatusDb, documentExistsDb,
@@ -87,13 +89,18 @@ export async function runImport(doc, report = () => {}) {
 
 let running = false;
 
-/** Works through waiting imports, one at a time (call after recording an upload). */
+/**
+ * Works through waiting imports, one at a time (call after recording an upload), then describes waiting
+ * figures one at a time; an import that arrives meanwhile goes first.
+ */
 export async function runImportQueue() {
   if (running) return;
   running = true;
   try {
-    for (let doc = await claimNextImportDb(STALE_SECONDS); doc; doc = await claimNextImportDb(STALE_SECONDS)) {
-      await runImport(doc);
+    for (;;) {
+      const doc = await claimNextImportDb(STALE_SECONDS);
+      if (doc) await runImport(doc);
+      else if (!(await describeNextFigure())) break;
     }
   } catch (err) {
     console.error(`Import queue: ${err.message}`);

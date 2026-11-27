@@ -133,6 +133,7 @@ export async function answerQuestion({ question, history, docIds, onPhase = () =
   // Figures shown under the answer: only those it refers to.
   const figures = figuresMentioned(available, llmResponse.content).map((f) => ({
     id: f.id, caption: f.caption, page: f.page, width: f.width, height: f.height, document_id: f.document_id,
+    description: f.description, description_edited: f.description_edited,
   }));
   const sourceIds = finalChunks.slice(0, SOURCES_KEPT).map((c) => c.id);
   const content = grounded ? llmResponse.content : withoutRepeatedNote(llmResponse.content, history);

@@ -1,8 +1,9 @@
 // Puts the documents' figures on the slides/sections they illustrate, after the plan is made.
 //
 // Each item's candidates are the figures printed on or next to the pages its facts come from: a figure there
-// is what the passage was explaining. One model call then sees every item with its few candidates (caption and
-// the words printed in the figure) and picks, per item, the figure that shows what it explains; each figure goes
+// is what the passage was explaining. One model call then sees every item with its few candidates (caption, what
+// the picture shows as described after import, and the words printed in it) and picks, per item, the figure
+// that shows what it explains; each figure goes
 // on one item (shared, one figure ended up on five sections of a document). Left to the
 // planner as one optional field among many, figures were skipped: a deck on the four-stroke cycle got none of
 // the manual's stroke diagrams.
@@ -55,8 +56,9 @@ export async function pickFigures(kind, items, documentIds, { used = [] } = {}) 
     `A ${kind.product} is being planned. Below are some of its ${kind.nounPlural}, each with the figures printed ` +
     `near the pages it draws on. For each ${kind.noun}, pick ${per > 1 ? `up to ${per} figures that show` : 'the figure that shows'} ` +
     `what it explains, so the reader can look at ${per > 1 ? 'them' : 'it'} while reading the ${kind.noun}: the ` +
-    `thing, part, process or stage it is about. Judge a figure by the words printed in it as well as its caption: ` +
-    `a caption can promise more than the picture shows. Include a figure whenever one fits: pictures make the ` +
+    `thing, part, process or stage it is about. Judge a figure by what the picture shows: its description when ` +
+    `there is one (written by someone who looked at it), else the words printed in it. A caption can promise ` +
+    `more than the picture shows. Include a figure whenever one fits: pictures make the ` +
     `${kind.nounPlural} easier to follow.` +
     (per > 1 ? ` Add a second figure only when it shows something the first does not (another part, stage or type the ${kind.noun} explains).` : '') +
     ` Pick none when no figure shows its subject (one about a different part or process). Each figure goes on ` +
@@ -66,7 +68,8 @@ export async function pickFigures(kind, items, documentIds, { used = [] } = {}) 
       (it.bullets || []).map((b) => `  - ${b}`).join('\n') + '\n' +
       `  Figures near it:\n` +
       candidates.map(({ figure: f }) => `    ${f.id}: ${f.caption || '(no caption)'}` +
-        (f.labels ? ` (text in it: ${String(f.labels).slice(0, LABEL_CHARS)})` : '')).join('\n')).join('\n\n');
+        (f.description ? `\n      Shows: ${f.description}` : '') +
+        (f.labels ? `\n      Text in it: ${String(f.labels).slice(0, LABEL_CHARS)}` : '')).join('\n')).join('\n\n');
   const schema = {
     type: 'object',
     properties: {
