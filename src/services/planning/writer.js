@@ -177,6 +177,23 @@ function itemBlock(generation, kind, index, type, { note, figure, evidence }) {
   ].filter(Boolean).join('\n\n');
 }
 
+const contentWords = (t) => String(t).toLowerCase().replace(/[^a-z0-9%.]+/g, ' ').split(' ').filter((w) => w.length > 3);
+
+/**
+ * The planned facts an item left out, when it left out more than half of them (a diesel slide kept 2 of its 6):
+ * a fact counts as presented when most of its words are somewhere in the item, notes included. Fewer than three
+ * facts are not checked, and some leaving is normal: a slide shows a few points.
+ */
+function factsLeftOut(facts, content) {
+  if (facts.length < 3) return [];
+  const said = new Set(contentWords(textsOf(content).map((t) => t.text).join(' ')));
+  const missing = facts.filter((f) => {
+    const w = contentWords(f.point);
+    return w.length && w.filter((x) => said.has(x)).length / w.length < 0.5;
+  });
+  return missing.length > facts.length / 2 ? missing : [];
+}
+
 /** Texts whose numbers the evidence doesn't give: [{ path, text, numbers }]. */
 function unsupportedIn(content, evidence) {
   return textsOf(content)
@@ -236,17 +253,21 @@ async function writeAs(generation, kind, index, type, { note, figure } = {}) {
     figure ? `${figure.caption || ''}\n${figure.labels || ''}` : '',
   ].filter(Boolean).join('\n\n');
 
+  // Checked: numbers the facts don't give, and planned facts left out. Either way the item is written once more
+  // with the problems pointed out; numbers still unsupported after that go.
   let bad = unsupportedIn(content, checkSource);
-  if (bad.length) {
-    // Written once more with the numbers pointed out; whatever is still unsupported goes.
+  const left = kind.noSourceTypes.includes(type) ? [] : factsLeftOut(item.facts || [], content);
+  const problems = [
+    bad.length ? `These numbers are not in the facts: ${[...new Set(bad.flatMap((b) => b.numbers))].join(', ')}; use ` +
+      `only numbers the facts state (rounding them is fine).` : '',
+    left.length ? `It leaves out these planned facts; present them too, combining points where needed (detail can ` +
+      `go in the ${kind.name === 'deck' ? 'speaker notes' : 'paragraphs'}):\n${left.map((f) => `- ${f.point}`).join('\n')}` : '',
+  ].filter(Boolean);
+  if (problems.length) {
     content = await write([
       ...messages,
       { role: 'assistant', content: JSON.stringify({ ...content, source_chunk_ids: undefined, used_pages: undefined }) },
-      {
-        role: 'user',
-        content: `These numbers are not in the facts: ${[...new Set(bad.flatMap((b) => b.numbers))].join(', ')}. ` +
-          `Write the ${kind.noun} again using only numbers the facts state (rounding them is fine).`,
-      },
+      { role: 'user', content: `Write the ${kind.noun} again. ${problems.join('\n')}` },
     ]);
     bad = unsupportedIn(content, checkSource);
     if (bad.length) content = withoutUnsupported(content, bad, checkSource);

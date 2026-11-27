@@ -71,6 +71,10 @@ export async function understandMessage(history, message, { canChangeLast = fals
     `sport, coding help).\n` +
     `- all_documents: true when they want all of their documents covered, or ask what documents they have. ` +
     `False when it is about one document.\n` +
+    `- wants_list: true when they ask for a set of things the documents name: all the types, kinds, designs, ` +
+    `parts, steps, stages, methods or examples of something ("what are the types of...", "list the...", "which ` +
+    `... are there", "what are the steps..."). False for one fact, an explanation or a comparison of two named ` +
+    `things.\n` +
     `- query: their message rewritten as a self-contained search query for the documents. Resolve "this", "it" ` +
     `or "that document" from the conversation, name the company or document the conversation is about, spell ` +
     `out abbreviations alongside them ("CFO (Chief Financial Officer)"), and keep everything asked for (a page, ` +
@@ -82,6 +86,7 @@ export async function understandMessage(history, message, { canChangeLast = fals
     small_talk: { type: 'boolean' },
     about_documents: { type: 'boolean' },
     all_documents: { type: 'boolean' },
+    wants_list: { type: 'boolean' },
     query: { type: 'string' },
   };
   const format = { type: 'object', properties, required: Object.keys(properties) };
@@ -102,6 +107,7 @@ export async function understandMessage(history, message, { canChangeLast = fals
       smallTalk: parsed.small_talk === true,
       aboutDocuments: parsed.small_talk !== true && parsed.about_documents !== false,
       allDocuments: parsed.all_documents === true,
+      wantsList: parsed.wants_list === true,
     };
   } catch (error) {
     throw new AppError(`Reading the message failed: ${error.message}`, 503, error);
@@ -132,7 +138,11 @@ export async function generateGeneralAnswer(query, history, { smallTalk = false 
   }
 }
 
-export async function generateAnswer(query, history, chunks, figures = []) {
+/**
+ * Answers from document excerpts. mustCover: the items the excerpts name for a list question ([{ name, partOf }]),
+ * each of which the answer covers; missing: items an earlier attempt left out.
+ */
+export async function generateAnswer(query, history, chunks, figures = [], { mustCover = [], missing = [] } = {}) {
   let listOfChunks = '';
   let totalScore = 0;
 
@@ -183,6 +193,12 @@ export async function generateAnswer(query, history, chunks, figures = []) {
         `figure itself under your answer.\n` +
         figures.map((f) => `  * ${f.caption || 'Untitled figure'} (p. ${f.page ?? '?'})` +
           (f.labels ? `. Text in it: ${f.labels}` : '')).join('\n') + '\n'
+      : '') +
+    (mustCover.length
+      ? `- This question asks for a set of things. The excerpts name exactly these (in their order); cover every ` +
+        `one, as items of their own, and present a broader term as the group they belong to, not as one of ` +
+        `them:\n` + mustCover.map((it) => `  * ${it.name}${it.partOf ? ` (a kind of ${it.partOf})` : ''}`).join('\n') + '\n' +
+        (missing.length ? `  A previous answer left out: ${missing.map((it) => it.name).join(', ')}. Include them.\n` : '')
       : '') +
     `- Last step, always: decide whether the excerpts contain the answer. If they do not (the question is about ` +
     `something the documents don't mention, or is unrelated to them, such as general trivia, and you answer from ` +

@@ -1,6 +1,7 @@
 // Answers a question from the conversation's documents (retrieval-augmented), as the chat does.
 import config from '../config.js';
-import { generateAnswer, generateGeneralAnswer, understandMessage } from './llm.js';
+import { generateAnswer, generateGeneralAnswer, generateStructured, understandMessage } from './llm.js';
+import { quoteFound } from './planning/facts.js';
 import { getDocumentOverviewsDb } from '../db/chunksQueries.js';
 import { findSections } from './retrieval.js';
 import { coverDocuments } from './wholeDocument.js';
@@ -31,6 +32,58 @@ function withoutRepeatedNote(content, history) {
 }
 // Passages remembered with an answer: a deck made later in the conversation starts from them.
 const SOURCES_KEPT = 8;
+const MAX_LIST_ITEMS = 15;
+
+/**
+ * For a question asking for a set of things: every item the excerpts name, each with the words that name it
+ * (checked to be in the excerpts). Asked straight away, the model listed "indirect injection" as a combustion
+ * chamber design and left out energy cells, though the section it read described them.
+ */
+async function itemsNamed(question, passages) {
+  const text = passages.map((p) => stripFigureMarkers(p.content)).join('\n\n');
+  const prompt =
+    `A user asks: "${question}"\n\nExcerpts from their documents:\n${text}\n\n` +
+    `List every item the excerpts name that answers the question: each thing of the kind asked for (each type, ` +
+    `design, part, step, stage or method), in the excerpts' order. For each: name (a few words), quote (the ` +
+    `excerpt's words that name or describe it, copied exactly, at most 30 words), and part_of (a broader term ` +
+    `the excerpts put it under, or empty). A broader term that covers several items (a family or category) is ` +
+    `not an item itself: give it as their part_of. Only items the excerpts name; none when they name none.`;
+  const schema = {
+    type: 'object',
+    properties: {
+      items: {
+        type: 'array', maxItems: MAX_LIST_ITEMS,
+        items: {
+          type: 'object',
+          properties: { name: { type: 'string' }, quote: { type: 'string' }, part_of: { type: 'string' } },
+          required: ['name', 'quote', 'part_of'],
+        },
+      },
+    },
+    required: ['items'],
+  };
+  try {
+    const { items = [] } = await generateStructured(prompt, config.ollama.generateModel, schema, { think: false });
+    return items.filter((it) => it.name?.trim() && quoteFound(it.quote, text))
+      .map((it) => ({ name: it.name.trim(), partOf: String(it.part_of || '').trim() }));
+  } catch (err) {
+    console.warn(`Listing items skipped: ${err.message}`);
+    return [];
+  }
+}
+
+const words = (t) => String(t).toLowerCase().replace(/[^a-z0-9%]+/g, ' ').split(' ').filter((w) => w.length > 3);
+
+/** The items an answer does not mention (by name, or by every longer word of the name). */
+function itemsLeftOut(items, answer) {
+  const said = ` ${String(answer).toLowerCase().replace(/[^a-z0-9%]+/g, ' ')} `;
+  return items.filter((it) => {
+    const name = it.name.toLowerCase().replace(/[^a-z0-9%]+/g, ' ').trim();
+    if (said.includes(` ${name} `)) return false;
+    const key = words(it.name);
+    return !key.length || !key.every((w) => said.includes(w.replace(/s$/, '')));
+  });
+}
 
 /** The documents a whole-document request is about: all when asked, otherwise the ones the search matched best. */
 function documentsMeant(allDocuments, docIds, topChunks) {
@@ -51,7 +104,7 @@ export async function answerQuestion({ question, history, docIds, onPhase = () =
   const again = (lastWholeDocument || []).filter((id) => docIds.includes(id));
   onPhase('rewriting');
   const documents = await getDocumentOverviewsDb(docIds);
-  const { query: searchQuery, scope, smallTalk, aboutDocuments, allDocuments } = await understandMessage(
+  const { query: searchQuery, scope, smallTalk, aboutDocuments, allDocuments, wantsList } = await understandMessage(
     history, question, { canChangeLast: again.length > 0, documents },
   );
   if (scope === 'change_last_answer' && again.length) return answerWholeDocument(question, history, again, onPhase, { change: true });
@@ -68,13 +121,15 @@ export async function answerQuestion({ question, history, docIds, onPhase = () =
 
   onPhase('generating');
   const available = await figuresInChunks(finalChunks);
+  const excerpts = finalChunks.map((c) => ({ ...c, content: stripFigureMarkers(c.content) }));
+  // A question asking for a set of things: the set first, then an answer covering all of it.
+  const mustCover = wantsList ? await itemsNamed(question, finalChunks) : [];
   // The rewrite is only for retrieval. Answer what the user actually asked; history supplies the context.
-  const { llmResponse, grounded } = await generateAnswer(
-    question,
-    history,
-    finalChunks.map((c) => ({ ...c, content: stripFigureMarkers(c.content) })),
-    available,
-  );
+  let { llmResponse, grounded } = await generateAnswer(question, history, excerpts, available, { mustCover });
+  const missing = itemsLeftOut(mustCover, llmResponse.content);
+  if (grounded && missing.length) {
+    ({ llmResponse, grounded } = await generateAnswer(question, history, excerpts, available, { mustCover, missing }));
+  }
   // Figures shown under the answer: only those it refers to.
   const figures = figuresMentioned(available, llmResponse.content).map((f) => ({
     id: f.id, caption: f.caption, page: f.page, width: f.width, height: f.height, document_id: f.document_id,

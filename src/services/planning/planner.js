@@ -228,6 +228,142 @@ async function planItems(generation, kind, material, count, notes) {
   });
 }
 
+// ── Reviewing the outline ──
+
+const KIND_FITS =
+  'steps for a sequence, procedure or dated events; numbers when its content is figures; compare for two ' +
+  'things set against each other; table for several items described by the same attributes; statement for one ' +
+  'rule or message';
+
+/**
+ * A second look at the outline, before any facts are gathered:
+ * - kinds: one deck came out as 13 "points" slides of 15 (a list of lists); items whose content fits another
+ *   kind better are switched.
+ * - coverage, for a request to cover the documents whole: sections no item draws on are added as items (when
+ *   there is room), folded into an item, or skipped (front matter, references). A whole-manual deck left out
+ *   fuel injection and compression ratio with four slots unused.
+ * Changes plan.items in place.
+ */
+async function reviewOutline(generation, kind, plan, material, count) {
+  const items = plan.items || [];
+  if (!items.length) return;
+  const passageById = new Map(material.passages.map((p) => [p.id, p]));
+  const sectionsOf = (it) => [...new Set((it.source_ids || []).map((id) => passageById.get(id)).filter(Boolean).map(sectionKey))];
+  const covered = new Set(items.flatMap(sectionsOf));
+  const uncovered = [];
+  if (generation.brief?.scope === 'full') {
+    const seen = new Set();
+    for (const p of material.passages) {
+      const key = sectionKey(p);
+      if (covered.has(key) || seen.has(key)) continue;
+      seen.add(key);
+      uncovered.push({ n: uncovered.length + 1, key, heading: p.heading || '(untitled)', page: p.page });
+    }
+  }
+  const tally = {};
+  items.forEach((it) => { tally[it.kind] = (tally[it.kind] || 0) + 1; });
+  const room = Math.max(0, count - items.length);
+  const choosable = plannable(kind);
+  const prompt =
+    `Review this outline of a ${kind.product}.\n\n${briefBlock(generation)}\n\n` +
+    `Outline (number. kind | title | what it covers):\n` +
+    items.map((it, i) => `${i + 1}. ${it.kind} | ${it.title} | ${it.covers}`).join('\n') + '\n\n' +
+    `Kinds used: ${Object.entries(tally).map(([k, n]) => `${k} ${n}`).join(', ')}.\n\n` +
+    `1. Kinds. Each ${kind.noun} should use the kind that presents its content best: ${KIND_FITS}; ` +
+    `${kind.defaultType} only when nothing else fits. A ${kind.product} where most ${kind.nounPlural} are ` +
+    `${kind.defaultType} reads as a list of lists. In kinds, give the ${kind.nounPlural} whose kind should change.\n` +
+    (uncovered.length
+      ? `2. Coverage. The user wants the documents covered whole, and these sections of them are not covered by ` +
+        `any ${kind.noun} yet:\n${uncovered.map((u) => `${u.n}. ${u.heading}${u.page != null ? ` (p. ${u.page})` : ''}`).join('\n')}\n` +
+        `For each, decide: "new" (a ${kind.noun} of its own; at most ${room} new ${kind.nounPlural} in all), ` +
+        `"add" (its content goes into the existing ${kind.noun} numbered item), or "skip" (it is about the ` +
+        `document itself, such as objectives, contents, features of the manual or references, or it adds nothing ` +
+        `a reader needs). For "new" give title, kind and covers (one sentence).\n`
+      : '');
+  const schema = {
+    type: 'object',
+    properties: {
+      kinds: {
+        type: 'array',
+        items: {
+          type: 'object',
+          properties: { item: { type: 'integer', enum: items.map((_, i) => i + 1) }, kind: { type: 'string', enum: choosable } },
+          required: ['item', 'kind'],
+        },
+      },
+      ...(uncovered.length ? {
+        sections: {
+          type: 'array',
+          maxItems: uncovered.length,
+          items: {
+            type: 'object',
+            properties: {
+              section: { type: 'integer', enum: uncovered.map((u) => u.n) },
+              action: { type: 'string', enum: ['new', 'add', 'skip'] },
+              item: { type: 'integer' },
+              title: { type: 'string' },
+              kind: { type: 'string', enum: choosable },
+              covers: { type: 'string' },
+            },
+            required: ['section', 'action', 'item', 'title', 'kind', 'covers'],
+          },
+        },
+      } : {}),
+    },
+    required: ['kinds', ...(uncovered.length ? ['sections'] : [])],
+  };
+  let review;
+  try {
+    review = await generateStructured(prompt, generateModel, schema, { think: true });
+  } catch (err) {
+    console.warn(`Outline review skipped: ${err.message}`);
+    return;
+  }
+  for (const { item, kind: to } of review.kinds || []) {
+    if (items[item - 1] && choosable.includes(to)) items[item - 1].kind = to;
+  }
+  const idsOf = (key) => material.passages.filter((p) => sectionKey(p) === key).map((p) => p.id);
+  let added = 0;
+  for (const d of review.sections || []) {
+    const u = uncovered.find((x) => x.n === d.section);
+    if (!u) continue;
+    if (d.action === 'add' && items[d.item - 1]) {
+      items[d.item - 1].source_ids = [...new Set([...(items[d.item - 1].source_ids || []), ...idsOf(u.key)])];
+    } else if (d.action === 'new' && added < room && d.title?.trim()) {
+      items.push({ title: d.title, kind: choosable.includes(d.kind) ? d.kind : kind.defaultType, covers: d.covers || '', source_ids: idsOf(u.key) });
+      added += 1;
+    }
+  }
+}
+
+/**
+ * Items drawing on the same section of the documents sit next to each other (valve arrangements were split
+ * between slides 8 and 14 of one deck). Groups keep the order of their first item; a section used by more than
+ * two items (an introduction everything cites) links nothing.
+ */
+function keepRelatedTogether(items, material) {
+  const passageById = new Map(material.passages.map((p) => [p.id, p]));
+  const sectionsOf = (it) => new Set((it.source_ids || []).map((id) => passageById.get(id)).filter(Boolean).map(sectionKey));
+  const sets = items.map(sectionsOf);
+  const uses = new Map();
+  sets.forEach((set) => set.forEach((key) => uses.set(key, (uses.get(key) || 0) + 1)));
+  const group = items.map((_, i) => i);
+  const find = (i) => (group[i] === i ? i : (group[i] = find(group[i])));
+  for (let i = 0; i < items.length; i++) {
+    for (let j = 0; j < i; j++) {
+      if ([...sets[i]].some((key) => uses.get(key) <= 2 && sets[j].has(key))) group[find(i)] = find(j);
+    }
+  }
+  const order = [];
+  const byGroup = new Map();
+  items.forEach((it, i) => {
+    const g = find(i);
+    if (!byGroup.has(g)) { byGroup.set(g, []); order.push(g); }
+    byGroup.get(g).push(it);
+  });
+  return order.flatMap((g) => byGroup.get(g));
+}
+
 /** The passages an item's facts are quoted from: the ones it named, then the rest of their sections. */
 function itemPassages(material, sourceIds) {
   const named = sourceIds.map((id) => material.passages.find((p) => p.id === id)).filter(Boolean);
@@ -331,6 +467,8 @@ export async function planOutline(generation) {
   const material = await planningMaterial(generation);
   const notes = [];
   const plan = await planItems(generation, kind, material, count, notes);
+  await reviewOutline(generation, kind, plan, material, count);
+  plan.items = keepRelatedTogether(plan.items || [], material);
   const planned = await Promise.all((plan.items || []).map((_, i) => planFacts(generation, kind, plan, i, material)));
   const content = await pickFigures(kind, toItems(kind, planned, material), generation.source_document_ids);
   const closingTitle = kind.name === 'deck' ? 'Key takeaways' : 'Summary';

@@ -135,7 +135,7 @@ export const KINDS = {
     fields: {
       title: text(60, 'signals the wrap-up'),
       takeaways: list(text(130, 'one key message of the deck as one sentence'), { min: 1, max: 5, write: '3-5 takeaways' }),
-      call_to_action: text(140, 'one sentence on what to review or practise from this deck, or empty; no procedures or advice of its own'),
+      call_to_action: text(140, 'one sentence on what to review or practise, naming only topics the slides covered (never tasks on the audience\'s own equipment or records), or empty'),
       speaker_notes: notes(),
     },
   },
