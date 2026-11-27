@@ -272,7 +272,8 @@ export async function describeFigure({ png, caption, labels, documentName }) {
   try {
     const reply = await provider.chat(
       [{ role: 'user', content: prompt, images: [Buffer.from(png).toString('base64')] }],
-      config.ollama.visionModel, { format, think: true },
+      // No think flag: a Qwen3-VL Thinking model reasons anyway, and an Instruct one would reject it.
+      config.ollama.visionModel, { format },
     );
     return String(JSON.parse(reply.content).description || '').replace(/\s+/g, ' ').trim();
   } catch (error) {
