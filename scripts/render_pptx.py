@@ -285,7 +285,7 @@ def draw_pictures(slide, content, boxes, theme):
         left, top, width, height = [v / EMU_PER_INCH for v in place_picture(slide, path if exists else None, image_settings(pic), box)]
         if not exists:
             draw_text(slide, {'x': left, 'y': top, 'w': width, 'h': height, 'size': 16, 'color': 'text_light', 'align': 'c', 'anchor': 'm'},
-                      theme, 'Image removed' if pic.get('image_id') else 'Figure removed')
+                      theme, 'Figure removed')
         caption = (pic.get('caption') or '').strip()
         if caption:
             cap_w = max(width, 3.2)

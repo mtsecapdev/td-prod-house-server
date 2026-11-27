@@ -13,7 +13,6 @@ import { writeAll } from '../services/planning/writer.js';
 import { rewriteItem, placeFigure } from '../services/planning/itemOps.js';
 import { startJob } from '../services/jobs.js';
 import { normalizeBrief, startOutlineJob } from '../services/planning/outlineJob.js';
-import { runImageJob } from '../services/imageSkill.js';
 import { renderDiagram, ensureDiagramFile, deleteDiagrams, DiagramSyntaxError } from '../services/diagrams.js';
 import { listTemplates, createBrandTemplate, deleteBrandTemplate } from '../services/templates.js';
 import { getBrandTemplateDb } from '../db/brandTemplatesQueries.js';
@@ -313,32 +312,6 @@ async function serveDiagram(req, res) {
   res.sendFile(filePath);
 }
 
-// Retries an image that failed (e.g. ComfyUI was not running): generates it again in the background.
-async function retryImage(req, res) {
-  const generation = await getGenerationByIdDb(req.params.id);
-  if (generation.type !== 'image') throw new AppError('Not an image', 400);
-  if (!(await runImageJob(generation.id))) return busy(res, generation);
-  await updateGenerationDb(generation.id, { status: 'generating' });
-  res.status(202).json(responseFactory.createJsonResponse({ generation: presentGeneration(await getGenerationByIdDb(generation.id)) }));
-}
-
-async function serveImage(req, res) {
-  const generation = await getGenerationByIdDb(req.params.id);
-  const filePath = generation.outline?.file_path;
-  if (!filePath) {
-    return res.status(400).json(responseFactory.createJsonResponse(null, { message: 'No image generated yet' }));
-  }
-
-  try {
-    await access(filePath);
-  } catch {
-    return res.status(404).json(responseFactory.createJsonResponse(null, { message: 'Image file not found' }));
-  }
-
-  const topic = (generation.brief?.topic || 'image').replace(/[^a-zA-Z0-9 _-]/g, '').slice(0, 60).trim();
-  res.download(filePath, `${topic}.png`);
-}
-
 async function deleteGeneration(req, res) {
   await deleteGenerationDb(req.params.id);
   await deleteDiagrams(req.params.id);
@@ -346,7 +319,6 @@ async function deleteGeneration(req, res) {
 }
 
 export default {
-  retryImage,
   getGeneration,
   getTemplates,
   uploadTemplate,
@@ -365,7 +337,6 @@ export default {
   downloadFile,
   openInDeckCraft,
   openInWordCraft,
-  serveImage,
   renderDiagramCode,
   serveDiagram,
   deleteGeneration,

@@ -30,8 +30,6 @@ generationsRouter.post('/:id/figures', generationsController.addFigure);
 generationsRouter.get('/:id/file', generationsController.downloadFile);
 generationsRouter.post('/:id/open-deckcraft', generationsController.openInDeckCraft);
 generationsRouter.post('/:id/open-wordcraft', generationsController.openInWordCraft);
-generationsRouter.get('/:id/image', generationsController.serveImage);
-generationsRouter.post('/:id/image', generationsController.retryImage);
 generationsRouter.post('/:id/diagram', generationsController.renderDiagramCode);
 generationsRouter.get('/:id/diagrams/:key', generationsController.serveDiagram);
 generationsRouter.delete('/:id', generationsController.deleteGeneration);

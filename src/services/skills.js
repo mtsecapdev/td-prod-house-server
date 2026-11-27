@@ -5,7 +5,7 @@ import config from '../config.js';
 import { generateStructured } from './llm.js';
 import { KINDS } from './planning/kinds.js';
 
-export const SKILLS = ['deck', 'doc', 'image'];
+export const SKILLS = ['deck', 'doc'];
 
 const RECENT_MESSAGES = 14;
 const MESSAGE_CHARS = 1200;

@@ -20,18 +20,6 @@ async function saveAsset(req, res) {
   const generation = await getGenerationByIdDb(Number(generationId) || 0).catch(() => null);
   if (!generation || generation.owner_id !== req.user.id) throw new AppError('Deck or document not found', 404);
 
-  if (generation.type === 'image') {
-    const filePath = generation.outline?.file_path;
-    if (!filePath) {
-      return res.status(400).json(responseFactory.createJsonResponse(null, { message: 'No file generated yet' }));
-    }
-    const assetTitle = title || generation.brief?.topic || 'Untitled image';
-    const assetId = await insertAssetDb({
-      generationId: generation.id, ownerId: req.user.id, kind: 'image', filePath, mime: 'image/png', title: assetTitle,
-    });
-    return res.status(201).json(responseFactory.createJsonResponse({ id: assetId, title: assetTitle }));
-  }
-
   const notReady = notReadyMessage(generation);
   if (notReady) return res.status(400).json(responseFactory.createJsonResponse(null, { message: notReady }));
 
@@ -69,7 +57,6 @@ async function downloadAsset(req, res) {
   const filename = (asset.title || 'download').replace(/[^a-zA-Z0-9 _-]/g, '').slice(0, 60).trim();
   const ext = asset.mime?.includes('presentation') ? '.pptx'
     : asset.mime?.includes('wordprocessingml') ? '.docx'
-    : asset.mime === 'image/png' ? '.png'
     : '';
   res.download(asset.file_path, `${filename}${ext}`);
 }

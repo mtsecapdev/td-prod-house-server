@@ -126,7 +126,7 @@ export async function placeFigure(generationId, figureId, index) {
 }
 
 /**
- * Adds a picture (a document figure { figure_id } or a generated image { image_id }, with caption) to one
+ * Adds a picture (a document figure { figure_id }, with caption) to one
  * slide/section. Unplaced, it sits in the layout's default spot until the user moves it.
  */
 export async function addPicture(generationId, index, picture) {

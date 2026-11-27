@@ -8,7 +8,7 @@ import { promisify } from 'node:util';
 import config from '../config.js';
 import { ensureDiagramFile } from './diagrams.js';
 import { getTemplate } from './templates.js';
-import { generationName, getImagePathsDb } from '../db/generationsQueries.js';
+import { generationName } from '../db/generationsQueries.js';
 import { getFiguresByIdsDb } from '../db/figuresQueries.js';
 import { layoutSlide } from '../../shared/slides/layout.js';
 
@@ -36,13 +36,11 @@ export function notReadyMessage(generation) {
 async function renderInput(generation) {
   const listKey = generation.type === 'deck' ? 'slides' : 'sections';
   const all = generation.outline[listKey] || [];
-  // Pictures (document figures and generated images) get their files' paths; a deleted one renders as removed.
+  // Pictures (document figures) get their files' paths; a deleted one renders as removed.
   const pictures = all.flatMap((it) => it.content?.pictures || []);
   const figureIds = [...new Set(pictures.map((p) => Number(p.figure_id)).filter(Boolean))];
-  const imageIds = [...new Set(pictures.map((p) => Number(p.image_id)).filter(Boolean))];
   const figurePaths = new Map((await getFiguresByIdsDb(figureIds)).map((f) => [f.id, f.file_path]));
-  const imagePaths = new Map((await getImagePathsDb(imageIds)).map((g) => [g.id, g.file_path]));
-  const pathOf = (p) => (p.image_id ? imagePaths.get(Number(p.image_id)) : figurePaths.get(Number(p.figure_id))) || null;
+  const pathOf = (p) => figurePaths.get(Number(p.figure_id)) || null;
   const items = await Promise.all(all.map(async (item) => {
     let content = item.content;
     if (!content) return item;
