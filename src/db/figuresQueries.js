@@ -2,7 +2,7 @@ import pool from './pool.js';
 import { generationName } from './generationsQueries.js';
 
 const FIGURE_COLUMNS = `f.id, f.document_id, f.key, f.page, f.caption, f.labels, f.width, f.height,
-  f.description, f.description_status, f.description_edited, f.caption_edited`;
+  f.description, f.description_edited, f.caption_edited`;
 
 export async function insertFigureDb(documentId, { key, page, caption, labels, filePath, width, height }) {
   await pool.query(
@@ -26,7 +26,11 @@ export async function getFiguresByKeysDb(pairs) {
 }
 
 export async function getFigureByIdDb(id) {
-  const res = await pool.query(`SELECT ${FIGURE_COLUMNS}, f.file_path FROM figures f WHERE f.id = $1`, [id]);
+  const res = await pool.query(
+    `SELECT ${FIGURE_COLUMNS}, f.file_path, d.name AS document_name
+     FROM figures f JOIN documents d ON d.id = f.document_id WHERE f.id = $1`,
+    [id],
+  );
   return res.rows[0] || null;
 }
 
@@ -66,72 +70,32 @@ export async function listFiguresDb({ q, documentIds, ownerId } = {}) {
 }
 
 /**
- * A person's corrections: { caption?, description? } ('' clears a description). Each edited field is marked,
- * so the model never overwrites it. `redescribe: true` instead hands the description back to the model.
+ * Sets a figure's caption and/or description ('' clears it). A person's edit is marked (caption_edited,
+ * description_edited) so it shows as checked; `byModel: true` stores the vision model's description instead.
  */
-export async function updateFigureDb(id, { caption, description, redescribe = false }) {
+export async function updateFigureDb(id, { caption, description, byModel = false }) {
   const sets = [];
   const params = [id];
   if (caption !== undefined) {
     params.push(caption);
     sets.push(`caption = $${params.length}`, 'caption_edited = true');
   }
-  if (redescribe) {
-    sets.push("description_status = 'pending'", 'description_edited = false', 'description_claimed_at = NULL',
-      'description_attempts = 0');
-  } else if (description !== undefined) {
+  if (description !== undefined) {
     params.push(description || null);
-    sets.push(`description = $${params.length}`, "description_status = 'done'", 'description_edited = true');
+    sets.push(`description = $${params.length}`, `description_edited = ${byModel ? 'false' : 'true'}`);
   }
   if (!sets.length) return getFigureByIdDb(id);
   const res = await pool.query(`UPDATE figures f SET ${sets.join(', ')} WHERE f.id = $1 RETURNING ${FIGURE_COLUMNS}`, params);
   return res.rows[0] || null;
 }
 
-/**
- * Claims the next figure waiting for a description (or one whose describer stopped heartbeating), from a
- * document that has finished importing, newest documents first. Several servers can share the work.
- */
-export async function claimFigureToDescribeDb(staleSeconds) {
+/** A document's figures with their image files, for describing them. */
+export async function getDocumentFiguresDb(documentId) {
   const res = await pool.query(
-    `UPDATE figures f SET description_status = 'working', description_claimed_at = NOW()
-     FROM documents d
-     WHERE f.id = (
-       SELECT x.id FROM figures x JOIN documents xd ON xd.id = x.document_id
-       WHERE xd.status = 'ready'
-         AND (x.description_status = 'pending'
-              OR (x.description_status = 'working' AND x.description_claimed_at < NOW() - make_interval(secs => $1)))
-       ORDER BY x.document_id DESC, x.id
-       FOR UPDATE OF x SKIP LOCKED
-       LIMIT 1
-     ) AND d.id = f.document_id
-     RETURNING f.id, f.caption, f.labels, f.file_path, d.name AS document_name`,
-    [staleSeconds],
+    'SELECT f.id, f.caption, f.labels, f.file_path FROM figures f WHERE f.document_id = $1 ORDER BY f.page NULLS LAST, f.id',
+    [documentId],
   );
-  return res.rows[0] || null;
-}
-
-export async function heartbeatDescribeDb(id) {
-  await pool.query("UPDATE figures SET description_claimed_at = NOW() WHERE id = $1 AND description_status = 'working'", [id]);
-}
-
-/** Saves the model's description, unless a person wrote one meanwhile. */
-export async function saveDescriptionDb(id, description) {
-  await pool.query(
-    `UPDATE figures SET description = $2, description_status = 'done', description_claimed_at = NULL
-     WHERE id = $1 AND description_status = 'working' AND NOT description_edited`,
-    [id, description],
-  );
-}
-
-/** A failed try: the figure waits for another, or is given up on ('failed') after maxAttempts. */
-export async function failDescriptionDb(id, maxAttempts) {
-  await pool.query(
-    `UPDATE figures SET description_attempts = description_attempts + 1, description_claimed_at = NULL,
-       description_status = CASE WHEN description_attempts + 1 >= $2 THEN 'failed' ELSE 'pending' END
-     WHERE id = $1 AND description_status = 'working'`,
-    [id, maxAttempts],
-  );
+  return res.rows;
 }
 
 /** Deletes the figures and returns their image files (for the caller to remove). */

@@ -91,16 +91,6 @@ export async function failJobDb(id, kind, error) {
   await pool.query(`UPDATE generations SET job = $2, updated_at = NOW() WHERE id = $1`, [id, JSON.stringify(job)]);
 }
 
-/** Whether any deck or document is being generated right now (background work waits for it). */
-export async function anyJobLiveDb() {
-  const res = await pool.query(
-    `SELECT EXISTS (SELECT 1 FROM generations WHERE job->>'state' = 'running'
-       AND (job->>'heartbeat_at')::timestamptz > NOW() - ($1 || ' milliseconds')::interval) AS live`,
-    [String(JOB_STALE_MS)],
-  );
-  return res.rows[0].live;
-}
-
 export function isJobLive(job) {
   return job?.state === 'running' && Date.now() - new Date(job.heartbeat_at).getTime() < JOB_STALE_MS;
 }

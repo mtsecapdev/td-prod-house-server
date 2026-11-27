@@ -1,16 +1,15 @@
 // Importing documents, as background jobs. An upload only saves the file and records the document; the import
-// (convert, figures, passages, embeddings, overview) runs here, one document at a time, outside the request:
-// a closed tab, or another user generating a deck, doesn't stop it, and a server restart doesn't leave it stuck
-// at "processing" (an import whose heartbeat stopped is started again, from a clean slate). The claim and the
-// heartbeat live in Postgres, so several app servers can share the queue. When no import is waiting, the queue
-// describes figures (figureDescriptions.js).
+// (convert, figures, passages, embeddings, figure descriptions, overview) runs here, one document at a time,
+// outside the request: a closed tab, or another user generating a deck, doesn't stop it, and a server restart
+// doesn't leave it stuck at "processing" (an import whose heartbeat stopped is started again, from a clean
+// slate). The claim and the heartbeat live in Postgres, so several app servers can share the queue.
 import { EventEmitter } from 'node:events';
 import { extractMarkdownFromFile } from './fileProcessor.js';
 import { saveFigures, deleteFigureFiles } from './figures.js';
 import { splitMarkdown, enrichTextForEmbedding } from './textChunker.js';
 import { requestEmbeddingBatch } from './llm.js';
 import { writeOverview } from './summarizer.js';
-import { describeNextFigure } from './figureDescriptions.js';
+import { describeDocumentFigures } from './figureDescriptions.js';
 import { unload as unloadModel } from './providers/ollama.js';
 import config from '../config.js';
 import { insertChunkDb } from '../db/chunksQueries.js';
@@ -38,8 +37,8 @@ export async function importDocument(doc, report = () => {}) {
   // A restarted import starts from scratch.
   await clearImportedDb(doc.id);
   await deleteFigureFiles(doc.id);
-  // The converter (docling) needs GPU memory too; the vision model, loaded beside the text model to describe the
-  // previous document's figures, would leave it almost none. It loads again when this document's figures are described.
+  // The converter (docling) needs GPU memory too; the vision model, still loaded beside the text model from
+  // describing the previous document's figures, would leave it almost none. It loads again for this one's.
   if (config.ollama.visionModel) await unloadModel(config.ollama.visionModel).catch(() => {});
 
   const { markdown, pageStarts, figures } = await extractMarkdownFromFile(doc.file_path, doc.name, report);
@@ -59,6 +58,9 @@ export async function importDocument(doc, report = () => {}) {
     await insertChunkDb(doc.id, p.text, embeddings[i], { page: p.page, heading: p.heading, section: p.section });
   }
   await still();
+
+  // The document is ready only once its figures are described: picking figures for slides goes by what they show.
+  await describeDocumentFigures(doc, report, still);
 
   report({ phase: 'summarizing', message: 'Writing an overview...' });
   await writeOverview(doc.id);
@@ -94,18 +96,13 @@ export async function runImport(doc, report = () => {}) {
 
 let running = false;
 
-/**
- * Works through waiting imports, one at a time (call after recording an upload), then describes waiting
- * figures one at a time; an import that arrives meanwhile goes first.
- */
+/** Works through waiting imports, one at a time (call after recording an upload). */
 export async function runImportQueue() {
   if (running) return;
   running = true;
   try {
-    for (;;) {
-      const doc = await claimNextImportDb(STALE_SECONDS);
-      if (doc) await runImport(doc);
-      else if (!(await describeNextFigure())) break;
+    for (let doc = await claimNextImportDb(STALE_SECONDS); doc; doc = await claimNextImportDb(STALE_SECONDS)) {
+      await runImport(doc);
     }
   } catch (err) {
     console.error(`Import queue: ${err.message}`);

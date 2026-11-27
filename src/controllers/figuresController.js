@@ -10,7 +10,7 @@ import {
   listFiguresDb, getFigureByIdDb, deleteFiguresDb, figureUsageDb, getFiguresForDownloadDb, updateFigureDb,
 } from '../db/figuresQueries.js';
 import { ownFigureIds } from '../middleware/auth.js';
-import { runImportQueue } from '../services/imports.js';
+import { describeOne } from '../services/figureDescriptions.js';
 
 const MAX_BULK = 500;
 
@@ -33,8 +33,8 @@ async function idsFrom(req, value) {
 async function listFigures(req, res) {
   const documentIds = String(req.query.documentIds || '').split(',').map(Number).filter(Number.isInteger).filter(Boolean);
   const figures = await listFiguresDb({ q: req.query.q, documentIds, ownerId: req.user.id });
-  // describing: whether waiting figures will be described (a vision model is set).
-  res.json(responseFactory.createJsonResponse({ figures: figures.map(toPublic), describing: Boolean(config.ollama.visionModel) }));
+  // canDescribe: whether the model can describe a figure again (a vision model is set).
+  res.json(responseFactory.createJsonResponse({ figures: figures.map(toPublic), canDescribe: Boolean(config.ollama.visionModel) }));
 }
 
 async function serveImage(req, res) {
@@ -91,28 +91,33 @@ async function deleteFigures(req, res) {
 const MAX_CAPTION = 300;
 const MAX_DESCRIPTION = 2000;
 
+const text = (value, max, name) => {
+  if (value === undefined) return undefined;
+  if (typeof value !== 'string') throw new AppError(`${name} must be text`, 400);
+  const clean = value.replace(/\s+/g, ' ').trim();
+  if (clean.length > max) throw new AppError(`${name} can be at most ${max} characters`, 400);
+  return clean;
+};
+
 /**
- * A person's corrections to a figure of their own documents: body { caption?, description? }, or
- * { redescribe: true } to have the model describe it again. Edited fields are marked and never overwritten.
+ * A person's corrections to a figure of their own documents: body { caption?, description? }, marked as
+ * checked. Or { redescribe: true }: the model looks at the figure again now (~10-20 s) and its description
+ * replaces the current one.
  */
 async function updateFigure(req, res) {
   const id = Number(req.params.id);
   if (!(await ownFigureIds(req.user.id, [id])).length) throw new AppError('Figure not found', 404);
   const { caption, description, redescribe } = req.body || {};
-  const text = (value, max, name) => {
-    if (value === undefined) return undefined;
-    if (typeof value !== 'string') throw new AppError(`${name} must be text`, 400);
-    const clean = value.replace(/\s+/g, ' ').trim();
-    if (clean.length > max) throw new AppError(`${name} can be at most ${max} characters`, 400);
-    return clean;
-  };
-  const figure = await updateFigureDb(id, {
-    caption: text(caption, MAX_CAPTION, 'Caption'),
-    description: text(description, MAX_DESCRIPTION, 'Description'),
-    redescribe: redescribe === true,
-  });
+  let changes = { caption: text(caption, MAX_CAPTION, 'Caption'), description: text(description, MAX_DESCRIPTION, 'Description') };
+  if (redescribe === true) {
+    if (!config.ollama.visionModel) throw new AppError('No model is set up to describe figures', 400);
+    const figure = await getFigureByIdDb(id);
+    const fresh = figure && await describeOne(figure, figure.document_name);
+    if (!fresh) throw new AppError('The model couldn’t describe this figure. Try again, or write a description.', 503);
+    changes = { description: fresh, byModel: true };
+  }
+  const figure = await updateFigureDb(id, changes);
   if (!figure) throw new AppError('Figure not found', 404);
-  if (redescribe === true) runImportQueue();
   res.json(responseFactory.createJsonResponse({ figure: toPublic(figure) }));
 }
 
