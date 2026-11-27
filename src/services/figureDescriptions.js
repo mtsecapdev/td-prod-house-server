@@ -8,18 +8,18 @@ import { describeFigure } from './llm.js';
 import { getDocumentFiguresDb, updateFigureDb } from '../db/figuresQueries.js';
 
 const TRIES = 2;
-// A description is 2-4 sentences; fewer words than this is a failed answer (the 4B model once returned ",").
-const MIN_WORDS = 8;
+// The subject is one sentence saying what the picture shows; fewer words than this is not one.
+const MIN_SUBJECT_WORDS = 3;
 
 /** One figure's description ({ caption, labels, file_path }), or null when the model fails on it. */
 export async function describeOne(figure, documentName) {
   const png = await readFile(figure.file_path);
   for (let attempt = 1; ; attempt++) {
     try {
-      const description = await describeFigure({ png, caption: figure.caption, labels: figure.labels, documentName });
-      const words = description.split(/\s+/).filter((w) => /\p{L}/u.test(w)).length;
-      if (words >= MIN_WORDS) return description;
-      throw new Error(`not a description: "${description.slice(0, 40)}"`);
+      const answer = await describeFigure({ png, caption: figure.caption, labels: figure.labels, documentName });
+      const words = answer?.subject.split(/\s+/).filter((w) => /\p{L}/u.test(w)).length || 0;
+      if (words >= MIN_SUBJECT_WORDS) return answer.text;
+      throw new Error(`not a description: ${JSON.stringify(answer?.subject || '')}`);
     } catch (err) {
       console.warn(`Describing figure ${figure.id} failed (try ${attempt} of ${TRIES}): ${err.message}`);
       if (attempt >= TRIES) return null;

@@ -251,39 +251,74 @@ export async function generateStructured(prompt, model, format, { think, onRetry
   }
 }
 
+const FIGURE_KINDS = ['photo', 'drawing', 'diagram', 'chart', 'table'];
+// Each part of a description is its own field with a length cap: as one free-text answer, the 4B model once
+// returned ",", and once its own reasoning, cut off mid-sentence.
+const FIGURE_SCHEMA = {
+  type: 'object',
+  properties: {
+    kind: { type: 'string', enum: FIGURE_KINDS },
+    subject: { type: 'string', maxLength: 200 },
+    drawings: { type: 'array', maxItems: 6, items: { type: 'string', maxLength: 250 } },
+    labels: { type: 'array', maxItems: 16, items: { type: 'string', maxLength: 80 } },
+    not_shown: { type: 'string', maxLength: 200 },
+  },
+  required: ['kind', 'subject', 'drawings', 'labels', 'not_shown'],
+};
+
+const sentence = (s) => {
+  const t = String(s || '').replace(/\s+/g, ' ').trim();
+  return t && `${t[0].toUpperCase()}${t.slice(1)}${/[.!?]$/.test(t) ? '' : '.'}`;
+};
+
 /**
- * What a document figure shows, as seen by the vision model: a few plain sentences, for picking figures and
- * for people to check. The caption is what the document says about it, and can promise more than the picture
- * shows (a caption naming the four-stroke cycle over a drawing of the intake stroke only), so the model is told
- * to describe the picture, and to say so when the caption names something it does not show.
+ * What a document figure shows, as seen by the vision model, for picking figures and for people to check:
+ * { kind, subject, drawings, labels, not_shown, text } (text: the parts as one readable description), or null
+ * when the answer has no subject. The caption is what the document says about it, and can promise more than the
+ * picture shows (a caption naming the four-stroke cycle over a drawing of the intake stroke only), so the model
+ * describes the picture and says what is missing only when the caption promises more.
  */
 export async function describeFigure({ png, caption, labels, documentName }) {
   const prompt =
     `This picture is a figure from the document "${documentName}".` +
     (caption ? ` The document's caption for it: "${caption}".` : ' It has no caption.') +
     (labels ? ` Text printed in it: ${String(labels).slice(0, 600)}` : '') + '\n\n' +
-    `Describe what the picture actually shows, in 2 to 4 plain sentences, for someone deciding whether it ` +
-    `illustrates a point they are explaining:\n` +
-    `- What kind of picture it is: a photo, a drawing (cutaway, cross-section), a diagram, a chart or a table. ` +
-    `A photo of the outside of something is not a drawing of its inside.\n` +
-    `- The thing, part, process or stage shown, and the parts or labels that matter, named as the document ` +
-    `names them.\n` +
-    `- When it has several drawings side by side, what each one shows and how they differ: they are often ` +
-    `different types or designs of one thing (three combustion chamber types), not stages or views of one.\n` +
-    `Use the caption and the document only to name things correctly. Only when the caption names something the ` +
-    `picture does not show (more stages, parts or steps than are drawn), say what is missing; otherwise say ` +
-    `nothing about the caption or about what is not shown. Do not guess at what cannot be seen.`;
-  const format = { type: 'object', properties: { description: { type: 'string' } }, required: ['description'] };
+    `Describe what the picture actually shows, as JSON:\n` +
+    `- kind: photo, drawing (cutaway, cross-section, illustration), diagram (boxes, arrows, flows), chart or ` +
+    `table. A photo of the outside of something is a photo, not a drawing of its inside.\n` +
+    `- subject: one plain sentence saying what it shows (the thing, part, process or stage), named as the ` +
+    `document names it.\n` +
+    `- drawings: when it has several drawings side by side, one short sentence for each saying what it shows ` +
+    `and how it differs from the others (they are often different types or designs of one thing, not stages ` +
+    `or views of one). Empty when it is one picture.\n` +
+    `- labels: the labelled parts that matter, as printed. Empty when there are none.\n` +
+    `- not_shown: only when the caption names something the picture does not show (more stages, parts or ` +
+    `steps than are drawn), one sentence saying what is missing. Otherwise empty.\n` +
+    `Use the caption and the document only to name things correctly. Do not guess at what cannot be seen.`;
+  let answer;
   try {
     const reply = await provider.chat(
       [{ role: 'user', content: prompt, images: [Buffer.from(png).toString('base64')] }],
       // No think flag: a Qwen3-VL Thinking model reasons anyway, and an Instruct one would reject it.
-      config.ollama.visionModel, { format, numCtx: config.ollama.visionNumCtx },
+      config.ollama.visionModel, { format: FIGURE_SCHEMA, numCtx: config.ollama.visionNumCtx },
     );
-    return String(JSON.parse(reply.content).description || '').replace(/\s+/g, ' ').trim();
+    answer = JSON.parse(reply.content);
   } catch (error) {
     throw new AppError(`Describing a figure failed: ${error.message}`, 503, error);
   }
+  const kind = FIGURE_KINDS.includes(answer.kind) ? answer.kind : null;
+  const subject = sentence(answer.subject);
+  if (!kind || !subject) return null;
+  const drawings = (answer.drawings || []).map(sentence).filter(Boolean);
+  const parts = [...new Set((answer.labels || []).map((l) => String(l).replace(/\s+/g, ' ').trim()).filter(Boolean))];
+  const notShown = sentence(answer.not_shown);
+  const text = [
+    `${kind[0].toUpperCase()}${kind.slice(1)}: ${subject}`,
+    ...drawings,
+    parts.length ? `Labelled: ${parts.join(', ')}.` : '',
+    notShown,
+  ].filter(Boolean).join(' ');
+  return { kind, subject, drawings, labels: parts, not_shown: notShown, text };
 }
 
 export async function chatStructured(messages, model, format, { think = false } = {}) {

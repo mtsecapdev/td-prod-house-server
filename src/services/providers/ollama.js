@@ -67,8 +67,10 @@ export class OutputTruncatedError extends Error {}
 
 // numCtx: a model's own context window instead of the shared one (the vision model's is small, so it fits beside
 // the text model). Keep it the same on every call to that model: Ollama reloads a model whose num_ctx changes.
+// Its output (reasoning included) may use three quarters of it: an image and a short prompt take ~1.5k tokens,
+// and the vision model reasoned ~3.8k tokens over a figure with three drawings.
 function bodyFor(extra, { format, think, numCtx }) {
-  const options = numCtx ? { num_ctx: numCtx, num_predict: Math.min(numPredict, Math.floor(numCtx / 2)) } : OPTIONS;
+  const options = numCtx ? { num_ctx: numCtx, num_predict: Math.min(numPredict, Math.floor(numCtx * 0.75)) } : OPTIONS;
   const body = { ...extra, options };
   if (format) body.format = format;
   if (think !== undefined) body.think = think;
